@@ -247,9 +247,7 @@ function V2App({ initial }) {
     if (window.location.protocol === 'file:') return;
     setSyncState(s => ({ ...s, state:'refreshing', label:'syncing', error:null }));
     try {
-      const token = window.localStorage?.getItem('sandlot_refresh_token');
-      const headers = token ? { 'x-refresh-token': token } : {};
-      const res = await fetch('/api/refresh', { method:'POST', headers });
+      const res = await fetch('/api/refresh', { method:'POST' });
       const payload = await res.json().catch(()=>({}));
       if (!res.ok) {
         const message = payload?.detail?.errors?.join('; ') || payload?.detail || `Refresh failed (${res.status})`;
