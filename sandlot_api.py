@@ -104,6 +104,41 @@ class SkipperMessageIn(BaseModel):
     content: str = Field(..., min_length=1, max_length=4000)
 
 
+@app.get("/api/skipper/debug")
+def skipper_debug() -> dict[str, Any]:
+    """One-shot probe: does outbound to OpenRouter work, and does the
+    SDK call succeed? Returns full traceback on failure so we can diagnose
+    Connection error issues without redeploying."""
+    import traceback
+    out: dict[str, Any] = {
+        "openrouter_key_set": bool(os.environ.get("OPENROUTER_API_KEY")),
+        "openrouter_key_prefix": (os.environ.get("OPENROUTER_API_KEY") or "")[:10],
+    }
+    # 1. Raw HTTPS connectivity
+    try:
+        import requests
+        r = requests.get("https://openrouter.ai/api/v1/models", timeout=15)
+        out["raw_https"] = {"status": r.status_code, "len": len(r.content)}
+    except Exception as e:
+        out["raw_https"] = {"error": f"{type(e).__name__}: {e}"}
+
+    # 2. SDK non-streaming call
+    try:
+        client = sandlot_skipper.SkipperClient()
+        resp = client.client.chat.completions.create(
+            model=sandlot_skipper.PRIMARY_MODEL,
+            messages=[{"role": "user", "content": "Reply with one word: pong."}],
+            max_tokens=10,
+        )
+        out["sdk_nonstream"] = {"ok": True, "content": resp.choices[0].message.content}
+    except Exception as e:
+        out["sdk_nonstream"] = {
+            "error": f"{type(e).__name__}: {e}",
+            "traceback": traceback.format_exc().splitlines()[-12:],
+        }
+    return out
+
+
 @app.get("/api/skipper/messages")
 def skipper_history() -> dict[str, Any]:
     try:
