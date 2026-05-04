@@ -132,9 +132,11 @@ def skipper_debug() -> dict[str, Any]:
         )
         out["sdk_nonstream"] = {"ok": True, "content": resp.choices[0].message.content}
     except Exception as e:
+        cause = e.__cause__ or e.__context__
         out["sdk_nonstream"] = {
             "error": f"{type(e).__name__}: {e}",
-            "traceback": traceback.format_exc().splitlines()[-12:],
+            "cause": f"{type(cause).__name__}: {cause}" if cause else None,
+            "traceback": traceback.format_exc().splitlines()[-20:],
         }
     return out
 
