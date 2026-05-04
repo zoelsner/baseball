@@ -134,6 +134,18 @@ def init_schema() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_takes (
+              player_id TEXT NOT NULL,
+              snapshot_id BIGINT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+              text TEXT NOT NULL,
+              model TEXT NOT NULL,
+              generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              PRIMARY KEY (player_id, snapshot_id)
+            )
+            """
+        )
 
 
 def create_refresh_run(source: str) -> int:
@@ -391,6 +403,34 @@ def set_player_game_log(
                 fetched_at = now()
             """,
             (mlb_id, group_type, season, Jsonb(games)),
+        )
+
+
+def get_player_take(player_id: str, snapshot_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT player_id, snapshot_id, text, model, generated_at
+            FROM player_takes
+            WHERE player_id = %s AND snapshot_id = %s
+            """,
+            (player_id, snapshot_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_player_take(player_id: str, snapshot_id: int, text: str, model: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO player_takes (player_id, snapshot_id, text, model, generated_at)
+            VALUES (%s, %s, %s, %s, now())
+            ON CONFLICT (player_id, snapshot_id) DO UPDATE
+            SET text = EXCLUDED.text,
+                model = EXCLUDED.model,
+                generated_at = now()
+            """,
+            (player_id, snapshot_id, text, model),
         )
 
 

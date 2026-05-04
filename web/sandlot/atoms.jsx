@@ -77,6 +77,26 @@ function Avatar({ name, size=32, palette='neutral' }) {
   );
 }
 
+function PlayerPhoto({ mlbId, name, size=56 }) {
+  const id = mlbId ? String(mlbId) : '';
+  const [failedFor, setFailedFor] = React.useState(null);
+  const showPhoto = id && failedFor !== id;
+  if (!showPhoto) return <Avatar name={name || '?'} size={size} palette="warm"/>;
+  const src = `https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_213,q_auto:best/v1/people/${encodeURIComponent(id)}/headshot/67/current`;
+  return (
+    <img
+      src={src}
+      alt={name ? `${name} headshot` : 'Player headshot'}
+      onError={() => setFailedFor(id)}
+      style={{
+        width:size, height:size, borderRadius:'50%', objectFit:'cover',
+        display:'block', flexShrink:0, background:'#f4efe6',
+        border:'1px solid rgba(15,23,42,0.08)',
+      }}
+    />
+  );
+}
+
 // Build a lowercase-full-name -> fantrax_id map from a snapshot's player_index.
 // Used by Skipper to wrap player mentions as tappable links.
 function buildPlayerNameIndex(playerIndex) {
@@ -91,6 +111,6 @@ function buildPlayerNameIndex(playerIndex) {
 
 Object.assign(window, {
   STATUS_LABEL, vsExpTier,
-  Sparkline, Icons, TrendIcon, Avatar,
+  Sparkline, Icons, TrendIcon, Avatar, PlayerPhoto,
   buildPlayerNameIndex,
 });

@@ -4,7 +4,7 @@ V1 runs all-in on Railway:
 
 - `web`: FastAPI app serving `/api/*` plus `web/sandlot/index.html`
 - `cron`: one-shot daily scraper using the same refresh runner as the API
-- Postgres: source of truth for raw Fantrax snapshots and stored cookies
+- Postgres: source of truth for raw Fantrax snapshots, stored cookies, chat history, player stat cache, and cached player-card takes
 
 ## Required Variables
 
@@ -22,6 +22,7 @@ Optional:
 ```bash
 SANDLOT_KEEP_SNAPSHOTS=30
 FANTRAX_COOKIES_JSON=<json array of Fantrax cookies>
+OPENROUTER_API_KEY=<openrouter key for Skipper chat and player takes>
 ```
 
 ## Cookie Bootstrap
@@ -77,6 +78,18 @@ runs `python sandlot_cron.py` on the desired daily schedule.
 - `GET /api/health`
 - `GET /api/snapshot/latest`
 - `POST /api/refresh`
+- `GET /api/player/{fantrax_id}`
+- `POST /api/player/{fantrax_id}/refresh`
+- `GET /api/skipper/messages`
+- `POST /api/skipper/messages`
+- `DELETE /api/skipper/messages`
+
+Player detail sheets are read-only. `GET /api/player/{fantrax_id}` uses the
+latest Fantrax snapshot, lazily resolves an MLB player id, caches game logs in
+`player_game_logs`, and lazily generates a roster-aware Skipper take in
+`player_takes`. The `/refresh` variant refreshes MLB stat data; Skipper takes
+remain keyed to the latest Fantrax snapshot and are reused until a new snapshot
+is stored.
 
 The app only stores and displays data. It does not make roster moves, drops,
 claims, or trade actions in Fantrax.

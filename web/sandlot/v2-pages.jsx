@@ -1138,21 +1138,20 @@ function V2ProfileBody({ data }) {
 
   return (
     <>
-      <V2ProfileHero player={p} statusLabel={statusLabel} statusOk={statusOk}/>
+      <V2ProfileHero player={p} mlb={data.mlb} take={data.take} statusLabel={statusLabel} statusOk={statusOk}/>
       {data.mlb?.available === false && (
         <div style={{ background:V2.warnSoft, color:V2.warn, border:`1px solid ${V2.warn}33`, borderRadius:14, padding:'12px 14px', fontSize:12.5, fontWeight:600 }}>
           {data.mlb.reason || 'MLB stats not available for this player.'}
         </div>
       )}
-      {trend && <V2ProfileTrend trend={trend} isPitcher={isPitcher}/>}
+      {(trend || sparkline.length > 0) && <V2ProfileTrend trend={trend} games={games} sparkline={sparkline}/>}
       {games.length > 0 && <V2ProfileSeason games={games} isPitcher={isPitcher} season={data.season}/>}
-      {sparkline.length > 0 && <V2ProfileSparkline points={sparkline}/>}
       {games.length > 0 && <V2ProfileGameLog games={games} isPitcher={isPitcher}/>}
     </>
   );
 }
 
-function V2ProfileHero({ player, statusLabel, statusOk }) {
+function V2ProfileHero({ player, mlb, take, statusLabel, statusOk }) {
   const ageBit = player.age ? ` · Age ${player.age}` : '';
   const teamBit = player.team ? `${player.team}` : '';
   const posBit = player.positions || player.slot || '';
@@ -1164,55 +1163,92 @@ function V2ProfileHero({ player, statusLabel, statusOk }) {
       : player.source === 'free_agent'
         ? 'Free agent'
         : null;
+  const takeText = take?.text;
+  const takeError = take?.error;
   return (
-    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:'16px 16px 14px', display:'flex', alignItems:'center', gap:14 }}>
-      <Avatar name={player.name || '?'} size={56} palette="warm"/>
-      <div style={{ flex:1, minWidth:0 }}>
-        <div style={{ fontSize:20, fontWeight:700, fontFamily:V2.fontDisplay, letterSpacing:'-0.01em', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{player.name || '?'}</div>
-        <div style={{ fontSize:12, color:V2.muted, marginTop:3, fontWeight:600 }}>{meta}</div>
-        <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:8 }}>
-          {ownerLabel && (
-            <span style={{ background:V2.accentSoft, color:V2.accent, fontSize:10.5, fontWeight:800, padding:'3px 8px', borderRadius:999, letterSpacing:'0.04em' }}>{ownerLabel}</span>
-          )}
-          <span style={{
-            background: statusOk ? V2.benchSoft : V2.injuredSoft,
-            color: statusOk ? V2.bench : V2.injured,
-            fontSize:10.5, fontWeight:800, padding:'3px 8px', borderRadius:999, letterSpacing:'0.04em', textTransform:'uppercase',
-          }}>{statusLabel}</span>
+    <div style={{
+      background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18,
+      padding:16, display:'grid', gridTemplateColumns:'minmax(0, 1.08fr) minmax(0, .92fr)', gap:14, alignItems:'stretch',
+    }}>
+      <div style={{ display:'flex', alignItems:'center', gap:12, minWidth:0 }}>
+        <PlayerPhoto mlbId={mlb?.mlb_id} name={player.name || '?'} size={76}/>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:20, fontWeight:700, fontFamily:V2.fontDisplay, letterSpacing:'-0.01em', lineHeight:1.08, overflow:'hidden', display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' }}>{player.name || '?'}</div>
+          <div style={{ fontSize:11.5, color:V2.muted, marginTop:5, fontWeight:700, lineHeight:1.25 }}>{meta || 'Player'}</div>
+          <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:9 }}>
+            {ownerLabel && (
+              <span style={{ background:V2.accentSoft, color:V2.accent, fontSize:10, fontWeight:800, padding:'3px 7px', borderRadius:999, letterSpacing:'0.04em' }}>{ownerLabel}</span>
+            )}
+            <span style={{
+              background: statusOk ? V2.benchSoft : V2.injuredSoft,
+              color: statusOk ? V2.bench : V2.injured,
+              fontSize:10, fontWeight:800, padding:'3px 7px', borderRadius:999, letterSpacing:'0.04em', textTransform:'uppercase',
+            }}>{statusLabel}</span>
+          </div>
         </div>
+      </div>
+      <div style={{ borderLeft:`1px solid ${V2.hairline2}`, paddingLeft:14, minWidth:0 }}>
+        <V2Eyebrow color={V2.accent}>Skipper take</V2Eyebrow>
+        {takeText ? (
+          <div style={{ marginTop:8, color:V2.ink, fontSize:12.8, lineHeight:1.45, fontWeight:600 }}>{takeText}</div>
+        ) : takeError ? (
+          <div style={{ marginTop:8, color:V2.muted, fontSize:12.5, lineHeight:1.45, fontWeight:600 }}>Skipper unavailable. Stats are still current.</div>
+        ) : (
+          <div style={{ marginTop:9 }}>
+            <div style={{ height:9, width:'95%', background:V2.surface2, borderRadius:8 }}/>
+            <div style={{ height:9, width:'86%', background:V2.surface2, borderRadius:8, marginTop:7 }}/>
+            <div style={{ height:9, width:'72%', background:V2.surface2, borderRadius:8, marginTop:7 }}/>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function V2ProfileTrend({ trend, isPitcher }) {
-  const dir = trend.direction;
+function V2ProfileTrend({ trend, games, sparkline }) {
+  const dir = trend?.direction || 'flat';
   const tone = dir === 'up' ? V2.ok : dir === 'down' ? V2.bad : V2.muted;
-  const toneSoft = dir === 'up' ? V2.okSoft : dir === 'down' ? V2.badSoft : V2.surface2;
   const arrow = dir === 'up' ? '↑' : dir === 'down' ? '↓' : '→';
-  const pct = trend.pct_change;
+  const pct = trend?.pct_change;
   const pctLabel = pct === null || pct === undefined
     ? '—'
     : `${pct > 0 ? '+' : ''}${pct.toFixed ? pct.toFixed(1) : pct}%`;
-  const subline = isPitcher
-    ? `from ${trend.season_avg_fpts.toFixed(2)} season avg`
-    : `from ${trend.season_avg_fpts.toFixed(2)} season avg${trend.last_batting_avg !== null && trend.last_batting_avg !== undefined ? ` · ${trend.last_batting_avg.toFixed(3).replace(/^0/, '')} AVG` : ''}`;
+  const l7 = v2AverageFpts(games, 7);
+  const l30 = v2AverageFpts(games, 30);
+  const points = sparkline || [];
   return (
     <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:14 }}>
-      <V2Eyebrow>Last {trend.window} games</V2Eyebrow>
-      <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between', marginTop:8, gap:10 }}>
-        <div>
-          <div style={{ fontSize:24, fontWeight:700, fontFamily:V2.fontDisplay, letterSpacing:'-0.02em' }}>
-            {trend.last_avg_fpts.toFixed(2)} <span style={{ fontSize:12, color:V2.muted, fontWeight:700 }}>FP/G</span>
+      <V2StatRow stats={[
+        { label:'L7', value:v2FormatFpts(l7) },
+        { label:'L30', value:v2FormatFpts(l30) },
+        { label:'vs Exp', value:pctLabel, color:tone },
+      ]}/>
+      {points.length > 0 && (
+        <div style={{ marginTop:14, paddingTop:12, borderTop:`1px solid ${V2.hairline2}` }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+            <V2Eyebrow>Last {points.length} games · Fantasy points</V2Eyebrow>
+            <span style={{ color:tone, fontSize:16, lineHeight:1, fontWeight:900 }}>{arrow}</span>
           </div>
-          <div style={{ fontSize:11.5, color:V2.muted, marginTop:3, fontWeight:600 }}>{subline}</div>
+          <div style={{ marginTop:10 }}>
+            <V2BarSparkline values={points.map(p => Number(p.fpts) || 0)}/>
+          </div>
         </div>
-        <span style={{ background:toneSoft, color:tone, fontSize:13, fontWeight:800, padding:'5px 10px', borderRadius:999 }}>
-          {pctLabel} {arrow}
-        </span>
-      </div>
+      )}
     </div>
   );
+}
+
+function v2AverageFpts(games, count) {
+  const vals = (games || [])
+    .slice(-count)
+    .map(g => Number(g.fpts_estimated))
+    .filter(Number.isFinite);
+  if (!vals.length) return null;
+  return vals.reduce((sum, v) => sum + v, 0) / vals.length;
+}
+
+function v2FormatFpts(value) {
+  return value === null || value === undefined ? '—' : value.toFixed(1);
 }
 
 function V2ProfileSeason({ games, isPitcher, season }) {
@@ -1234,17 +1270,6 @@ function V2ProfileSeason({ games, isPitcher, season }) {
     <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:14 }}>
       <V2Eyebrow>Season · {isPitcher ? 'Pitching' : 'Hitting'} {season ? `· ${season}` : ''}</V2Eyebrow>
       <V2StatRow stats={cells}/>
-    </div>
-  );
-}
-
-function V2ProfileSparkline({ points }) {
-  return (
-    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:14 }}>
-      <V2Eyebrow>Last {points.length} games · Fantasy points</V2Eyebrow>
-      <div style={{ marginTop:10 }}>
-        <V2BarSparkline values={points.map(p => Number(p.fpts) || 0)}/>
-      </div>
     </div>
   );
 }
@@ -1272,13 +1297,31 @@ function V2BarSparkline({ values, w=320, h=56 }) {
 }
 
 function V2ProfileGameLog({ games, isPitcher }) {
-  const rows = games.slice().reverse().slice(0, 20);
+  const [expanded, setExpanded] = React.useState(false);
+  React.useEffect(() => setExpanded(false), [games]);
+  const rows = games.slice().reverse();
+  const shown = rows.slice(0, expanded ? 14 : 1);
   return (
     <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, overflow:'hidden' }}>
-      <div style={{ padding:'12px 14px 6px' }}>
+      <div style={{ padding:'12px 14px 6px', display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
         <V2Eyebrow>Game log</V2Eyebrow>
+        {rows.length > 1 && (
+          <button
+            onClick={() => setExpanded(v => !v)}
+            aria-label={expanded ? 'Collapse game log' : 'Expand game log'}
+            style={{
+              background:V2.surface2, border:`1px solid ${V2.hairline2}`, borderRadius:999,
+              width:28, height:28, display:'flex', alignItems:'center', justifyContent:'center',
+              cursor:'pointer', color:V2.body, fontFamily:'inherit',
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition:'transform .15s ease' }}>
+              <path d="M3 4.5 6 7.5l3-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+        )}
       </div>
-      {rows.map((g, i) => (
+      {shown.map((g, i) => (
         <div key={i} style={{
           padding:'10px 14px',
           borderTop:`1px solid ${V2.hairline2}`,

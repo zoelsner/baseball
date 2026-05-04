@@ -8,11 +8,13 @@ plus the per-game log in Postgres. Designed to be called on profile open.
 from __future__ import annotations
 
 import logging
+import json
 from datetime import datetime, timezone
 from typing import Any
 
 import mlb_stats
 import sandlot_db
+import sandlot_skipper
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +23,17 @@ SPARKLINE_GAMES = 14
 TREND_GAMES = 7
 
 PITCHING_SLOT_TOKENS = {"SP", "RP", "P"}
+
+TAKE_SYSTEM_PROMPT = """You are Skipper, a fantasy baseball assistant for a 12-team Fantrax keeper league.
+
+Write a roster-aware player take for the user's player sheet.
+
+Rules:
+- Use only the supplied JSON. Do not invent injuries, news, lineups, matchups, or transactions.
+- Be concise and direct: 2-3 sentences, no markdown, no bullets.
+- Cite useful numbers when available: FP/G, total points, recent trend, age, slot, or roster context.
+- If MLB game-log data is unavailable, still give the best snapshot-based read and mention the limitation naturally.
+- Do not recommend Fantrax write actions such as drops, claims, trades, or lineup moves."""
 
 
 class PlayerNotFound(Exception):
@@ -50,22 +63,28 @@ def get_player_profile(fantrax_id: str, *, force_refresh: bool = False) -> dict[
         "trend": None,
         "sparkline": [],
         "games": [],
+        "take": {"text": None, "model": None, "generated_at": None, "error": None},
     }
 
     mlb_id = _resolve_mlb_id(fantrax_id, player_row, force_refresh=force_refresh)
     if mlb_id is None:
         payload["mlb"]["reason"] = "MLB stats not available for this player"
-        return payload
-
-    games = _load_games(mlb_id, season=season, group=group, force_refresh=force_refresh)
-    if not games:
-        payload["mlb"].update({"available": True, "reason": "No games logged this season"})
-        return payload
-
-    payload["mlb"].update({"available": True, "mlb_id": mlb_id})
-    payload["games"] = games
-    payload["sparkline"] = _sparkline(games)
-    payload["trend"] = _trend(games, group)
+    else:
+        games = _load_games(mlb_id, season=season, group=group, force_refresh=force_refresh)
+        if not games:
+            payload["mlb"].update({"available": True, "mlb_id": mlb_id, "reason": "No games logged this season"})
+        else:
+            payload["mlb"].update({"available": True, "mlb_id": mlb_id})
+            payload["games"] = games
+            payload["sparkline"] = _sparkline(games)
+            payload["trend"] = _trend(games, group)
+    payload["take"] = _load_or_generate_take(
+        fantrax_id=fantrax_id,
+        snapshot_row=snapshot_row,
+        snapshot=snapshot,
+        player_row=player_row,
+        payload=payload,
+    )
     return payload
 
 
@@ -164,6 +183,135 @@ def _load_games(mlb_id: int, *, season: int, group: str, force_refresh: bool) ->
         return []
     sandlot_db.set_player_game_log(mlb_id, group_type=group, season=season, games=games)
     return games
+
+
+def _load_or_generate_take(
+    *,
+    fantrax_id: str,
+    snapshot_row: dict[str, Any],
+    snapshot: dict[str, Any],
+    player_row: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    snapshot_id = snapshot_row.get("id")
+    if not snapshot_id:
+        return {"text": None, "model": None, "generated_at": None, "error": "No snapshot id available"}
+
+    try:
+        cached = sandlot_db.get_player_take(fantrax_id, int(snapshot_id))
+    except Exception as exc:
+        log.warning("Player take cache read failed for %s/%s: %s", fantrax_id, snapshot_id, exc)
+        cached = None
+
+    if cached:
+        return {
+            "text": cached.get("text"),
+            "model": cached.get("model"),
+            "generated_at": cached.get("generated_at"),
+            "error": None,
+            "cached": True,
+        }
+
+    try:
+        messages = _build_take_messages(snapshot, player_row, payload)
+        text, model = sandlot_skipper.SkipperClient().complete(messages, max_tokens=220)
+        try:
+            sandlot_db.set_player_take(fantrax_id, int(snapshot_id), text, model)
+        except Exception as exc:
+            log.warning("Player take cache write failed for %s/%s: %s", fantrax_id, snapshot_id, exc)
+        return {
+            "text": text,
+            "model": model,
+            "generated_at": datetime.now(timezone.utc),
+            "error": None,
+            "cached": False,
+        }
+    except Exception as exc:
+        log.warning("Player take generation failed for %s/%s: %s", fantrax_id, snapshot_id, exc)
+        return {"text": None, "model": None, "generated_at": None, "error": str(exc), "cached": False}
+
+
+def _build_take_messages(
+    snapshot: dict[str, Any],
+    player_row: dict[str, Any],
+    payload: dict[str, Any],
+) -> list[dict[str, str]]:
+    context = {
+        "snapshot_taken_at": snapshot.get("timestamp"),
+        "team_name": snapshot.get("team_name"),
+        "target_player": payload.get("player"),
+        "mlb": payload.get("mlb"),
+        "trend": payload.get("trend"),
+        "recent_games": (payload.get("games") or [])[-7:],
+        "roster_context": _take_roster_context(snapshot, player_row),
+    }
+    return [
+        {"role": "system", "content": TAKE_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": "Write the player-sheet Skipper take from this JSON:\n"
+            + json.dumps(context, default=str, indent=2),
+        },
+    ]
+
+
+def _take_roster_context(snapshot: dict[str, Any], player_row: dict[str, Any]) -> dict[str, Any]:
+    roster_rows = (snapshot.get("roster") or {}).get("rows") or []
+    target_positions = _position_tokens(player_row)
+    same_position: list[dict[str, Any]] = []
+    slot_counts: dict[str, int] = {}
+    for row in roster_rows:
+        if not isinstance(row, dict):
+            continue
+        slot = str(row.get("slot") or "BN").upper()
+        slot_counts[slot] = slot_counts.get(slot, 0) + 1
+        if row.get("id") == player_row.get("id"):
+            continue
+        if target_positions and not (_position_tokens(row) & target_positions):
+            continue
+        same_position.append(_slim_take_player(row))
+    same_position.sort(key=lambda r: (r.get("fppg") is None, -(r.get("fppg") or 0)))
+    return {
+        "active": (snapshot.get("roster") or {}).get("active"),
+        "active_max": (snapshot.get("roster") or {}).get("active_max"),
+        "reserve": (snapshot.get("roster") or {}).get("reserve"),
+        "reserve_max": (snapshot.get("roster") or {}).get("reserve_max"),
+        "target_positions": sorted(target_positions),
+        "slot_counts": slot_counts,
+        "same_position_players": same_position[:8],
+    }
+
+
+def _position_tokens(player_row: dict[str, Any]) -> set[str]:
+    tokens: list[str] = []
+    tokens.extend(str(player_row.get("slot") or "").split("/"))
+    tokens.extend(str(player_row.get("positions") or "").split("/"))
+    for p in (player_row.get("all_positions") or []):
+        tokens.extend(str(p or "").split("/"))
+    return {t.strip().upper() for t in tokens if t and t.strip().upper() not in {"BN", "IL", "IR"}}
+
+
+def _slim_take_player(player_row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": player_row.get("id"),
+        "name": player_row.get("name"),
+        "slot": player_row.get("slot"),
+        "positions": player_row.get("positions"),
+        "team": player_row.get("team"),
+        "fppg": _take_number(player_row.get("fppg")),
+        "fpts": _take_number(player_row.get("fpts")),
+        "age": player_row.get("age"),
+        "injury": player_row.get("injury"),
+    }
+
+
+def _take_number(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(str(value).replace(",", ""))
+    except ValueError:
+        return None
 
 
 def _snapshot_freshness(taken_at: Any) -> dict[str, Any]:

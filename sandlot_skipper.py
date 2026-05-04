@@ -222,3 +222,35 @@ class SkipperClient:
                 log.warning("Skipper model %s failed: %s; trying fallback", model, e)
                 continue
         raise RuntimeError("All Skipper models failed: " + " | ".join(failures))
+
+    def complete(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        max_tokens: int = 220,
+    ) -> tuple[str, str]:
+        """Return a single completion plus the model id, using the stream fallback order."""
+        failures: list[str] = []
+        for model in (PRIMARY_MODEL, FALLBACK_MODEL):
+            try:
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    stream=False,
+                    temperature=0.3,
+                    max_tokens=max_tokens,
+                )
+                try:
+                    text = response.choices[0].message.content or ""
+                except (AttributeError, IndexError):
+                    text = ""
+                text = text.strip()
+                if text:
+                    return text, model
+                failures.append(f"{model}: empty response")
+                log.warning("Skipper model %s returned no text; trying fallback", model)
+            except Exception as e:
+                failures.append(f"{model}: {type(e).__name__}: {e}")
+                log.warning("Skipper model %s failed: %s; trying fallback", model, e)
+                continue
+        raise RuntimeError("All Skipper models failed: " + " | ".join(failures))
