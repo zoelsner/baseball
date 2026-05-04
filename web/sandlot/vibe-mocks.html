@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Sandlot Vibe Mocks</title>
+<style>
+  :root {
+    --bg: #ebe8df;
+    --grid: rgba(41, 35, 25, .06);
+    --ink: #171717;
+    --muted: #756d61;
+    --line: rgba(18, 18, 18, .12);
+    --paper: #faf7ef;
+    --blue: #2663eb;
+    --green: #0f8f52;
+    --orange: #df6f22;
+    --red: #cc3333;
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+    --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --mono: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    font-family: var(--sans);
+    color: var(--ink);
+    background:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+      var(--bg);
+    background-size: 70px 70px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .board {
+    width: min(1480px, 100%);
+    margin: 0 auto;
+    padding: 30px 28px 44px;
+  }
+
+  header {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 24px;
+  }
+
+  h1 {
+    margin: 0;
+    font-family: var(--serif);
+    font-size: clamp(38px, 5vw, 72px);
+    line-height: .9;
+    letter-spacing: -0.045em;
+  }
+
+  .intro {
+    margin: 10px 0 0;
+    width: min(600px, 100%);
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.5;
+  }
+
+  .toggle {
+    display: flex;
+    gap: 6px;
+    max-width: 100%;
+    overflow-x: auto;
+    padding: 5px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,.42);
+  }
+
+  .toggle button {
+    height: 35px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted);
+    font: 800 12px/1 var(--sans);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .toggle button.active {
+    background: var(--ink);
+    color: #fff;
+  }
+
+  .vibe {
+    display: none;
+  }
+
+  .vibe.active {
+    display: block;
+  }
+
+  .vibe-note {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 680px);
+    gap: 22px;
+    align-items: baseline;
+    margin-bottom: 14px;
+  }
+
+  .vibe-note strong {
+    font-size: 18px;
+  }
+
+  .vibe-note p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  .phones {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(260px, 1fr));
+    gap: 24px;
+  }
+
+  .caption {
+    margin: 0 0 8px;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 800;
+  }
+
+  .phone {
+    width: 100%;
+    max-width: 360px;
+    aspect-ratio: 393 / 852;
+    margin: 0 auto;
+    border-radius: 42px;
+    overflow: hidden;
+    background: #f6f6f6;
+    position: relative;
+    box-shadow: 0 18px 36px rgba(40, 32, 22, .15), 0 0 0 8px #040404;
+  }
+
+  .status {
+    height: 48px;
+    padding: 15px 24px 0;
+    background: #040404;
+    color: #fff;
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    font-weight: 850;
+    font-size: 15px;
+    letter-spacing: -0.02em;
+  }
+
+  .icons {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .bars {
+    display: grid;
+    grid-template-columns: repeat(3, 3px);
+    gap: 2px;
+    align-items: end;
+    height: 12px;
+  }
+
+  .bars i { width: 3px; border-radius: 2px; background: #fff; display: block; }
+  .bars i:nth-child(1) { height: 5px; }
+  .bars i:nth-child(2) { height: 8px; }
+  .bars i:nth-child(3) { height: 11px; }
+  .wifi { width: 14px; height: 10px; border: 2px solid #fff; border-left: 0; border-right: 0; border-bottom: 0; border-radius: 50%; transform: rotate(45deg); }
+  .battery { width: 22px; height: 11px; border: 1.8px solid #fff; border-radius: 3px; position: relative; }
+  .battery:after { content: ""; position: absolute; right: -4px; top: 3px; width: 2px; height: 4px; background: #fff; border-radius: 2px; }
+
+  .screen {
+    position: relative;
+    height: calc(100% - 48px);
+    overflow: hidden;
+  }
+
+  .content {
+    height: calc(100% - 68px);
+    padding: 18px 18px 92px;
+    overflow: hidden;
+  }
+
+  .tabbar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 68px;
+    padding: 8px 18px 14px;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    align-items: center;
+    border-top: 1px solid rgba(0,0,0,.1);
+    background: rgba(255,255,255,.86);
+    backdrop-filter: blur(12px);
+  }
+
+  .tab {
+    display: grid;
+    place-items: center;
+    gap: 4px;
+    color: #7a7a7a;
+    font-size: 9px;
+    font-weight: 760;
+  }
+
+  .tab svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .tab.active { color: currentColor; }
+  .eyebrow { font: 850 10.5px/1 var(--sans); letter-spacing: .11em; text-transform: uppercase; color: var(--orange); }
+  .title { margin: 4px 0 0; font-size: 31px; line-height: .98; letter-spacing: -0.04em; }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .avatar { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; flex: 0 0 auto; font: 850 13px/1 var(--sans); }
+  .btn { border: 0; border-radius: 999px; padding: 9px 13px; font: 850 11px/1 var(--sans); }
+  .score { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* 1. Box Score */
+  .box .screen {
+    background: #f7f0df;
+    color: #1c1b18;
+  }
+  .box .title {
+    font-family: var(--serif);
+    font-size: 33px;
+  }
+  .box .paper {
+    background: #fffaf0;
+    border: 1px solid #d7c9ac;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.5);
+  }
+  .box .scoreboard {
+    margin-top: 16px;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .box table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .box th, .box td {
+    padding: 9px 8px;
+    text-align: right;
+    border-bottom: 1px solid #ded0b4;
+  }
+  .box th:first-child, .box td:first-child { text-align: left; font-family: var(--sans); font-weight: 850; }
+  .box th { color: #8b7a5b; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+  .box .alert-card {
+    margin-top: 14px;
+    padding: 14px;
+    border-radius: 6px;
+  }
+  .box .alert-card h3 { margin: 6px 0 4px; font: 760 20px/1.05 var(--serif); }
+  .box .alert-card p { margin: 0; color: #5d5549; font-size: 12px; line-height: 1.45; font-weight: 650; }
+  .box .clipping {
+    margin-top: 14px;
+    padding: 14px;
+    border-left: 4px solid #1c1b18;
+    background: #fffaf0;
+  }
+  .box .clipping h3 { margin: 0; font-family: var(--serif); font-size: 22px; line-height: 1; }
+  .box .pick-row {
+    display: grid;
+    grid-template-columns: 40px 1fr auto;
+    gap: 11px;
+    align-items: center;
+    padding: 12px;
+    border-top: 1px solid #ded0b4;
+  }
+  .box .pick-row:first-child { border-top: 0; }
+  .box .avatar { background: #eadfc9; color: #695c43; }
+  .box .tabbar { background: rgba(255,250,240,.9); }
+
+  /* 2. Trading Floor */
+  .floor .screen {
+    background: #070b10;
+    color: #e9f2ff;
+  }
+  .floor .content { padding: 16px 14px 92px; }
+  .floor .eyebrow { color: #65d48c; }
+  .floor .title { font-family: var(--sans); font-size: 29px; font-weight: 900; }
+  .ticker {
+    margin: -18px -18px 15px;
+    height: 30px;
+    background: #0d141d;
+    color: #7cffaa;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 0 12px;
+    font: 800 10px/1 var(--mono);
+    white-space: nowrap;
+  }
+  .floor .tile {
+    background: #101821;
+    border: 1px solid rgba(124,255,170,.18);
+    border-radius: 12px;
+  }
+  .floor .market-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 9px;
+    margin-top: 16px;
+  }
+  .floor .market-tile {
+    min-height: 104px;
+    padding: 13px;
+  }
+  .floor .market-tile.big { grid-column: 1 / -1; background: #e9f2ff; color: #09111a; }
+  .floor .k { color: #87a0b7; font-size: 10px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+  .floor .v { margin-top: 8px; font: 900 32px/.9 var(--mono); letter-spacing: -0.05em; }
+  .floor .sub { margin-top: 8px; color: #8fa4bb; font-size: 11.5px; line-height: 1.35; font-weight: 680; }
+  .floor .market-tile.big .sub { color: #506274; }
+  .order {
+    margin-top: 12px;
+    padding: 12px;
+  }
+  .order h3 { margin: 0; font-size: 14px; }
+  .order p { margin: 5px 0 0; color: #8fa4bb; font-size: 12px; line-height: 1.4; }
+  .floor .btn { background: #65d48c; color: #07100b; }
+  .floor .tabbar { background: rgba(7,11,16,.92); border-color: rgba(255,255,255,.1); }
+  .floor .tab { color: #64748b; }
+  .floor .tab.active { color: #65d48c; }
+
+  /* 3. Clubhouse */
+  .club .screen {
+    background: #123827;
+    color: #f3ead7;
+  }
+  .club .content {
+    padding: 20px 18px 92px;
+    background-image:
+      linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px);
+    background-size: 26px 26px;
+  }
+  .club .eyebrow { color: #f6c35f; }
+  .club .title {
+    font-family: var(--serif);
+    font-size: 34px;
+    color: #fff7df;
+  }
+  .club .chalk {
+    margin-top: 16px;
+    padding: 16px;
+    border-radius: 18px;
+    border: 1.5px dashed rgba(255,247,223,.35);
+    background: rgba(255,255,255,.045);
+  }
+  .club .chalk h3 {
+    margin: 0;
+    color: #fff7df;
+    font-size: 16px;
+  }
+  .club .chalk p {
+    margin: 7px 0 0;
+    color: rgba(255,247,223,.74);
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+  .club .play {
+    display: grid;
+    grid-template-columns: 42px 1fr;
+    gap: 12px;
+    align-items: start;
+    margin-top: 13px;
+  }
+  .club .avatar { background: #f6c35f; color: #123827; }
+  .club .btn { background: #f6c35f; color: #123827; }
+  .diamond-field {
+    position: relative;
+    height: 154px;
+    margin-top: 18px;
+  }
+  .diamond {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 118px;
+    height: 118px;
+    border: 2px solid rgba(255,247,223,.5);
+    transform: translate(-50%, -50%) rotate(45deg);
+  }
+  .base {
+    position: absolute;
+    width: 38px;
+    height: 26px;
+    border-radius: 999px;
+    background: #f3ead7;
+    color: #123827;
+    display: grid;
+    place-items: center;
+    font: 900 10px/1 var(--sans);
+  }
+  .b1 { right: 48px; top: 63px; }
+  .b2 { left: 50%; top: 8px; transform: translateX(-50%); }
+  .b3 { left: 48px; top: 63px; }
+  .bh { left: 50%; bottom: 3px; transform: translateX(-50%); background: #f6c35f; }
+  .club .tabbar { background: rgba(15,48,33,.92); border-color: rgba(255,255,255,.14); }
+  .club .tab { color: rgba(255,247,223,.58); }
+  .club .tab.active { color: #f6c35f; }
+
+  /* 4. Card Binder */
+  .cardz .screen {
+    background: #f4f6f1;
+    color: #1a1b18;
+  }
+  .cardz .content { padding: 18px 16px 92px; }
+  .cardz .eyebrow { color: #727a61; }
+  .cardz .title { font-family: var(--sans); font-size: 30px; font-weight: 920; }
+  .hero-card {
+    margin-top: 16px;
+    min-height: 278px;
+    border-radius: 26px;
+    overflow: hidden;
+    background: #1d2d26;
+    color: #f9f3df;
+    position: relative;
+    box-shadow: 0 16px 30px rgba(29,45,38,.18);
+  }
+  .card-photo {
+    height: 138px;
+    background:
+      radial-gradient(circle at 28% 38%, rgba(246,195,95,.9) 0 12%, transparent 13%),
+      linear-gradient(135deg, #2f6d54, #1d2d26 58%, #e7d08d);
+  }
+  .card-body { padding: 15px; }
+  .card-body h3 { margin: 0; font-size: 26px; line-height: .95; letter-spacing: -0.04em; }
+  .card-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 14px;
+  }
+  .card-stat {
+    padding: 9px 6px;
+    border-radius: 12px;
+    background: rgba(255,255,255,.12);
+    text-align: center;
+  }
+  .card-stat b { display: block; font: 900 18px/1 var(--mono); }
+  .card-stat span { display: block; margin-top: 5px; color: rgba(249,243,223,.66); font-size: 9px; font-weight: 850; }
+  .binder-row {
+    display: grid;
+    grid-template-columns: 52px 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px;
+    margin-top: 10px;
+    border-radius: 18px;
+    background: #fff;
+    border: 1px solid #dde3d6;
+  }
+  .mini-card {
+    height: 52px;
+    border-radius: 10px;
+    background: linear-gradient(145deg, #d9eadf, #f4dca5);
+    display: grid;
+    place-items: center;
+    font: 900 13px/1 var(--sans);
+  }
+  .binder-row h3 { margin: 0; font-size: 15px; }
+  .binder-row p { margin: 4px 0 0; color: #727a61; font-size: 11px; font-weight: 700; }
+  .cardz .btn { background: #1d2d26; color: #fff; }
+
+  /* 5. Pro Utility */
+  .pro .screen {
+    background: #f5f7fa;
+    color: #111827;
+  }
+  .pro .content { padding: 17px 16px 92px; }
+  .pro .title { font-family: var(--sans); font-weight: 900; font-size: 29px; }
+  .pro .eyebrow { color: #6b7280; }
+  .pro .panel {
+    background: #fff;
+    border: 1px solid #dce3ed;
+    border-radius: 14px;
+  }
+  .summary-strip {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .summary {
+    min-height: 74px;
+    padding: 11px 8px;
+    text-align: center;
+  }
+  .summary b { display: block; font: 900 20px/1 var(--mono); }
+  .summary span { display: block; margin-top: 7px; color: #667085; font-size: 9px; font-weight: 850; text-transform: uppercase; letter-spacing: .06em; }
+  .task-list {
+    margin-top: 13px;
+    overflow: hidden;
+  }
+  .task {
+    display: grid;
+    grid-template-columns: 8px 1fr auto;
+    gap: 12px;
+    align-items: start;
+    padding: 13px;
+    border-top: 1px solid #e7edf4;
+  }
+  .task:first-child { border-top: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); margin-top: 5px; }
+  .task h3 { margin: 0; font-size: 14px; line-height: 1.2; }
+  .task p { margin: 4px 0 0; color: #667085; font-size: 11.5px; line-height: 1.35; }
+  .pro .btn { background: #111827; color: #fff; }
+  .pro .tabbar { background: rgba(255,255,255,.92); }
+
+  @media (max-width: 1080px) {
+    header { display: block; }
+    .toggle { margin-top: 18px; }
+    .phones { grid-template-columns: repeat(2, minmax(260px, 1fr)); }
+    .vibe-note { grid-template-columns: 1fr; gap: 6px; }
+  }
+
+  @media (max-width: 680px) {
+    .board { padding: 22px 16px 34px; }
+    .phones { grid-template-columns: 1fr; }
+    .phone { max-width: 393px; }
+  }
+</style>
+</head>
+<body>
+<main class="board">
+  <header>
+    <div>
+      <h1>Five more<br/>Sandlot vibes</h1>
+      <p class="intro">Same app, five different visual systems. Use these as iteration fuel: each one changes what the product feels optimized for.</p>
+    </div>
+    <nav class="toggle" aria-label="Vibe selector">
+      <button class="active" data-target="box">Box score</button>
+      <button data-target="floor">Trading floor</button>
+      <button data-target="club">Clubhouse</button>
+      <button data-target="cardz">Card binder</button>
+      <button data-target="pro">Pro utility</button>
+    </nav>
+  </header>
+
+  <section class="vibe active box" id="box">
+    <div class="vibe-note"><strong>1. Box score classic</strong><p>Old-school baseball newspaper language. Good if you want the app to feel credible, literary, and native to baseball rather than generic fantasy software.</p></div>
+    <div class="phones">
+      <article><p class="caption">Today · scorecard</p><div class="phone box"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="eyebrow">Sun, May 3 · Week 6</div><h2 class="title">Morning box score</h2><section class="paper scoreboard"><table><thead><tr><th>Team</th><th>Pts</th><th>Proj</th><th>Left</th></tr></thead><tbody><tr><td>Sandlot</td><td>412.6</td><td>612.4</td><td>11</td></tr><tr><td>Cartel</td><td>388.1</td><td>598.7</td><td>14</td></tr></tbody></table></section><section class="paper alert-card"><div class="eyebrow">Skipper line</div><h3>Three changes before first pitch.</h3><p>Brennan, Park, and Boscarino are all negative expected-value starts today.</p></section><section class="paper alert-card"><div class="row"><div><h3 style="margin-top:0">Halverson over Brennan</h3><p>Plus matchup against a lefty in Detroit.</p></div><button class="btn" style="background:#1c1b18;color:#fff">Apply</button></div></section></div><div class="tabbar"></div></div></div></article>
+      <article><p class="caption">Adds · clipping stack</p><div class="phone box"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="eyebrow">Free agents</div><h2 class="title">Waiver column</h2><section class="clipping"><div class="eyebrow">Lead pick</div><h3>Roman Talavera</h3><p style="color:#5d5549;font-size:12.5px;line-height:1.45">Everyday OF, soft week of RHPs, and immediate replacement for Wendell Park.</p></section><section class="paper" style="margin-top:14px;border-radius:6px;overflow:hidden"><div class="pick-row"><span class="avatar">QH</span><div><strong>Quintrell Hayes</strong><br/><span class="muted" style="font-size:11px">2B · PIT · 41%</span></div><b class="mono">9.3</b></div><div class="pick-row"><span class="avatar">IF</span><div><strong>Idris Foulkes</strong><br/><span class="muted" style="font-size:11px">SP · TEX · 2 starts</span></div><b class="mono">13.2</b></div></section></div><div class="tabbar"></div></div></div></article>
+      <article><p class="caption">League · standings page</p><div class="phone box"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="eyebrow">Backyard Dynasty</div><h2 class="title">League table</h2><section class="paper scoreboard"><table><thead><tr><th>Rank</th><th>Club</th><th>Pts</th></tr></thead><tbody><tr><td>01</td><td>Cartel</td><td>2,841</td></tr><tr style="background:#efe4ca"><td>02</td><td>Sandlot</td><td>2,789</td></tr><tr><td>03</td><td>Brigade</td><td>2,742</td></tr><tr><td>04</td><td>Sliders</td><td>2,698</td></tr></tbody></table></section><section class="paper alert-card"><div class="eyebrow">Scout note</div><h3>Second place, one roster hole.</h3><p>The standings story is mostly second base. Fix that and the top seed is reachable.</p></section></div><div class="tabbar"></div></div></div></article>
+    </div>
+  </section>
+
+  <section class="vibe floor" id="floor">
+    <div class="vibe-note"><strong>2. Trading floor</strong><p>Fantasy as market operations. Fast, high-contrast, data dense. Strong for trade grading and “act now” moments, but less warm.</p></div>
+    <div class="phones">
+      <article><p class="caption">Today · market board</p><div class="phone floor"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="ticker">SS +24.5  WIN 51%  LOCK 47M  2B -24.4  SP +14.2</div><div class="eyebrow">Live edge</div><h2 class="title">Trade the slate</h2><div class="market-grid"><section class="tile market-tile big"><div class="k">Projected edge</div><div class="v">+13.7</div><div class="sub">Current week after recommended swaps.</div></section><section class="tile market-tile"><div class="k">Urgency</div><div class="v">47m</div><div class="sub">First lock</div></section><section class="tile market-tile"><div class="k">Open EV</div><div class="v">+17.7</div><div class="sub">Unapplied moves</div></section></div><section class="tile order"><div class="row"><div><h3>Buy Halverson</h3><p>Sell Brennan today only.</p></div><button class="btn">Execute</button></div></section></div><div class="tabbar"></div></div></div></article>
+      <article><p class="caption">Trade · valuation</p><div class="phone floor"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="ticker">REYNA -1  CASTELLANOS +3  BROOKINGS +2  FAIR 74</div><div class="eyebrow">Offer desk</div><h2 class="title">Grade market</h2><section class="tile order" style="margin-top:16px"><div class="k">Offer</div><p style="font-size:13px">Give Tobias Reyna<br/>Get Castellanos + Brookings</p></section><div class="market-grid"><section class="tile market-tile"><div class="k">Grade</div><div class="v" style="color:#65d48c">A-</div></section><section class="tile market-tile"><div class="k">Fair</div><div class="v">74</div></section></div><section class="tile order"><h3>Take it</h3><p>You get younger, improve OF, and gain +2.1 weekly projection.</p></section></div><div class="tabbar"></div></div></div></article>
+      <article><p class="caption">Adds · buy list</p><div class="phone floor"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="ticker">TALAVERA +3.8  HAYES +1.6  FOULKES 2START  ALBRIGHT SV</div><div class="eyebrow">Waiver market</div><h2 class="title">Buy list</h2><section class="tile order"><div class="row"><div><h3>Roman Talavera</h3><p>OF · everyday role · +3.8 vs exp</p></div><button class="btn">Bid</button></div></section><section class="tile order"><div class="row"><div><h3>Idris Foulkes</h3><p>SP · two starts · KC/OAK</p></div><button class="btn">Bid</button></div></section><section class="tile order"><div class="row"><div><h3>Quintrell Hayes</h3><p>2B · fixes weakest slot</p></div><button class="btn">Track</button></div></section></div><div class="tabbar"></div></div></div></article>
+    </div>
+  </section>
+
+  <section class="vibe club" id="club">
+    <div class="vibe-note"><strong>3. Clubhouse chalkboard</strong><p>Human, coach-like, and tactile. Best if Skipper should feel like a trusted bench coach instead of an analytics engine.</p></div>
+    <div class="phones">
+      <article><p class="caption">Today · coach board</p><div class="phone club"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="eyebrow">Today’s card</div><h2 class="title">Set the lineup.</h2><div class="diamond-field"><div class="diamond"></div><span class="base b2">2B</span><span class="base b1">1B</span><span class="base b3">3B</span><span class="base bh">SP</span></div><section class="chalk"><h3>Coach says: make two swaps</h3><p>Halverson for Brennan. Krenz for Boscarino. Save Park decision until official lineups land.</p></section><section class="chalk play"><span class="avatar">KB</span><div><h3>Brennan is a sit</h3><p>Cold, day-to-day, and not worth the risk before lock.</p><button class="btn" style="margin-top:10px">Swap</button></div></section></div><div class="tabbar"></div></div></div></article>
+      <article><p class="caption">Roster · position field</p><div class="phone club"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="eyebrow">Roster</div><h2 class="title">Where you’re strong</h2><section class="chalk"><h3>Strengths</h3><p>3B, OF, and 1B carry the roster. Do not trade from pitching unless the offer includes a top second baseman.</p></section><section class="chalk"><h3>Weak spots</h3><p>2B ranks 9th. RP ranks 8th. One cheap waiver move fixes the daily lineup, but not the season-long hole.</p></section><section class="chalk play"><span class="avatar">2B</span><div><h3>Priority drill</h3><p>Try Hayes as a waiver patch, then shop Reyna only for a young middle infielder.</p></div></section></div><div class="tabbar"></div></div></div></article>
+      <article><p class="caption">Skipper · bench coach</p><div class="phone club"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="eyebrow">Skipper</div><h2 class="title">Ask the bench.</h2><section class="chalk"><h3>You</h3><p>Should I start Kai Brennan today?</p></section><section class="chalk"><h3>Skipper</h3><p>No. He needs a day. Halverson has the better matchup and keeps you ahead before lock.</p></section><section class="chalk"><h3>Next question</h3><p>Want the pitching plan or waiver plan?</p></section></div><div class="tabbar"></div></div></div></article>
+    </div>
+  </section>
+
+  <section class="vibe cardz" id="cardz">
+    <div class="vibe-note"><strong>4. Card binder</strong><p>Player-forward and collectible. Best for dynasty leagues because it makes assets feel like owned pieces, not just rows in a table.</p></div>
+    <div class="phones">
+      <article><p class="caption">Player detail · hero card</p><div class="phone cardz"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="eyebrow">Player card</div><h2 class="title">Tobias Reyna</h2><section class="hero-card"><div class="card-photo"></div><div class="card-body"><h3>Reyna<br/>ATL 3B</h3><div class="card-stats"><div class="card-stat"><b>12.8</b><span>Today</span></div><div class="card-stat"><b>88</b><span>L7</span></div><div class="card-stat"><b>+5.1</b><span>Edge</span></div></div></div></section><div class="binder-row"><span class="mini-card">HOT</span><div><h3>Start with confidence</h3><p>Cleanup vs RHP, wrist cleared.</p></div><button class="btn">Start</button></div></div><div class="tabbar"></div></div></div></article>
+      <article><p class="caption">Adds · prospect shelf</p><div class="phone cardz"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="eyebrow">Waiver shelf</div><h2 class="title">Cards to claim</h2><div class="binder-row"><span class="mini-card">RT</span><div><h3>Roman Talavera</h3><p>Everyday OF · 54% rostered</p></div><button class="btn">Claim</button></div><div class="binder-row"><span class="mini-card">QH</span><div><h3>Quintrell Hayes</h3><p>2B patch · contact profile</p></div><button class="btn">Hold</button></div><div class="binder-row"><span class="mini-card">IF</span><div><h3>Idris Foulkes</h3><p>Two-start pitcher</p></div><button class="btn">Claim</button></div><section class="hero-card" style="min-height:190px"><div class="card-photo" style="height:90px"></div><div class="card-body"><h3>Best stash</h3><p style="color:rgba(249,243,223,.72);font-size:12px;line-height:1.45">Bastian Werle gives multi-position cover without forcing a daily start.</p></div></section></div><div class="tabbar"></div></div></div></article>
+      <article><p class="caption">Roster · binder pages</p><div class="phone cardz"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="eyebrow">Roster binder</div><h2 class="title">Your assets</h2><div class="binder-row"><span class="mini-card">3B</span><div><h3>Elite shelf</h3><p>Reyna makes 3B rank 1st.</p></div><b class="mono">1/12</b></div><div class="binder-row"><span class="mini-card">OF</span><div><h3>Deep shelf</h3><p>Okafor, Salas, Park, Tamura.</p></div><b class="mono">2/12</b></div><div class="binder-row"><span class="mini-card">2B</span><div><h3>Thin shelf</h3><p>Brennan needs help.</p></div><b class="mono" style="color:#df6f22">9/12</b></div><div class="binder-row"><span class="mini-card">SP</span><div><h3>Playable shelf</h3><p>Good, not dominant.</p></div><b class="mono">5/12</b></div></div><div class="tabbar"></div></div></div></article>
+    </div>
+  </section>
+
+  <section class="vibe pro" id="pro">
+    <div class="vibe-note"><strong>5. Pro utility</strong><p>The most shippable product direction: calm, neutral, low-drama, and easy to trust. Less memorable, but probably easiest to build into a real daily tool.</p></div>
+    <div class="phones">
+      <article><p class="caption">Today · task queue</p><div class="phone pro"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="row"><div><div class="eyebrow">Sun, May 3 · Wk 6</div><h2 class="title">Today</h2></div><span class="muted" style="font-size:12px;font-weight:800">12m</span></div><div class="summary-strip"><section class="panel summary"><b>51%</b><span>Win</span></section><section class="panel summary"><b>+13.7</b><span>Edge</span></section><section class="panel summary"><b>47m</b><span>Lock</span></section></div><section class="panel task-list"><div class="task"><span class="dot"></span><div><h3>Swap Brennan for Halverson</h3><p>Projected +3.5 points today.</p></div><button class="btn">Apply</button></div><div class="task"><span class="dot" style="background:#df6f22"></span><div><h3>Replace idle SP</h3><p>Boscarino is not pitching.</p></div><button class="btn">Apply</button></div><div class="task"><span class="dot" style="background:#98a2b3"></span><div><h3>Review Park after lineups</h3><p>Wait for final MLB lineup feed.</p></div><button class="btn" style="background:#eef2f7;color:#111827">Later</button></div></section></div><div class="tabbar"></div></div></div></article>
+      <article><p class="caption">Roster · diagnostics</p><div class="phone pro"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="eyebrow">Roster</div><h2 class="title">Diagnostics</h2><div class="summary-strip"><section class="panel summary"><b>1st</b><span>3B</span></section><section class="panel summary"><b>2nd</b><span>OF</span></section><section class="panel summary"><b style="color:#df6f22">9th</b><span>2B</span></section></div><section class="panel task-list"><div class="task"><span class="dot" style="background:#df6f22"></span><div><h3>2B is below average</h3><p>142.1 points vs league average 166.5.</p></div><b class="mono">-24.4</b></div><div class="task"><span class="dot" style="background:#0f8f52"></span><div><h3>3B is tradeable strength</h3><p>Reyna gives leverage in offers.</p></div><b class="mono">1/12</b></div><div class="task"><span class="dot"></span><div><h3>OF depth supports one drop</h3><p>Park is expendable if Talavera clears.</p></div><b class="mono">2/12</b></div></section></div><div class="tabbar"></div></div></div></article>
+      <article><p class="caption">Settings · service health</p><div class="phone pro"><div class="status"><span>9:41</span><span class="icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div><div class="screen"><div class="content"><div class="eyebrow">System</div><h2 class="title">Sync health</h2><div class="summary-strip"><section class="panel summary"><b>12m</b><span>Last</span></section><section class="panel summary"><b>22d</b><span>Cookie</span></section><section class="panel summary"><b>OK</b><span>Cron</span></section></div><section class="panel task-list"><div class="task"><span class="dot" style="background:#0f8f52"></span><div><h3>Fantrax cookie valid</h3><p>No refresh needed today.</p></div><b>OK</b></div><div class="task"><span class="dot" style="background:#0f8f52"></span><div><h3>League sync running</h3><p>Next scheduled pull in 18 minutes.</p></div><b>OK</b></div><div class="task"><span class="dot"></span><div><h3>Claude analysis available</h3><p>Trade grader and Skipper can use full context.</p></div><b>OK</b></div></section><button class="btn" style="width:100%;height:44px;margin-top:14px">Copy refresh command</button></div><div class="tabbar"></div></div></div></article>
+    </div>
+  </section>
+</main>
+
+<script>
+  const icons = [
+    '<svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10.5V20h13v-9.5"/><path d="M9.5 20v-6h5v6"/></svg>',
+    '<svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></svg>',
+    '<svg viewBox="0 0 24 24"><path d="m12 3 2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2L12 3Z"/></svg>',
+    '<svg viewBox="0 0 24 24"><path d="M4 7h13l-3-3M20 17H7l3 3"/></svg>',
+    '<svg viewBox="0 0 24 24"><path d="m12 4 8 8-8 8-8-8 8-8Z"/></svg>'
+  ];
+  const labels = ['Today', 'Roster', 'Adds', 'Trade', 'League'];
+  document.querySelectorAll('.tabbar').forEach((bar) => {
+    bar.innerHTML = labels.map((label, index) => `<span class="tab ${index === 0 ? 'active' : ''}">${icons[index]}<span>${label}</span></span>`).join('');
+  });
+
+  document.querySelectorAll('.toggle button').forEach((button) => {
+    button.addEventListener('click', () => {
+      document.querySelectorAll('.toggle button').forEach((b) => b.classList.remove('active'));
+      document.querySelectorAll('.vibe').forEach((vibe) => vibe.classList.remove('active'));
+      button.classList.add('active');
+      document.getElementById(button.dataset.target).classList.add('active');
+    });
+  });
+</script>
+</body>
+</html>

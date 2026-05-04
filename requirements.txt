@@ -1,0 +1,17 @@
+fantraxapi>=0.2.0
+selenium>=4.15
+webdriver-manager>=4.0
+pycookiecheat>=0.7
+python-dotenv>=1.0
+requests>=2.31
+markdown>=3.5
+fastapi>=0.115
+uvicorn[standard]>=0.30
+psycopg[binary]>=3.2
+
+# Anthropic SDK — used for grounded research + synthesis (Railway-deployable)
+anthropic>=0.40
+
+# League intel (weekly) — heavy data layer
+pybaseball>=2.2
+pandas>=2.0
