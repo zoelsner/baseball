@@ -368,7 +368,14 @@ def _load_or_generate_take(
 
     try:
         messages = _build_take_messages(snapshot, player_row, payload)
-        text, model = sandlot_skipper.SkipperClient().complete(messages, max_tokens=220)
+        # Player-take uses Tencent-first; Kimi (PRIMARY_MODEL) only as fallback.
+        # Tencent's free hy3-preview is faster on cold short prompts, which is
+        # what the take call is. Chat still goes Kimi-first via stream().
+        text, model = sandlot_skipper.SkipperClient().complete(
+            messages,
+            max_tokens=220,
+            model_order=(sandlot_skipper.FALLBACK_MODEL, sandlot_skipper.PRIMARY_MODEL),
+        )
         try:
             sandlot_db.set_player_take(fantrax_id, int(snapshot_id), text, model)
         except Exception as exc:

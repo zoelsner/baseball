@@ -228,10 +228,17 @@ class SkipperClient:
         messages: list[dict[str, str]],
         *,
         max_tokens: int = 220,
+        model_order: tuple[str, ...] | None = None,
     ) -> tuple[str, str]:
-        """Return a single completion plus the model id, using the stream fallback order."""
+        """Return a single completion plus the model id, using the stream fallback order.
+
+        Pass `model_order` to override which model is tried first — e.g. the
+        player-take call uses Tencent-first because Kimi's first-token latency
+        on a cold prompt regularly pushes the profile load over a noticeable
+        threshold. Defaults to (PRIMARY_MODEL, FALLBACK_MODEL).
+        """
         failures: list[str] = []
-        for model in (PRIMARY_MODEL, FALLBACK_MODEL):
+        for model in (model_order or (PRIMARY_MODEL, FALLBACK_MODEL)):
             try:
                 response = self.client.chat.completions.create(
                     model=model,
