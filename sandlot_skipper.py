@@ -187,6 +187,7 @@ class SkipperClient:
         Tries PRIMARY_MODEL first. On error before any tokens stream, falls
         back to FALLBACK_MODEL. Mid-stream errors are not retried (V1).
         """
+        failures: list[str] = []
         for model in (PRIMARY_MODEL, FALLBACK_MODEL):
             try:
                 stream = self.client.chat.completions.create(
@@ -208,9 +209,10 @@ class SkipperClient:
                 if yielded_any:
                     yield ("model", model)
                     return
-                # Empty stream: try fallback
+                failures.append(f"{model}: empty stream")
                 log.warning("Skipper model %s returned no tokens; trying fallback", model)
             except Exception as e:
+                failures.append(f"{model}: {type(e).__name__}: {e}")
                 log.warning("Skipper model %s failed: %s; trying fallback", model, e)
                 continue
-        raise RuntimeError("Both Skipper models failed to produce a response")
+        raise RuntimeError("All Skipper models failed: " + " | ".join(failures))
