@@ -86,6 +86,34 @@ def init_schema() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+              id BIGSERIAL PRIMARY KEY,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              title TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_messages (
+              id BIGSERIAL PRIMARY KEY,
+              session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+              content TEXT NOT NULL,
+              tier INTEGER,
+              model TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS chat_messages_session_created_idx
+            ON chat_messages (session_id, created_at)
+            """
+        )
 
 
 def create_refresh_run(source: str) -> int:
@@ -213,6 +241,69 @@ def get_fantrax_cookies() -> list[dict[str, Any]] | None:
         return None
     cookies = row["cookies_json"]
     return cookies if isinstance(cookies, list) else None
+
+
+DEFAULT_CHAT_SESSION_TITLE = "Skipper"
+
+
+def get_or_create_default_session() -> int:
+    """V1 is single-user / single-thread; return (or create) the lone session."""
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id FROM chat_sessions ORDER BY id ASC LIMIT 1
+            """
+        ).fetchone()
+        if row:
+            return int(row["id"])
+        row = conn.execute(
+            "INSERT INTO chat_sessions (title) VALUES (%s) RETURNING id",
+            (DEFAULT_CHAT_SESSION_TITLE,),
+        ).fetchone()
+    return int(row["id"])
+
+
+def list_chat_messages(session_id: int) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, session_id, created_at, role, content, tier, model
+            FROM chat_messages
+            WHERE session_id = %s
+            ORDER BY created_at ASC, id ASC
+            """,
+            (session_id,),
+        ).fetchall()
+    return list(rows)
+
+
+def append_chat_message(
+    session_id: int,
+    role: str,
+    content: str,
+    *,
+    tier: int | None = None,
+    model: str | None = None,
+) -> int:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO chat_messages (session_id, role, content, tier, model)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (session_id, role, content, tier, model),
+        ).fetchone()
+    return int(row["id"])
+
+
+def clear_chat_messages(session_id: int) -> int:
+    with connect() as conn:
+        rows = conn.execute(
+            "DELETE FROM chat_messages WHERE session_id = %s RETURNING id",
+            (session_id,),
+        ).fetchall()
+    return len(rows)
 
 
 def prune_successful_snapshots(keep: int = 30) -> int:

@@ -515,6 +515,7 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
         "team_name": None,
         "league_rules": None,
         "roster": None,
+        "all_team_rosters": None,
         "standings": None,
         "transactions": None,
         "pending_trades": None,
@@ -530,12 +531,13 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
         log.warning("team() failed: %s", e)
 
     sections = [
-        ("league_rules",   lambda: extract_league_rules(session, league_id)),
-        ("roster",         lambda: extract_roster(api, team_id)),
-        ("standings",      lambda: extract_standings(api, team_id)),
-        ("transactions",   lambda: extract_transactions(api)),
-        ("pending_trades", lambda: extract_pending_trades(api, team_id)),
-        ("free_agents",    lambda: extract_free_agents(session, league_id)),
+        ("league_rules",     lambda: extract_league_rules(session, league_id)),
+        ("roster",           lambda: extract_roster(api, team_id)),
+        ("all_team_rosters", lambda: extract_all_team_rosters(api, team_id)),
+        ("standings",        lambda: extract_standings(api, team_id)),
+        ("transactions",     lambda: extract_transactions(api)),
+        ("pending_trades",   lambda: extract_pending_trades(api, team_id)),
+        ("free_agents",      lambda: extract_free_agents(session, league_id)),
     ]
 
     for key, fn in sections:

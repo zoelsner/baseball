@@ -1062,54 +1062,141 @@ function V2KPI({ label, value, accent }) {
 
 // ── /skipper ───────────────────────────────────────────────────
 function V2Skipper() {
-  const prompts = ['Who should I start at SS today?', 'Compare Reyna vs Castellanos', 'Where am I weakest?'];
-  const [msgs, setMsgs] = React.useState([
-    { role:'ai', text:"You're up +18.4 on Curveball Cartel with 3 days left. Two roster decisions need you before lock at 7:05 PM ET." },
-    { role:'user', text:'What are the two decisions?' },
-    { role:'ai', text:"Bench Wendell Park for Hideo Tamura at OF3 — Tamura is confirmed leadoff vs RHP, Park sits vs LHP. Move Pavel Krenz into your open SP slot since Boscarino isn't pitching. Net: roughly +17.7 projected points today." },
-  ]);
+  const prompts = ['Who is my best 2B?', 'Compare my pitching to the league', 'Where am I weakest?'];
+  const [msgs, setMsgs] = React.useState([]);
   const [input, setInput] = React.useState('');
-  const send = (text) => {
+  const [streaming, setStreaming] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const scrollRef = React.useRef(null);
+
+  // Load history on mount
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch('/api/skipper/messages')
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`history ${r.status}`)))
+      .then(data => {
+        if (cancelled) return;
+        const loaded = (data.messages || []).map(m => ({
+          role: m.role === 'assistant' ? 'ai' : m.role,
+          text: m.content,
+        }));
+        setMsgs(loaded);
+      })
+      .catch(e => { if (!cancelled) setError(`Couldn't load history: ${e.message}`); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Auto-scroll to bottom when messages or streaming text changes
+  React.useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [msgs]);
+
+  const send = async (text) => {
     const t = (text ?? input).trim();
-    if (!t) return;
-    setMsgs(m => [...m, { role:'user', text:t }, { role:'ai', text:'Skipper would answer using current roster, league, matchup, and synced news context.' }]);
+    if (!t || streaming) return;
+    setError(null);
     setInput('');
+    // Optimistically append user message + empty AI bubble we'll fill via stream.
+    setMsgs(m => [...m, { role:'user', text:t }, { role:'ai', text:'' }]);
+    setStreaming(true);
+
+    try {
+      const resp = await fetch('/api/skipper/messages', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({ content: t }),
+      });
+      if (!resp.ok || !resp.body) {
+        const detail = await resp.text().catch(() => '');
+        throw new Error(`stream ${resp.status} ${detail.slice(0,200)}`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let done = false;
+      while (!done) {
+        const { value, done: streamDone } = await reader.read();
+        done = streamDone;
+        if (value) buffer += decoder.decode(value, { stream: true });
+        // SSE frames are split by \n\n
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 2);
+          if (!frame.startsWith('data:')) continue;
+          const json = frame.slice(5).trim();
+          if (!json) continue;
+          let evt;
+          try { evt = JSON.parse(json); } catch { continue; }
+          if (evt.type === 'token' && evt.text) {
+            setMsgs(m => {
+              const next = m.slice();
+              const last = next[next.length - 1];
+              next[next.length - 1] = { ...last, text: (last.text || '') + evt.text };
+              return next;
+            });
+          } else if (evt.type === 'error') {
+            setError(evt.message || 'Skipper failed');
+          }
+        }
+      }
+    } catch (e) {
+      setError(e.message);
+      // Drop the empty AI bubble if we never got tokens
+      setMsgs(m => {
+        if (m.length && m[m.length-1].role === 'ai' && !m[m.length-1].text) {
+          return m.slice(0, -1);
+        }
+        return m;
+      });
+    } finally {
+      setStreaming(false);
+    }
   };
+
   return (
     <div style={{ height:'100%', display:'flex', flexDirection:'column' }}>
-      <div style={{ flex:1, overflow:'auto', padding:'4px 16px 18px' }}>
-        <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:12 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:6, background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:999, padding:'7px 12px' }}>
-            <span style={{ width:6, height:6, background:V2.ok, borderRadius:'50%' }}/>
-            <span style={{ color:V2.body, fontSize:11.5, fontWeight:800 }}>Synced 2m</span>
-          </div>
-        </div>
+      <div ref={scrollRef} style={{ flex:1, overflow:'auto', padding:'4px 16px 18px' }}>
         <div style={{ display:'flex', alignItems:'center', gap:8, margin:'4px 0 10px' }}>
           <div style={{ width:28, height:28, borderRadius:'50%', background:V2.warn, color:'#fff', display:'flex', alignItems:'center', justifyContent:'center' }}>{Icons.sparkle('#fff', 14)}</div>
           <V2Eyebrow color={V2.muted}>Skipper</V2Eyebrow>
         </div>
+        {msgs.length === 0 && !streaming && (
+          <div style={{ color:V2.muted, fontSize:13, padding:'18px 4px', lineHeight:1.5 }}>
+            Ask anything about your roster. Skipper reads the latest snapshot and answers from real data only.
+          </div>
+        )}
         {msgs.map((m,i)=> <V2Bubble key={i} m={m}/>)}
-        <div style={{ display:'flex', gap:7, flexWrap:'wrap', marginTop:6 }}>
-          {['Matchup · Wk 6','Lineup · Today','Roster · Full league'].map(t => (
-            <span key={t} style={{ background:V2.surface2, color:V2.muted, borderRadius:999, padding:'6px 10px', fontSize:11, fontWeight:800 }}>{t}</span>
-          ))}
-        </div>
+        {streaming && msgs.length > 0 && msgs[msgs.length-1].role === 'ai' && !msgs[msgs.length-1].text && (
+          <div style={{ color:V2.muted, fontSize:12, padding:'2px 4px 8px' }}>Thinking…</div>
+        )}
+        {error && (
+          <div style={{ color:V2.bad || '#c33', fontSize:12.5, padding:'8px 4px' }}>{error}</div>
+        )}
       </div>
       <div style={{ borderTop:`1px solid ${V2.hairline}`, padding:'10px 14px 16px', background:V2.surface }}>
         <div style={{ display:'flex', gap:7, overflowX:'auto', paddingBottom:10 }}>
           {prompts.map(p => (
-            <button key={p} onClick={()=>send(p)} style={{
+            <button key={p} onClick={()=>send(p)} disabled={streaming} style={{
               flexShrink:0, padding:'8px 12px', borderRadius:999, border:`1px solid ${V2.hairline}`,
-              background:V2.surface2, color:V2.body, fontSize:11.5, cursor:'pointer', fontFamily:'inherit', fontWeight:700,
+              background:V2.surface2, color:V2.body, fontSize:11.5,
+              cursor: streaming ? 'not-allowed' : 'pointer',
+              opacity: streaming ? 0.5 : 1,
+              fontFamily:'inherit', fontWeight:700,
             }}>{p}</button>
           ))}
         </div>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')send();}}
-            placeholder="Ask about your roster, trades, matchups..."
+          <input value={input} onChange={e=>setInput(e.target.value)} disabled={streaming}
+            onKeyDown={e=>{if(e.key==='Enter')send();}}
+            placeholder={streaming ? 'Skipper is responding…' : 'Ask about your roster, trades, matchups...'}
             style={{ flex:1, border:`1px solid ${V2.hairline}`, background:V2.surface2, borderRadius:999, padding:'12px 15px', outline:'none', fontSize:13.5, color:V2.ink, fontFamily:'inherit' }}/>
-          <button onClick={()=>send()} style={{
-            width:42, height:42, borderRadius:'50%', background:V2.warn, border:'none', cursor:'pointer',
+          <button onClick={()=>send()} disabled={streaming} style={{
+            width:42, height:42, borderRadius:'50%', background:V2.warn, border:'none',
+            cursor: streaming ? 'not-allowed' : 'pointer',
+            opacity: streaming ? 0.6 : 1,
             display:'flex', alignItems:'center', justifyContent:'center',
           }}>{Icons.send('#fff', 14)}</button>
         </div>
