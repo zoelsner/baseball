@@ -1447,6 +1447,7 @@ function V2BarSparkline({ values, w=320, h=56 }) {
 function V2ClipRow({ clip }) {
   const isNote = clip.kind === 'note';
   const tone = clip.tone || (isNote ? 'blue' : 'orange');
+  const hasThumb = !isNote && !!clip.thumbnail;
   const thumbBg = tone === 'orange'
     ? 'linear-gradient(135deg, #df7042 0%, #a04a23 100%)'
     : tone === 'dark'
@@ -1466,11 +1467,29 @@ function V2ClipRow({ clip }) {
       }}
     >
       <div style={{
-        width:54, height:54, borderRadius:12, background:thumbBg,
+        width:54, height:54, borderRadius:12,
+        background: hasThumb ? '#1a0f08' : thumbBg,
         display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
         position:'relative', overflow:'hidden',
       }}>
-        {isNote ? (
+        {hasThumb ? (
+          <React.Fragment>
+            <img
+              src={clip.thumbnail}
+              alt=""
+              loading="lazy"
+              onError={(e) => { e.currentTarget.style.display = 'none'; }}
+              style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover' }}
+            />
+            <div style={{
+              position:'absolute', inset:0,
+              background:'linear-gradient(135deg, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.35) 100%)',
+            }}/>
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="none" style={{ position:'relative', filter:'drop-shadow(0 1px 2px rgba(0,0,0,0.5))' }}>
+              <path d="M5 3.5v9l8-4.5L5 3.5Z" fill={V2.surface}/>
+            </svg>
+          </React.Fragment>
+        ) : isNote ? (
           <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
             <path d="M3 5h10M3 8h10M3 11h7" stroke="#1e3a5f" strokeWidth="1.6" strokeLinecap="round"/>
           </svg>
