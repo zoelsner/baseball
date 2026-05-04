@@ -171,6 +171,10 @@ class SkipperClient:
         key = api_key or os.environ.get("OPENROUTER_API_KEY")
         if not key:
             raise RuntimeError("OPENROUTER_API_KEY is not set")
+        # Defensive: strip whitespace/newlines that can sneak in via the
+        # Railway/Vercel/etc. env-var UIs. httpx rejects newlines in header
+        # values with a LocalProtocolError surfaced as APIConnectionError.
+        key = key.strip()
         self.client = OpenAI(
             api_key=key,
             base_url=OPENROUTER_BASE_URL,
