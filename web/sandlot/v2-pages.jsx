@@ -1156,12 +1156,34 @@ function V2Skipper() {
     }
   };
 
+  const clear = async () => {
+    if (streaming) return;
+    if (!window.confirm('Clear chat history? This cannot be undone.')) return;
+    try {
+      const r = await fetch('/api/skipper/messages', { method: 'DELETE' });
+      if (!r.ok) throw new Error(`clear ${r.status}`);
+      setMsgs([]);
+      setError(null);
+    } catch (e) {
+      setError(`Couldn't clear history: ${e.message}`);
+    }
+  };
+
   return (
     <div style={{ height:'100%', display:'flex', flexDirection:'column' }}>
       <div ref={scrollRef} style={{ flex:1, overflow:'auto', padding:'4px 16px 18px' }}>
         <div style={{ display:'flex', alignItems:'center', gap:8, margin:'4px 0 10px' }}>
           <div style={{ width:28, height:28, borderRadius:'50%', background:V2.warn, color:'#fff', display:'flex', alignItems:'center', justifyContent:'center' }}>{Icons.sparkle('#fff', 14)}</div>
           <V2Eyebrow color={V2.muted}>Skipper</V2Eyebrow>
+          {msgs.length > 0 && (
+            <button onClick={clear} disabled={streaming} title="Clear chat history" style={{
+              marginLeft:'auto', background:'none', border:`1px solid ${V2.hairline}`,
+              color:V2.muted, fontSize:11, fontWeight:700, letterSpacing:'0.04em',
+              textTransform:'uppercase', padding:'5px 10px', borderRadius:999,
+              cursor: streaming ? 'not-allowed' : 'pointer', opacity: streaming ? 0.5 : 1,
+              fontFamily:'inherit',
+            }}>Clear</button>
+          )}
         </div>
         {msgs.length === 0 && !streaming && (
           <div style={{ color:V2.muted, fontSize:13, padding:'18px 4px', lineHeight:1.5 }}>
