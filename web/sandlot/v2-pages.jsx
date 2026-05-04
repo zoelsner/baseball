@@ -1630,7 +1630,6 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
 
   const clear = async () => {
     if (streaming) return;
-    if (!window.confirm('Clear chat history? This cannot be undone.')) return;
     try {
       const r = await fetch('/api/skipper/messages', { method: 'DELETE' });
       if (!r.ok) throw new Error(`clear ${r.status}`);
