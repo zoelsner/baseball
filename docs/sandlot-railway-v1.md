@@ -4,7 +4,7 @@ V1 runs all-in on Railway:
 
 - `web`: FastAPI app serving `/api/*` plus `web/sandlot/index.html`
 - `cron`: one-shot daily scraper using the same refresh runner as the API
-- Postgres: source of truth for raw Fantrax snapshots, stored cookies, chat history, player stat cache, and cached player-card takes
+- Postgres: source of truth for raw Fantrax snapshots, stored cookies, chat history, player stat/media caches, and cached player-card takes
 
 ## Required Variables
 
@@ -21,6 +21,9 @@ Optional:
 
 ```bash
 SANDLOT_KEEP_SNAPSHOTS=30
+SANDLOT_PROFILE_WARM_LIMIT=30
+SANDLOT_PROFILE_WARM_DISABLED=0
+SANDLOT_PROFILE_WARM_TAKES=0
 FANTRAX_COOKIES_JSON=<json array of Fantrax cookies>
 OPENROUTER_API_KEY=<openrouter key for Skipper chat and player takes>
 ```
@@ -84,12 +87,20 @@ runs `python sandlot_cron.py` on the desired daily schedule.
 - `POST /api/skipper/messages`
 - `DELETE /api/skipper/messages`
 
-Player detail sheets are read-only. `GET /api/player/{fantrax_id}` uses the
-latest Fantrax snapshot, lazily resolves an MLB player id, caches game logs in
-`player_game_logs`, and lazily generates a roster-aware Skipper take in
-`player_takes`. The `/refresh` variant refreshes MLB stat data; Skipper takes
-remain keyed to the latest Fantrax snapshot and are reused until a new snapshot
-is stored.
+Player detail sheets are read-only. `GET /api/player/{fantrax_id}` is the fast
+cache-first path: it returns the latest Fantrax snapshot row plus any cached
+MLB game log, MLB media, and Skipper take from Postgres. It does not block the
+page on MLB or OpenRouter calls. If the cached profile is missing or stale, the
+web service schedules a best-effort background warm.
+
+`POST /api/player/{fantrax_id}/refresh` is the explicit slow path: it resolves
+the MLB id, refreshes game logs, refreshes MLB game-content media, and can
+generate/cache a roster-aware Skipper take keyed to the latest Fantrax snapshot.
+
+The Railway cron refresh runs `python sandlot_cron.py`, stores the Fantrax
+snapshot, then pre-warms roster player profiles. By default this warms MLB ids,
+game logs, and media only; set `SANDLOT_PROFILE_WARM_TAKES=1` if you want cron
+to spend OpenRouter calls pre-generating takes too.
 
 The app only stores and displays data. It does not make roster moves, drops,
 claims, or trade actions in Fantrax.

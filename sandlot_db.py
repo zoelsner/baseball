@@ -136,6 +136,15 @@ def init_schema() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS player_media (
+              mlb_id BIGINT PRIMARY KEY,
+              items JSONB NOT NULL,
+              fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS player_takes (
               player_id TEXT NOT NULL,
               snapshot_id BIGINT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -403,6 +412,33 @@ def set_player_game_log(
                 fetched_at = now()
             """,
             (mlb_id, group_type, season, Jsonb(games)),
+        )
+
+
+def get_player_media(mlb_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT mlb_id, items, fetched_at
+            FROM player_media
+            WHERE mlb_id = %s
+            """,
+            (mlb_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_player_media(mlb_id: int, items: list[dict[str, Any]]) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO player_media (mlb_id, items, fetched_at)
+            VALUES (%s, %s, now())
+            ON CONFLICT (mlb_id) DO UPDATE
+            SET items = EXCLUDED.items,
+                fetched_at = now()
+            """,
+            (mlb_id, Jsonb(items)),
         )
 
 

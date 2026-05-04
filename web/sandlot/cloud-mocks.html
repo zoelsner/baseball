@@ -686,6 +686,374 @@
   .mini-bar { height: 5px; background: #e6ebf1; border-radius: 999px; overflow: hidden; }
   .mini-bar span { display: block; height: 100%; background: var(--blue); border-radius: inherit; }
 
+  .profile-phone .content {
+    background: #f2eadc;
+    padding: 18px 18px 88px;
+  }
+
+  .profile-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 8px 0 16px;
+  }
+
+  .profile-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    height: 34px;
+    padding: 0 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(33,28,20,.14);
+    background: rgba(255,250,242,.72);
+    color: #475569;
+    font-size: 12px;
+    font-weight: 850;
+  }
+
+  .profile-action i {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: #16a05d;
+    display: block;
+  }
+
+  .profile-card {
+    border: 1px solid rgba(33,28,20,.14);
+    background: #fffaf2;
+    border-radius: 20px;
+    padding: 15px;
+    margin-top: 12px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.64) inset;
+  }
+
+  .profile-hero {
+    display: grid;
+    grid-template-columns: 72px 1fr;
+    gap: 14px;
+    align-items: center;
+  }
+
+  .headshot {
+    width: 72px;
+    height: 72px;
+    border-radius: 999px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.16), rgba(0,0,0,.04)),
+      url("https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_213,q_auto:best/v1/people/669257/headshot/67/current") center/cover;
+    border: 1px solid rgba(33,28,20,.14);
+  }
+
+  .profile-name {
+    margin: 0;
+    color: #0f172a;
+    font-family: var(--serif);
+    font-size: 27px;
+    line-height: 1;
+    letter-spacing: -0.03em;
+  }
+
+  .profile-meta {
+    margin-top: 7px;
+    color: #64748b;
+    font-size: 11px;
+    font-weight: 850;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+
+  .pill-row {
+    display: flex;
+    gap: 7px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
+
+  .pill {
+    padding: 5px 8px;
+    border-radius: 999px;
+    background: #f8dfce;
+    color: #df7042;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .pill.green { background: #dcf2e3; color: #0f9d58; }
+  .pill.blue { background: #dbe7fe; color: #2767f0; }
+
+  .profile-take {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(33,28,20,.12);
+    color: #111827;
+    font-size: 14px;
+    line-height: 1.45;
+    font-weight: 650;
+  }
+
+  .stat-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0;
+  }
+
+  .stat-strip.three { grid-template-columns: repeat(3, 1fr); }
+
+  .stat-strip div {
+    text-align: center;
+    padding: 4px 7px;
+    border-left: 1px solid rgba(33,28,20,.11);
+  }
+
+  .stat-strip div:first-child { border-left: 0; }
+
+  .stat-strip b {
+    display: block;
+    color: #0f172a;
+    font: 850 21px/1 var(--mono);
+    letter-spacing: -0.04em;
+  }
+
+  .stat-strip span {
+    display: block;
+    margin-top: 6px;
+    color: #64748b;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+  }
+
+  .spark-bars {
+    height: 60px;
+    display: flex;
+    align-items: end;
+    gap: 7px;
+    margin-top: 14px;
+    border-top: 1px solid rgba(33,28,20,.11);
+    padding-top: 14px;
+  }
+
+  .spark-bars i {
+    flex: 1;
+    min-width: 0;
+    border-radius: 3px 3px 1px 1px;
+    background: #df7042;
+  }
+
+  .stat-disclosure {
+    margin-top: 13px;
+    border-top: 1px solid rgba(33,28,20,.11);
+    padding-top: 10px;
+  }
+
+  .stat-disclosure summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    color: #334155;
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .stat-disclosure summary::-webkit-details-marker { display: none; }
+
+  .stat-disclosure summary span:last-child {
+    width: 27px;
+    height: 27px;
+    border-radius: 999px;
+    display: grid;
+    place-items: center;
+    background: #f2eadc;
+    border: 1px solid rgba(33,28,20,.12);
+    transition: transform .15s ease;
+  }
+
+  .stat-disclosure[open] summary span:last-child { transform: rotate(180deg); }
+
+  .detail-stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 7px;
+    margin-top: 12px;
+  }
+
+  .detail-stats div {
+    border-radius: 12px;
+    background: #f2eadc;
+    padding: 9px 7px;
+    text-align: center;
+  }
+
+  .detail-stats b {
+    display: block;
+    color: #0f172a;
+    font: 850 14px/1 var(--mono);
+  }
+
+  .detail-stats span {
+    display: block;
+    margin-top: 5px;
+    color: #64748b;
+    font-size: 9px;
+    font-weight: 900;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+  }
+
+  .evidence-list {
+    display: grid;
+    gap: 9px;
+  }
+
+  .evidence-row {
+    display: grid;
+    grid-template-columns: 64px 1fr;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .thumb {
+    height: 48px;
+    border-radius: 12px;
+    background:
+      linear-gradient(135deg, rgba(15,23,42,.05), rgba(223,112,66,.34)),
+      #e7dac8;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .thumb:after {
+    content: "";
+    position: absolute;
+    left: 22px;
+    top: 15px;
+    border-left: 12px solid rgba(255,255,255,.9);
+    border-top: 8px solid transparent;
+    border-bottom: 8px solid transparent;
+  }
+
+  .evidence-row h3 {
+    margin: 0;
+    color: #0f172a;
+    font-size: 13px;
+    line-height: 1.25;
+  }
+
+  .evidence-row p {
+    margin: 4px 0 0;
+    color: #64748b;
+    font-size: 11px;
+    line-height: 1.3;
+    font-weight: 650;
+  }
+
+  .source-grid {
+    display: grid;
+    gap: 8px;
+  }
+
+  .source-card {
+    padding: 11px 12px;
+    border-radius: 15px;
+    background: #f2eadc;
+    color: #334155;
+    font-size: 12px;
+    line-height: 1.35;
+    font-weight: 650;
+  }
+
+  .source-card b {
+    display: block;
+    color: #0f172a;
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+
+  .profile-split {
+    display: grid;
+    grid-template-columns: 1fr 118px;
+    gap: 12px;
+    align-items: stretch;
+  }
+
+  .photo-panel {
+    border-radius: 18px;
+    min-height: 160px;
+    background:
+      linear-gradient(180deg, rgba(15,23,42,0), rgba(15,23,42,.56)),
+      url("https://img.mlbstatic.com/mlb-photos/image/upload/d_people:generic:headshot:67:current.png/w_426,q_auto:best/v1/people/669257/headshot/67/current") center top/cover;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .photo-panel span {
+    position: absolute;
+    left: 12px;
+    bottom: 11px;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .timeline {
+    display: grid;
+    gap: 10px;
+  }
+
+  .timeline-row {
+    display: grid;
+    grid-template-columns: 20px 1fr;
+    gap: 8px;
+  }
+
+  .timeline-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: #df7042;
+    margin: 4px auto 0;
+    box-shadow: 0 0 0 4px #f8dfce;
+  }
+
+  .timeline-row b {
+    display: block;
+    font-size: 12px;
+    color: #0f172a;
+  }
+
+  .timeline-row span {
+    display: block;
+    margin-top: 3px;
+    color: #64748b;
+    font-size: 11px;
+    line-height: 1.35;
+    font-weight: 650;
+  }
+
+  .latency-note {
+    border: 1px dashed rgba(15,23,42,.22);
+    background: rgba(255,250,242,.5);
+    border-radius: 16px;
+    padding: 12px;
+    color: #475569;
+    font-size: 11px;
+    line-height: 1.45;
+    font-weight: 700;
+  }
+
   @media (max-width: 1180px) {
     .phones { grid-template-columns: repeat(2, minmax(260px, 1fr)); }
   }
@@ -704,12 +1072,13 @@
     <header class="board-head">
       <div>
         <h1>Sandlot<br/>frontend directions</h1>
-        <p class="intro">Three alternate app treatments using the same fantasy-baseball product model: score-first lineup assistant, roster intelligence, adds, trade grading, and a context-aware Skipper layer.</p>
+        <p class="intro">Alternate app treatments using the same fantasy-baseball product model: score-first lineup assistant, roster intelligence, adds, trade grading, a context-aware Skipper layer, and player profiles with stats plus evidence.</p>
       </div>
       <nav class="direction-toggle" aria-label="Mock direction">
         <button class="active" data-target="warm">Warm editorial</button>
         <button data-target="slate">Command slate</button>
         <button data-target="scout">Scout desk</button>
+        <button data-target="profiles">Player profiles</button>
       </nav>
     </header>
 
@@ -1009,6 +1378,124 @@
                 <button class="primary" style="width:100%;height:44px;margin-top:14px">Copy refresh command</button>
               </div>
               <div class="tabbar"></div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="mock-row" id="profiles">
+      <div class="row-note">
+        <strong>Player profiles</strong>
+        <span>Four profile-card directions: stats load first, media/current events hydrate as evidence, and Skipper stays explainable.</span>
+      </div>
+      <div class="phones">
+        <article>
+          <p class="label">A · compact refined</p>
+          <div class="phone profile-phone">
+            <div class="status"><span>11:05</span><span class="status-icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div>
+            <div class="screen">
+              <div class="content">
+                <div class="profile-top"><span style="font-size:24px;color:#64748b">×</span><div style="display:flex;gap:8px"><span class="profile-action"><i></i>48m old</span><span class="profile-action">↻ Sync</span></div></div>
+                <section class="profile-card">
+                  <div class="profile-hero"><span class="headshot"></span><div><h2 class="profile-name">Will Smith</h2><div class="profile-meta">LAD · C · Age 30</div><div class="pill-row"><span class="pill">On your roster</span><span class="pill green">Active</span></div></div></div>
+                  <div class="profile-take"><span class="pill" style="margin-right:8px">Skipper take</span>Smith is still your only catcher, so the cold week matters less than the roster constraint. His last 7 is down, but the full-season profile remains starter-safe.</div>
+                </section>
+                <section class="profile-card">
+                  <div class="stat-strip three"><div><b>1.9</b><span>L7</span></div><div><b>2.2</b><span>L30</span></div><div><b style="color:#dc2626">-2.1%</b><span>vs exp</span></div></div>
+                  <div class="spark-bars"><i style="height:24px"></i><i style="height:16px"></i><i style="height:21px"></i><i style="height:9px"></i><i style="height:28px"></i><i style="height:12px"></i><i style="height:18px"></i><i style="height:55px"></i><i style="height:31px"></i><i style="height:14px"></i><i style="height:18px"></i><i style="height:9px"></i></div>
+                </section>
+                <section class="profile-card"><div class="eyebrow">Season · Hitting · 2026</div><div class="stat-strip" style="margin-top:12px"><div><b>.263</b><span>AVG</span></div><div><b>25</b><span>H</span></div><div><b>3</b><span>HR</span></div><div><b>15</b><span>RBI</span></div></div></section>
+                <section class="profile-card"><div class="eyebrow">Game log · Last 14</div><div style="display:flex;align-items:center;justify-content:space-between;margin-top:9px"><b style="font-size:13px">May 3 · vs SF</b><span class="profile-action">3.5 FPTS⌄</span></div></section>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article>
+          <p class="label">B · evidence-first</p>
+          <div class="phone profile-phone">
+            <div class="status"><span>11:05</span><span class="status-icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div>
+            <div class="screen">
+              <div class="content">
+                <div class="profile-top"><span style="font-size:24px;color:#64748b">×</span><span class="profile-action"><i></i>Stats cached</span></div>
+                <section class="profile-card">
+                  <div class="profile-hero"><span class="headshot"></span><div><h2 class="profile-name">Will Smith</h2><div class="profile-meta">LAD · C · Age 30</div><div class="pill-row"><span class="pill green">Starting C</span><span class="pill blue">Only catcher</span></div></div></div>
+                </section>
+                <section class="profile-card">
+                  <div class="eyebrow">High-level read</div>
+                  <div class="stat-strip three" style="margin-top:12px"><div><b>2.2</b><span>L30</span></div><div><b>4th</b><span>Hitters</span></div><div><b>1</b><span>C depth</span></div></div>
+                  <p style="margin:13px 0 0;color:#334155;font-size:13px;line-height:1.45;font-weight:650">Not a panic profile. The question is whether recent contact quality is temporary or a role/injury signal.</p>
+                </section>
+                <section class="profile-card">
+                  <div class="eyebrow">Current evidence</div>
+                  <div class="evidence-list" style="margin-top:12px">
+                    <div class="evidence-row"><span class="thumb"></span><div><h3>Two hard-hit outs in last start</h3><p>MLB video · May 3 · 0:42</p></div></div>
+                    <div class="evidence-row"><span class="thumb" style="background:linear-gradient(135deg,#dbe7fe,#f8dfce)"></span><div><h3>Beat note: normal pregame work</h3><p>X / beat source · 2h ago</p></div></div>
+                    <div class="evidence-row"><span class="thumb" style="background:linear-gradient(135deg,#dcf2e3,#f2eadc)"></span><div><h3>Barrel rate flat over last 10</h3><p>Statcast summary · cached daily</p></div></div>
+                  </div>
+                </section>
+                <div class="latency-note">Product model: show Fantrax + cached Postgres stats immediately. Hydrate video, X, and richer sources below the fold.</div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article>
+          <p class="label">C · media scout</p>
+          <div class="phone profile-phone">
+            <div class="status"><span>11:05</span><span class="status-icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div>
+            <div class="screen">
+              <div class="content">
+                <div class="profile-top"><span style="font-size:24px;color:#64748b">×</span><span class="profile-action">Media board</span></div>
+                <div class="profile-split">
+                  <section class="profile-card" style="margin-top:0"><h2 class="profile-name">Will Smith</h2><div class="profile-meta">LAD · C · Age 30</div><div class="pill-row"><span class="pill">Rostered</span><span class="pill green">Active</span></div><div class="profile-take" style="font-size:13px"><span class="pill" style="margin-right:8px">Skipper</span>Hold unless clips show reduced bat speed. Box score is cold; role and catcher scarcity still protect the spot.</div></section>
+                  <div class="photo-panel"><span>MLB headshot</span></div>
+                </div>
+                <section class="profile-card">
+                  <div class="stat-strip three"><div><b>1.9</b><span>L7</span></div><div><b>2.2</b><span>L30</span></div><div><b>.263</b><span>AVG</span></div></div>
+                  <details class="stat-disclosure">
+                    <summary><span>More stats</span><span>⌄</span></summary>
+                    <div class="detail-stats">
+                      <div><b>25</b><span>H</span></div><div><b>3</b><span>HR</span></div><div><b>15</b><span>RBI</span></div><div><b>.334</b><span>OBP</span></div>
+                      <div><b>37%</b><span>Hard hit</span></div><div><b>8%</b><span>Barrel</span></div><div><b>18%</b><span>K rate</span></div><div><b>12%</b><span>BB rate</span></div>
+                    </div>
+                  </details>
+                </section>
+                <section class="profile-card">
+                  <div class="eyebrow">MLB clips + news</div>
+                  <div class="evidence-list" style="margin-top:12px">
+                    <div class="evidence-row"><span class="thumb" style="height:58px"></span><div><h3>May 3 · RBI double vs SF</h3><p>See swing path, not just box score.</p></div></div>
+                    <div class="evidence-row"><span class="thumb" style="height:58px;background:linear-gradient(135deg,#111827,#df7042)"></span><div><h3>May 1 · chase strikeout</h3><p>Useful negative clip for approach.</p></div></div>
+                    <div class="evidence-row"><span class="thumb" style="height:58px;background:linear-gradient(135deg,#dbe7fe,#f2eadc)"></span><div><h3>Dodgers note · normal workload</h3><p>Recent team/beat context without paying for X first.</p></div></div>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article>
+          <p class="label">D · source timeline</p>
+          <div class="phone profile-phone">
+            <div class="status"><span>11:05</span><span class="status-icons"><span class="bars"><i></i><i></i><i></i></span><span class="wifi"></span><span class="battery"></span></span></div>
+            <div class="screen">
+              <div class="content">
+                <div class="profile-top"><span style="font-size:24px;color:#64748b">×</span><span class="profile-action"><i></i>48m old</span></div>
+                <section class="profile-card">
+                  <div class="profile-hero"><span class="headshot"></span><div><h2 class="profile-name">Will Smith</h2><div class="profile-meta">LAD · C · Age 30</div><div class="pill-row"><span class="pill blue">Evidence view</span></div></div></div>
+                </section>
+                <section class="profile-card"><div class="stat-strip three"><div><b>2.19</b><span>FPPG</span></div><div><b>4th</b><span>Team hit</span></div><div><b>-2%</b><span>Recent</span></div></div></section>
+                <section class="profile-card">
+                  <div class="eyebrow">What changed</div>
+                  <div class="timeline" style="margin-top:13px">
+                    <div class="timeline-row"><span class="timeline-dot"></span><div><b>2h · Beat note</b><span>Normal pregame work. No visible injury flag.</span></div></div>
+                    <div class="timeline-row"><span class="timeline-dot" style="background:#2767f0;box-shadow:0 0 0 4px #dbe7fe"></span><div><b>1d · MLB clip</b><span>RBI double, 101 mph exit velo. Good sign despite cold fantasy line.</span></div></div>
+                    <div class="timeline-row"><span class="timeline-dot" style="background:#dc2626;box-shadow:0 0 0 4px #fde2e1"></span><div><b>3d · Box score</b><span>0-for-3 with a walk. Production dip, not role dip.</span></div></div>
+                  </div>
+                </section>
+                <section class="profile-card"><div class="eyebrow">Source queue</div><div class="source-grid" style="margin-top:10px"><div class="source-card"><b>X / beat writers</b>Fast but noisy. Best for injury and lineup context.</div><div class="source-card"><b>MLB video</b>Best for previous-game highlights and swing evidence.</div><div class="source-card"><b>Statcast</b>Best for hard-hit and barrel trend checks.</div></div></section>
+              </div>
             </div>
           </div>
         </article>

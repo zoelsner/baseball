@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -129,8 +129,11 @@ def skipper_history() -> dict[str, Any]:
 
 
 @app.get("/api/player/{fantrax_id}")
-def player_profile(fantrax_id: str) -> dict[str, Any]:
-    return _player_response(fantrax_id, force_refresh=False)
+def player_profile(fantrax_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    payload = _player_response(fantrax_id, force_refresh=False)
+    if (payload.get("profile_cache") or {}).get("needs_refresh"):
+        background_tasks.add_task(player_service.refresh_cached_profile, fantrax_id, generate_take=False)
+    return payload
 
 
 @app.post("/api/player/{fantrax_id}/refresh")

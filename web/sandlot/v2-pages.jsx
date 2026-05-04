@@ -1144,9 +1144,8 @@ function V2ProfileBody({ data }) {
           {data.mlb.reason || 'MLB stats not available for this player.'}
         </div>
       )}
-      {(trend || sparkline.length > 0) && <V2ProfileTrend trend={trend} games={games} sparkline={sparkline}/>}
-      {games.length > 0 && <V2ProfileSeason games={games} isPitcher={isPitcher} season={data.season}/>}
-      {games.length > 0 && <V2ProfileGameLog games={games} isPitcher={isPitcher}/>}
+      <V2ProfileStats trend={trend} games={games} sparkline={sparkline} isPitcher={isPitcher} season={data.season}/>
+      <V2ProfileClips clips={data.media?.items || data.clips} player={p}/>
     </>
   );
 }
@@ -1168,33 +1167,45 @@ function V2ProfileHero({ player, mlb, take, statusLabel, statusOk }) {
   return (
     <div style={{
       background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18,
-      padding:16, display:'grid', gridTemplateColumns:'minmax(0, 1.08fr) minmax(0, .92fr)', gap:14, alignItems:'stretch',
+      padding:18, display:'flex', flexDirection:'column', gap:16,
     }}>
-      <div style={{ display:'flex', alignItems:'center', gap:12, minWidth:0 }}>
-        <PlayerPhoto mlbId={mlb?.mlb_id} name={player.name || '?'} size={76}/>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontSize:20, fontWeight:700, fontFamily:V2.fontDisplay, letterSpacing:'-0.01em', lineHeight:1.08, overflow:'hidden', display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' }}>{player.name || '?'}</div>
-          <div style={{ fontSize:11.5, color:V2.muted, marginTop:5, fontWeight:700, lineHeight:1.25 }}>{meta || 'Player'}</div>
-          <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:9 }}>
+      <div style={{ display:'flex', alignItems:'flex-start', gap:14 }}>
+        <PlayerPhoto mlbId={mlb?.mlb_id} name={player.name || '?'} size={84}/>
+        <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', gap:8, paddingTop:4 }}>
+          <div style={{
+            fontSize:24, fontWeight:600, fontFamily:V2.fontDisplay,
+            letterSpacing:'-0.02em', lineHeight:1.05, color:V2.ink,
+            overflow:'hidden', display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical',
+          }}>{player.name || '?'}</div>
+          <div style={{ fontSize:11, color:V2.muted, fontWeight:800, letterSpacing:'0.06em', textTransform:'uppercase' }}>{meta || 'Player'}</div>
+          <div style={{ display:'flex', flexWrap:'wrap', gap:6, paddingTop:2 }}>
             {ownerLabel && (
-              <span style={{ background:V2.accentSoft, color:V2.accent, fontSize:10, fontWeight:800, padding:'3px 7px', borderRadius:999, letterSpacing:'0.04em' }}>{ownerLabel}</span>
+              <span style={{ background:V2.accentSoft, color:V2.accent, fontSize:10, fontWeight:800, padding:'4px 9px', borderRadius:999, letterSpacing:'0.06em', textTransform:'uppercase' }}>{ownerLabel}</span>
             )}
             <span style={{
               background: statusOk ? V2.benchSoft : V2.injuredSoft,
               color: statusOk ? V2.bench : V2.injured,
-              fontSize:10, fontWeight:800, padding:'3px 7px', borderRadius:999, letterSpacing:'0.04em', textTransform:'uppercase',
+              fontSize:10, fontWeight:800, padding:'4px 9px', borderRadius:999, letterSpacing:'0.06em', textTransform:'uppercase',
             }}>{statusLabel}</span>
           </div>
         </div>
       </div>
-      <div style={{ borderLeft:`1px solid ${V2.hairline2}`, paddingLeft:14, minWidth:0 }}>
-        <V2Eyebrow color={V2.accent}>Skipper take</V2Eyebrow>
+      <div style={{ height:1, background:V2.hairline2 }}/>
+      <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <span style={{ display:'inline-flex', alignItems:'center', justifyContent:'center', width:18, height:18, borderRadius:'50%', background:V2.accent }}>
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
+              <path d="M8 1.5 9.2 6 13.5 8 9.2 10 8 14.5 6.8 10 2.5 8 6.8 6 8 1.5Z" fill={V2.surface}/>
+            </svg>
+          </span>
+          <span style={{ fontSize:10.5, color:V2.accent, fontWeight:800, letterSpacing:'0.12em', textTransform:'uppercase' }}>Skipper take</span>
+        </div>
         {takeText ? (
-          <div style={{ marginTop:8, color:V2.ink, fontSize:12.8, lineHeight:1.45, fontWeight:600 }}>{takeText}</div>
+          <div style={{ fontSize:13.5, lineHeight:1.55, color:V2.ink, fontWeight:500 }}>{takeText}</div>
         ) : takeError ? (
-          <div style={{ marginTop:8, color:V2.muted, fontSize:12.5, lineHeight:1.45, fontWeight:600 }}>Skipper unavailable. Stats are still current.</div>
+          <div style={{ fontSize:13, color:V2.muted, lineHeight:1.5, fontWeight:500 }}>Skipper unavailable. Stats are still current.</div>
         ) : (
-          <div style={{ marginTop:9 }}>
+          <div>
             <div style={{ height:9, width:'95%', background:V2.surface2, borderRadius:8 }}/>
             <div style={{ height:9, width:'86%', background:V2.surface2, borderRadius:8, marginTop:7 }}/>
             <div style={{ height:9, width:'72%', background:V2.surface2, borderRadius:8, marginTop:7 }}/>
@@ -1205,33 +1216,140 @@ function V2ProfileHero({ player, mlb, take, statusLabel, statusOk }) {
   );
 }
 
-function V2ProfileTrend({ trend, games, sparkline }) {
-  const dir = trend?.direction || 'flat';
-  const tone = dir === 'up' ? V2.ok : dir === 'down' ? V2.bad : V2.muted;
-  const arrow = dir === 'up' ? '↑' : dir === 'down' ? '↓' : '→';
-  const pct = trend?.pct_change;
-  const pctLabel = pct === null || pct === undefined
-    ? '—'
-    : `${pct > 0 ? '+' : ''}${pct.toFixed ? pct.toFixed(1) : pct}%`;
+function V2ProfileStats({ trend, games, sparkline, isPitcher, season }) {
+  const [expanded, setExpanded] = React.useState(false);
+  React.useEffect(() => setExpanded(false), [games]);
+
+  const seasonStats = isPitcher ? v2ComputePitchingSeason(games) : v2ComputeHittingSeason(games);
   const l7 = v2AverageFpts(games, 7);
   const l30 = v2AverageFpts(games, 30);
+  const headlineThird = isPitcher
+    ? { label:'ERA', value: seasonStats.ip ? seasonStats.era.toFixed(2) : '—' }
+    : { label:'AVG', value: seasonStats.ab ? seasonStats.avg.toFixed(3).replace(/^0/, '') : '—' };
+
+  const headline = [
+    { label:'L7',  value: v2FormatFpts(l7) },
+    { label:'L30', value: v2FormatFpts(l30) },
+    headlineThird,
+  ];
+
+  const moreCells = isPitcher
+    ? [
+        { label:'IP',   value: seasonStats.ip.toFixed(1) },
+        { label:'K',    value: seasonStats.k },
+        { label:'WHIP', value: seasonStats.ip ? seasonStats.whip.toFixed(2) : '—' },
+        { label:'BB',   value: seasonStats.bb },
+        { label:'W',    value: seasonStats.wins },
+        { label:'SV',   value: seasonStats.saves },
+      ]
+    : [
+        { label:'H',   value: seasonStats.h },
+        { label:'HR',  value: seasonStats.hr },
+        { label:'RBI', value: seasonStats.rbi },
+        { label:'BB',  value: seasonStats.bb },
+        { label:'K',   value: seasonStats.k },
+        { label:'SB',  value: seasonStats.sb },
+      ];
+
+  const trendDir = trend?.direction || 'flat';
+  const trendTone = trendDir === 'up' ? V2.ok : trendDir === 'down' ? V2.bad : V2.muted;
+  const trendArrow = trendDir === 'up' ? '↑' : trendDir === 'down' ? '↓' : '→';
   const points = sparkline || [];
+  const reversedGames = games.slice().reverse();
+
   return (
-    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:14 }}>
-      <V2StatRow stats={[
-        { label:'L7', value:v2FormatFpts(l7) },
-        { label:'L30', value:v2FormatFpts(l30) },
-        { label:'vs Exp', value:pctLabel, color:tone },
-      ]}/>
-      {points.length > 0 && (
-        <div style={{ marginTop:14, paddingTop:12, borderTop:`1px solid ${V2.hairline2}` }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
-            <V2Eyebrow>Last {points.length} games · Fantasy points</V2Eyebrow>
-            <span style={{ color:tone, fontSize:16, lineHeight:1, fontWeight:900 }}>{arrow}</span>
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:'18px 18px 4px' }}>
+      <div style={{ display:'flex', alignItems:'stretch', paddingBottom:14 }}>
+        {headline.map((s, i) => (
+          <React.Fragment key={s.label}>
+            {i > 0 && <div style={{ width:1, background:V2.hairline2 }}/>}
+            <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:4 }}>
+              <div style={{ fontFamily:V2.fontMono, fontSize:26, fontWeight:700, color:V2.ink, letterSpacing:'-0.02em' }}>{s.value}</div>
+              <div style={{ fontSize:10, color:V2.muted, fontWeight:800, letterSpacing:'0.1em', textTransform:'uppercase' }}>{s.label}</div>
+            </div>
+          </React.Fragment>
+        ))}
+      </div>
+      <button
+        onClick={() => setExpanded(v => !v)}
+        aria-label={expanded ? 'Hide more stats' : 'Show more stats'}
+        style={{
+          background:'none', border:'none', borderTop:`1px solid ${V2.hairline2}`,
+          width:'100%', padding:'14px 0', display:'flex', alignItems:'center', justifyContent:'space-between',
+          cursor:'pointer', fontFamily:'inherit', textAlign:'left',
+        }}
+      >
+        <span style={{ fontSize:11, color:V2.ink, fontWeight:800, letterSpacing:'0.12em', textTransform:'uppercase' }}>
+          {expanded ? 'Hide stats' : 'More stats'}
+        </span>
+        <span style={{
+          width:26, height:26, borderRadius:999, background:V2.surface2, border:`1px solid ${V2.hairline2}`,
+          display:'flex', alignItems:'center', justifyContent:'center',
+        }}>
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition:'transform .15s ease' }}>
+            <path d="M3 4.5 6 7.5l3-3" stroke={V2.body} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </span>
+      </button>
+      {expanded && (
+        <div style={{ paddingBottom:14, display:'flex', flexDirection:'column', gap:14 }}>
+          <div>
+            <div style={{ fontSize:10.5, color:V2.muted, fontWeight:800, letterSpacing:'0.1em', textTransform:'uppercase', paddingTop:4, paddingBottom:8 }}>
+              Season {season ? `· ${season}` : ''} · {isPitcher ? 'Pitching' : 'Hitting'}
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', border:`1px solid ${V2.hairline2}`, borderRadius:12, overflow:'hidden' }}>
+              {moreCells.map((s, i) => (
+                <div key={s.label} style={{
+                  padding:'10px 8px', display:'flex', flexDirection:'column', alignItems:'center', gap:3,
+                  borderRight: (i % 3 !== 2) ? `1px solid ${V2.hairline2}` : 'none',
+                  borderTop:   (i >= 3) ? `1px solid ${V2.hairline2}` : 'none',
+                  background:V2.surface,
+                }}>
+                  <div style={{ fontFamily:V2.fontMono, fontSize:18, fontWeight:700, color:V2.ink, letterSpacing:'-0.02em' }}>{s.value}</div>
+                  <div style={{ fontSize:9.5, color:V2.muted, fontWeight:800, letterSpacing:'0.1em', textTransform:'uppercase' }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
           </div>
-          <div style={{ marginTop:10 }}>
-            <V2BarSparkline values={points.map(p => Number(p.fpts) || 0)}/>
-          </div>
+          {points.length > 0 && (
+            <div>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+                <span style={{ fontSize:10.5, color:V2.muted, fontWeight:800, letterSpacing:'0.1em', textTransform:'uppercase' }}>Last {points.length} games · FPTS</span>
+                <span style={{ color:trendTone, fontSize:16, lineHeight:1, fontWeight:900 }}>{trendArrow}</span>
+              </div>
+              <div style={{ marginTop:10 }}>
+                <V2BarSparkline values={points.map(p => Number(p.fpts) || 0)}/>
+              </div>
+            </div>
+          )}
+          {reversedGames.length > 0 && (
+            <div style={{ display:'flex', flexDirection:'column' }}>
+              <div style={{ fontSize:10.5, color:V2.muted, fontWeight:800, letterSpacing:'0.1em', textTransform:'uppercase', paddingBottom:4 }}>Game log</div>
+              {reversedGames.slice(0, 14).map((g, i) => (
+                <div key={i} style={{
+                  padding:'10px 0', borderTop:`1px solid ${V2.hairline2}`,
+                  display:'grid', gridTemplateColumns:'52px 1fr auto', alignItems:'center', gap:10, fontSize:12.5,
+                }}>
+                  <div style={{ color:V2.muted, fontWeight:700, fontFamily:V2.fontMono }}>{v2ShortDate(g.date)}</div>
+                  <div style={{ minWidth:0 }}>
+                    <div style={{ fontWeight:700, fontSize:12 }}>{g.home ? 'vs ' : '@ '}{g.opponent || '?'}</div>
+                    <div style={{ color:V2.body, marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{g.line || '—'}</div>
+                  </div>
+                  <div style={{ textAlign:'right', fontFamily:V2.fontMono }}>
+                    {!isPitcher && (
+                      <div style={{ fontSize:11, color:V2.muted, fontWeight:700 }}>
+                        {g.avg_game === null || g.avg_game === undefined ? '—' : g.avg_game.toFixed(3).replace(/^0/, '')}
+                      </div>
+                    )}
+                    <div style={{
+                      fontWeight:800, fontSize:13.5,
+                      color: (g.fpts_estimated || 0) < 0 ? V2.bad : V2.ink,
+                    }}>{(g.fpts_estimated ?? 0).toFixed(1)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -1251,25 +1369,21 @@ function v2FormatFpts(value) {
   return value === null || value === undefined ? '—' : value.toFixed(1);
 }
 
-function V2ProfileSeason({ games, isPitcher, season }) {
-  const stats = isPitcher ? v2ComputePitchingSeason(games) : v2ComputeHittingSeason(games);
-  const cells = isPitcher
-    ? [
-        { label:'ERA',  value: stats.ip ? stats.era.toFixed(2) : '—' },
-        { label:'IP',   value: stats.ip.toFixed(1) },
-        { label:'K',    value: stats.k },
-        { label:'WHIP', value: stats.ip ? stats.whip.toFixed(2) : '—' },
-      ]
-    : [
-        { label:'AVG', value: stats.ab ? stats.avg.toFixed(3).replace(/^0/, '') : '—' },
-        { label:'H',   value: stats.h },
-        { label:'HR',  value: stats.hr },
-        { label:'RBI', value: stats.rbi },
-      ];
+const V2_PROFILE_PLACEHOLDER_CLIPS = [
+  { id:'p1', date:'May 3',  title:'RBI double vs SF',                caption:'See swing path, not just box score.', kind:'video', tone:'orange' },
+  { id:'p2', date:'May 1',  title:'Chase strikeout',                 caption:'Useful negative clip for approach.',  kind:'video', tone:'dark'   },
+  { id:'p3', date:'Apr 30', title:'Dodgers note · Normal workload',  caption:'Roberts: "He\'s our guy back there."', kind:'note',  tone:'blue'   },
+];
+
+function V2ProfileClips({ clips }) {
+  const list = Array.isArray(clips) ? clips : V2_PROFILE_PLACEHOLDER_CLIPS;
+  if (!list.length) return null;
   return (
-    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:14 }}>
-      <V2Eyebrow>Season · {isPitcher ? 'Pitching' : 'Hitting'} {season ? `· ${season}` : ''}</V2Eyebrow>
-      <V2StatRow stats={cells}/>
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:'16px 4px 4px', display:'flex', flexDirection:'column' }}>
+      <div style={{ fontSize:11, color:V2.accent, fontWeight:800, letterSpacing:'0.14em', textTransform:'uppercase', padding:'0 14px 12px' }}>
+        MLB clips + news
+      </div>
+      {list.map((c, i) => <V2ClipRow key={c.id || i} clip={c}/>)}
     </div>
   );
 }
@@ -1296,61 +1410,54 @@ function V2BarSparkline({ values, w=320, h=56 }) {
   );
 }
 
-function V2ProfileGameLog({ games, isPitcher }) {
-  const [expanded, setExpanded] = React.useState(false);
-  React.useEffect(() => setExpanded(false), [games]);
-  const rows = games.slice().reverse();
-  const shown = rows.slice(0, expanded ? 14 : 1);
+function V2ClipRow({ clip }) {
+  const isNote = clip.kind === 'note';
+  const tone = clip.tone || (isNote ? 'blue' : 'orange');
+  const thumbBg = tone === 'orange'
+    ? 'linear-gradient(135deg, #df7042 0%, #a04a23 100%)'
+    : tone === 'dark'
+      ? 'linear-gradient(135deg, #3a2418 0%, #1a0f08 100%)'
+      : 'linear-gradient(135deg, #dbe7fe 0%, #7da0d8 100%)';
+  const Wrap = clip.url ? 'a' : 'div';
+  const wrapProps = clip.url
+    ? { href: clip.url, target: '_blank', rel: 'noopener noreferrer' }
+    : {};
   return (
-    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, overflow:'hidden' }}>
-      <div style={{ padding:'12px 14px 6px', display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
-        <V2Eyebrow>Game log</V2Eyebrow>
-        {rows.length > 1 && (
-          <button
-            onClick={() => setExpanded(v => !v)}
-            aria-label={expanded ? 'Collapse game log' : 'Expand game log'}
-            style={{
-              background:V2.surface2, border:`1px solid ${V2.hairline2}`, borderRadius:999,
-              width:28, height:28, display:'flex', alignItems:'center', justifyContent:'center',
-              cursor:'pointer', color:V2.body, fontFamily:'inherit',
-            }}
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition:'transform .15s ease' }}>
-              <path d="M3 4.5 6 7.5l3-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-          </button>
+    <Wrap
+      {...wrapProps}
+      style={{
+        padding:'10px 14px', borderTop:`1px solid ${V2.hairline2}`,
+        display:'flex', alignItems:'center', gap:12,
+        textDecoration:'none', color:'inherit',
+      }}
+    >
+      <div style={{
+        width:54, height:54, borderRadius:12, background:thumbBg,
+        display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
+        position:'relative', overflow:'hidden',
+      }}>
+        {isNote ? (
+          <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
+            <path d="M3 5h10M3 8h10M3 11h7" stroke="#1e3a5f" strokeWidth="1.6" strokeLinecap="round"/>
+          </svg>
+        ) : (
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+            <path d="M5 3.5v9l8-4.5L5 3.5Z" fill={V2.surface}/>
+          </svg>
         )}
       </div>
-      {shown.map((g, i) => (
-        <div key={i} style={{
-          padding:'10px 14px',
-          borderTop:`1px solid ${V2.hairline2}`,
-          display:'grid',
-          gridTemplateColumns:'52px 1fr auto',
-          alignItems:'center', gap:10,
-          fontSize:12.5,
-        }}>
-          <div style={{ color:V2.muted, fontWeight:700, fontFamily:V2.fontMono }}>{v2ShortDate(g.date)}</div>
-          <div style={{ minWidth:0 }}>
-            <div style={{ fontWeight:700, fontSize:12 }}>{g.home ? 'vs ' : '@ '}{g.opponent || '?'}</div>
-            <div style={{ color:V2.body, marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{g.line || '—'}</div>
-          </div>
-          <div style={{ textAlign:'right', fontFamily:V2.fontMono }}>
-            {!isPitcher && (
-              <div style={{ fontSize:11, color:V2.muted, fontWeight:700 }}>
-                {g.avg_game === null || g.avg_game === undefined ? '—' : g.avg_game.toFixed(3).replace(/^0/, '')}
-              </div>
-            )}
-            <div style={{
-              fontWeight:800, fontSize:13.5,
-              color: (g.fpts_estimated || 0) < 0 ? V2.bad : V2.ink,
-            }}>
-              {(g.fpts_estimated ?? 0).toFixed(1)}
-            </div>
-          </div>
+      <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', gap:3 }}>
+        <div style={{ fontSize:13.5, color:V2.ink, fontWeight:700, letterSpacing:'-0.005em' }}>
+          {clip.date ? `${clip.date} · ` : ''}{clip.title}
         </div>
-      ))}
-    </div>
+        {clip.caption && (
+          <div style={{ fontSize:11.5, color:V2.muted, fontWeight:500, lineHeight:1.4 }}>{clip.caption}</div>
+        )}
+      </div>
+      <svg width="11" height="11" viewBox="0 0 12 12" fill="none" style={{ flexShrink:0 }}>
+        <path d="M4 3l3 3-3 3" stroke="#94a3b8" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    </Wrap>
   );
 }
 

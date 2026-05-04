@@ -23,6 +23,8 @@ log = logging.getLogger(__name__)
 
 BASE_URL = "https://statsapi.mlb.com/api/v1"
 DEFAULT_TIMEOUT = 12
+MEDIA_GAME_LIMIT = 5
+MEDIA_ITEM_LIMIT = 5
 
 _PLAYER_INDEX_CACHE: dict[int, list[dict[str, Any]]] = {}
 _TEAM_ABBREV_CACHE: dict[int, dict[int, str]] = {}
@@ -175,6 +177,104 @@ def fetch_game_log(
     return games
 
 
+def fetch_player_media(
+    mlb_id: int,
+    player_name: str,
+    games: list[dict[str, Any]],
+    *,
+    limit: int = MEDIA_ITEM_LIMIT,
+) -> list[dict[str, Any]]:
+    """Fetch recent MLB content/highlights connected to a player's games.
+
+    MLB content is organized by game, so we search recent game content and keep
+    clips/news whose title or description mentions the player. Missing content
+    is normal and returns an empty list.
+    """
+    player_tokens = _media_name_tokens(player_name)
+    game_pks: list[int] = []
+    for game in reversed(games or []):
+        game_pk = game.get("game_pk")
+        if game_pk is None:
+            continue
+        try:
+            game_pk = int(game_pk)
+        except (TypeError, ValueError):
+            continue
+        if game_pk not in game_pks:
+            game_pks.append(game_pk)
+        if len(game_pks) >= MEDIA_GAME_LIMIT:
+            break
+
+    items: list[dict[str, Any]] = []
+    for game_pk in game_pks:
+        try:
+            items.extend(_fetch_game_media_items(game_pk, player_tokens))
+        except Exception as exc:
+            log.warning("MLB media fetch failed for game %s/player %s: %s", game_pk, mlb_id, exc)
+        if len(items) >= limit:
+            break
+    return items[:limit]
+
+
+def _fetch_game_media_items(game_pk: int, player_tokens: set[str]) -> list[dict[str, Any]]:
+    url = f"{BASE_URL}/game/{game_pk}/content"
+    resp = requests.get(url, params={"highlightLimit": 20}, timeout=DEFAULT_TIMEOUT)
+    resp.raise_for_status()
+    data = resp.json()
+    raw_items = (((data.get("highlights") or {}).get("highlights") or {}).get("items") or [])
+    parsed: list[dict[str, Any]] = []
+    for item in raw_items:
+        title = item.get("title") or item.get("headline") or ""
+        description = item.get("description") or item.get("blurb") or ""
+        searchable = _normalize(f"{title} {description}")
+        if player_tokens and not any(token in searchable for token in player_tokens):
+            continue
+        parsed.append({
+            "id": item.get("id") or item.get("guid") or f"{game_pk}:{len(parsed)}",
+            "kind": "video",
+            "source": "MLB",
+            "game_pk": game_pk,
+            "date": item.get("date") or item.get("timestamp") or item.get("releaseDate"),
+            "title": title,
+            "caption": description,
+            "url": item.get("url") or item.get("href") or _best_playback_url(item),
+            "thumbnail": _best_thumbnail_url(item),
+            "duration": item.get("duration"),
+        })
+    return parsed
+
+
+def _media_name_tokens(player_name: str) -> set[str]:
+    parts = _normalize(player_name).split()
+    if not parts:
+        return set()
+    tokens = {player_name.lower(), " ".join(parts)}
+    if len(parts[-1]) >= 4:
+        tokens.add(parts[-1])
+    return {_normalize(t) for t in tokens if t}
+
+
+def _best_playback_url(item: dict[str, Any]) -> str | None:
+    for playback in item.get("playbacks") or []:
+        url = playback.get("url")
+        if url:
+            return url
+    return None
+
+
+def _best_thumbnail_url(item: dict[str, Any]) -> str | None:
+    image = item.get("image") or {}
+    cuts = image.get("cuts") or []
+    if cuts:
+        preferred = sorted(
+            cuts,
+            key=lambda c: ((c.get("width") or 0) * (c.get("height") or 0)),
+            reverse=True,
+        )[0]
+        return preferred.get("src")
+    return image.get("src")
+
+
 # ---------------------------------------------------------------------------
 # Normalization
 # ---------------------------------------------------------------------------
@@ -196,6 +296,7 @@ def _normalize_split(
         "date": date,
         "opponent": opp_abbrev,
         "home": is_home,
+        "game_pk": (split.get("game") or {}).get("gamePk") or split.get("gamePk"),
     }
     if group == "hitting":
         ab = _to_int(stat.get("atBats"))

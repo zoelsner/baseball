@@ -1,14 +1,16 @@
 """Composes the player-profile payload served by /api/player/{fantrax_id}.
 
-Combines (a) the latest snapshot row for the player with (b) MLB Stats API
-game-log data, resolving the fantrax<->mlb id mapping lazily and caching it
-plus the per-game log in Postgres. Designed to be called on profile open.
+Normal profile opens are intentionally cache-first: the API should return the
+Fantrax snapshot row and any cached Postgres profile data without waiting on
+MLB Stats API or OpenRouter. Explicit refreshes and cron warmups populate those
+caches out-of-band.
 """
 
 from __future__ import annotations
 
 import logging
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,8 +21,10 @@ import sandlot_skipper
 log = logging.getLogger(__name__)
 
 GAME_LOG_TTL_HOURS = 12
+MEDIA_TTL_HOURS = 12
 SPARKLINE_GAMES = 14
 TREND_GAMES = 7
+DEFAULT_WARM_LIMIT = 30
 
 PITCHING_SLOT_TOKENS = {"SP", "RP", "P"}
 
@@ -40,7 +44,20 @@ class PlayerNotFound(Exception):
     """Raised when fantrax_id isn't present in the latest snapshot."""
 
 
-def get_player_profile(fantrax_id: str, *, force_refresh: bool = False) -> dict[str, Any]:
+def get_player_profile(
+    fantrax_id: str,
+    *,
+    force_refresh: bool = False,
+    generate_take: bool | None = None,
+) -> dict[str, Any]:
+    """Return a player profile payload.
+
+    `force_refresh=False` is the fast path and only reads Postgres caches.
+    `force_refresh=True` may call MLB Stats API and, by default, OpenRouter.
+    """
+    if generate_take is None:
+        generate_take = force_refresh
+
     snapshot_row = sandlot_db.latest_successful_snapshot()
     if not snapshot_row:
         raise PlayerNotFound("no snapshot available")
@@ -63,33 +80,120 @@ def get_player_profile(fantrax_id: str, *, force_refresh: bool = False) -> dict[
         "trend": None,
         "sparkline": [],
         "games": [],
+        "media": {"items": [], "cache": {"state": "missing", "fetched_at": None, "age_hours": None}},
+        "profile_cache": {
+            "mode": "refresh" if force_refresh else "cache",
+            "needs_refresh": False,
+            "game_log": {"state": "missing", "fetched_at": None, "age_hours": None},
+            "media": {"state": "missing", "fetched_at": None, "age_hours": None},
+            "take": {"state": "missing"},
+        },
         "take": {"text": None, "model": None, "generated_at": None, "error": None},
     }
 
     mlb_id = _resolve_mlb_id(fantrax_id, player_row, force_refresh=force_refresh)
     if mlb_id is None:
-        payload["mlb"]["reason"] = "MLB stats not available for this player"
+        cached = sandlot_db.get_mlb_id(fantrax_id) if not force_refresh else None
+        if cached is None and not force_refresh:
+            payload["mlb"]["reason"] = "MLB ID not cached yet"
+            payload["profile_cache"]["needs_refresh"] = True
+        else:
+            payload["mlb"]["reason"] = "MLB stats not available for this player"
     else:
-        games = _load_games(mlb_id, season=season, group=group, force_refresh=force_refresh)
+        games, game_cache = _load_games(mlb_id, season=season, group=group, force_refresh=force_refresh)
+        payload["profile_cache"]["game_log"] = game_cache
         if not games:
-            payload["mlb"].update({"available": True, "mlb_id": mlb_id, "reason": "No games logged this season"})
+            reason = "No games logged this season" if force_refresh else "MLB game log not cached yet"
+            payload["mlb"].update({"available": True, "mlb_id": mlb_id, "reason": reason})
+            if not force_refresh:
+                payload["profile_cache"]["needs_refresh"] = True
         else:
             payload["mlb"].update({"available": True, "mlb_id": mlb_id})
+            if game_cache.get("state") == "stale":
+                payload["mlb"]["reason"] = "Showing stale cached MLB game log"
+                payload["profile_cache"]["needs_refresh"] = True
             payload["games"] = games
             payload["sparkline"] = _sparkline(games)
             payload["trend"] = _trend(games, group)
-    payload["take"] = _load_or_generate_take(
-        fantrax_id=fantrax_id,
-        snapshot_row=snapshot_row,
-        snapshot=snapshot,
-        player_row=player_row,
-        payload=payload,
-    )
+        media_items, media_cache = _load_media(
+            mlb_id,
+            player_name=str(player_row.get("name") or ""),
+            games=games,
+            force_refresh=force_refresh,
+        )
+        payload["media"] = {"items": media_items, "cache": media_cache}
+        payload["profile_cache"]["media"] = media_cache
+        if media_cache.get("state") in {"missing", "stale"} and not force_refresh:
+            payload["profile_cache"]["needs_refresh"] = True
+    if generate_take:
+        payload["take"] = _load_or_generate_take(
+            fantrax_id=fantrax_id,
+            snapshot_row=snapshot_row,
+            snapshot=snapshot,
+            player_row=player_row,
+            payload=payload,
+        )
+    else:
+        payload["take"] = _load_cached_take(fantrax_id, snapshot_row)
+    payload["profile_cache"]["take"] = _take_cache_state(payload["take"])
     return payload
 
 
 def force_refresh(fantrax_id: str) -> dict[str, Any]:
     return get_player_profile(fantrax_id, force_refresh=True)
+
+
+def refresh_cached_profile(fantrax_id: str, *, generate_take: bool = False) -> dict[str, Any] | None:
+    """Best-effort cache warmer for background tasks.
+
+    Errors are logged and swallowed so a background warm cannot break the page
+    request that scheduled it.
+    """
+    try:
+        return get_player_profile(fantrax_id, force_refresh=True, generate_take=generate_take)
+    except Exception as exc:
+        log.warning("Player profile warm failed for %s: %s", fantrax_id, exc)
+        return None
+
+
+def warm_roster_profiles(
+    *,
+    snapshot_id: int | None = None,
+    limit: int | None = None,
+    generate_takes: bool = False,
+) -> dict[str, Any]:
+    """Pre-warm roster MLB profile caches after a snapshot refresh."""
+    snapshot_row = sandlot_db.latest_successful_snapshot()
+    if not snapshot_row:
+        return {"attempted": 0, "warmed": 0, "failed": 0, "errors": ["no snapshot available"]}
+    if snapshot_id is not None and int(snapshot_row.get("id") or 0) != int(snapshot_id):
+        log.info(
+            "Requested profile warm for snapshot_id=%s; latest is %s",
+            snapshot_id,
+            snapshot_row.get("id"),
+        )
+
+    snapshot = snapshot_row.get("data") or {}
+    rows = (snapshot.get("roster") or {}).get("rows") or []
+    limit = limit if limit is not None else int(os.environ.get("SANDLOT_PROFILE_WARM_LIMIT", str(DEFAULT_WARM_LIMIT)))
+    ids: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        fantrax_id = row.get("id")
+        if fantrax_id and fantrax_id not in ids:
+            ids.append(str(fantrax_id))
+        if len(ids) >= limit:
+            break
+
+    warmed = 0
+    errors: list[str] = []
+    for fantrax_id in ids:
+        if refresh_cached_profile(fantrax_id, generate_take=generate_takes) is None:
+            errors.append(fantrax_id)
+        else:
+            warmed += 1
+    return {"attempted": len(ids), "warmed": warmed, "failed": len(errors), "errors": errors[:10]}
 
 
 # ---------------------------------------------------------------------------
@@ -168,21 +272,71 @@ def _resolve_mlb_id(fantrax_id: str, player_row: dict[str, Any], *, force_refres
     return mlb_id
 
 
-def _load_games(mlb_id: int, *, season: int, group: str, force_refresh: bool) -> list[dict[str, Any]]:
+def _load_games(
+    mlb_id: int,
+    *,
+    season: int,
+    group: str,
+    force_refresh: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    cached = sandlot_db.get_player_game_log(mlb_id)
     if not force_refresh:
-        cached = sandlot_db.get_player_game_log(mlb_id)
-        if cached and cached.get("group_type") == group and _fresh_enough(cached):
-            return cached.get("games") or []
+        if cached and cached.get("group_type") == group and cached.get("season") == season:
+            return cached.get("games") or [], _game_log_cache_state(cached)
+        return [], {"state": "missing", "fetched_at": None, "age_hours": None}
     try:
         games = mlb_stats.fetch_game_log(mlb_id, season=season, group=group)
     except Exception as exc:
         log.warning("MLB game log fetch failed for %s: %s", mlb_id, exc)
-        cached = sandlot_db.get_player_game_log(mlb_id)
-        if cached and cached.get("group_type") == group:
-            return cached.get("games") or []
-        return []
+        if cached and cached.get("group_type") == group and cached.get("season") == season:
+            return cached.get("games") or [], _game_log_cache_state(cached, fallback_error=str(exc))
+        return [], {"state": "error", "fetched_at": None, "age_hours": None, "error": str(exc)}
     sandlot_db.set_player_game_log(mlb_id, group_type=group, season=season, games=games)
-    return games
+    fresh_state = {"state": "fresh", "fetched_at": datetime.now(timezone.utc), "age_hours": 0.0}
+    return games, fresh_state
+
+
+def _load_cached_take(fantrax_id: str, snapshot_row: dict[str, Any]) -> dict[str, Any]:
+    snapshot_id = snapshot_row.get("id")
+    if not snapshot_id:
+        return {"text": None, "model": None, "generated_at": None, "error": "No snapshot id available", "cached": False}
+    try:
+        cached = sandlot_db.get_player_take(fantrax_id, int(snapshot_id))
+    except Exception as exc:
+        log.warning("Player take cache read failed for %s/%s: %s", fantrax_id, snapshot_id, exc)
+        return {"text": None, "model": None, "generated_at": None, "error": str(exc), "cached": False}
+    if not cached:
+        return {"text": None, "model": None, "generated_at": None, "error": None, "cached": False}
+    return {
+        "text": cached.get("text"),
+        "model": cached.get("model"),
+        "generated_at": cached.get("generated_at"),
+        "error": None,
+        "cached": True,
+    }
+
+
+def _load_media(
+    mlb_id: int,
+    *,
+    player_name: str,
+    games: list[dict[str, Any]],
+    force_refresh: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    cached = sandlot_db.get_player_media(mlb_id)
+    if not force_refresh:
+        if cached:
+            return cached.get("items") or [], _generic_cache_state(cached, ttl_hours=MEDIA_TTL_HOURS)
+        return [], {"state": "missing", "fetched_at": None, "age_hours": None}
+    try:
+        items = mlb_stats.fetch_player_media(mlb_id, player_name, games)
+    except Exception as exc:
+        log.warning("MLB media fetch failed for %s: %s", mlb_id, exc)
+        if cached:
+            return cached.get("items") or [], _generic_cache_state(cached, ttl_hours=MEDIA_TTL_HOURS, fallback_error=str(exc))
+        return [], {"state": "error", "fetched_at": None, "age_hours": None, "error": str(exc)}
+    sandlot_db.set_player_media(mlb_id, items)
+    return items, {"state": "fresh", "fetched_at": datetime.now(timezone.utc), "age_hours": 0.0}
 
 
 def _load_or_generate_take(
@@ -329,14 +483,49 @@ def _snapshot_freshness(taken_at: Any) -> dict[str, Any]:
     return {"state": state, "age_minutes": age_minutes}
 
 
-def _fresh_enough(cached: dict[str, Any]) -> bool:
+def _fresh_enough(cached: dict[str, Any], *, ttl_hours: int = GAME_LOG_TTL_HOURS) -> bool:
     fetched_at = cached.get("fetched_at")
     if not isinstance(fetched_at, datetime):
         return False
     if fetched_at.tzinfo is None:
         fetched_at = fetched_at.replace(tzinfo=timezone.utc)
     age_hours = (datetime.now(timezone.utc) - fetched_at).total_seconds() / 3600.0
-    return age_hours < GAME_LOG_TTL_HOURS
+    return age_hours < ttl_hours
+
+
+def _game_log_cache_state(cached: dict[str, Any], *, fallback_error: str | None = None) -> dict[str, Any]:
+    return _generic_cache_state(cached, ttl_hours=GAME_LOG_TTL_HOURS, fallback_error=fallback_error)
+
+
+def _generic_cache_state(
+    cached: dict[str, Any],
+    *,
+    ttl_hours: int,
+    fallback_error: str | None = None,
+) -> dict[str, Any]:
+    fetched_at = cached.get("fetched_at")
+    age_hours = None
+    if isinstance(fetched_at, datetime):
+        if fetched_at.tzinfo is None:
+            fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+        age_hours = round(max(0.0, (datetime.now(timezone.utc) - fetched_at).total_seconds() / 3600.0), 2)
+    state = "fresh" if _fresh_enough(cached, ttl_hours=ttl_hours) else "stale"
+    result = {"state": state, "fetched_at": fetched_at, "age_hours": age_hours}
+    if fallback_error:
+        result["refresh_error"] = fallback_error
+    return result
+
+
+def _take_cache_state(take: dict[str, Any]) -> dict[str, Any]:
+    if take.get("text"):
+        return {
+            "state": "fresh" if take.get("cached") is False else "cached",
+            "generated_at": take.get("generated_at"),
+            "model": take.get("model"),
+        }
+    if take.get("error"):
+        return {"state": "error", "error": take.get("error")}
+    return {"state": "missing"}
 
 
 # ---------------------------------------------------------------------------

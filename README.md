@@ -4,7 +4,7 @@ Two scripts working together:
 
 - **`audit.py`** — runs daily. Quick lineup hygiene check. Pulls your roster, standings, transactions, FA pool, asks Claude for a short report, emails it.
 - **`league_intel.py`** — runs weekly (Sundays). Deep research-driven recommendations. Pulls every team in the league, hydrates with current MLB stats from Fangraphs/Statcast, runs grounded web research on the highest-impact moves (sources cited, last 30 days only), emails a TL;DR-then-evidence report.
-- **`sandlot_api.py` / `sandlot_cron.py`** — Sandlot V1 web app. Railway-ready FastAPI service with Postgres snapshots, manual refresh, daily cron scrape, player detail sheets, MLB headshots/game logs, and cached Skipper takes. See [`docs/sandlot-railway-v1.md`](docs/sandlot-railway-v1.md).
+- **`sandlot_api.py` / `sandlot_cron.py`** — Sandlot V1 web app. Railway-ready FastAPI service with Postgres snapshots, manual refresh, daily cron scrape, player detail sheets, MLB headshots/game logs/media, background profile warming, and cached Skipper takes. See [`docs/sandlot-railway-v1.md`](docs/sandlot-railway-v1.md).
 
 **Both are recommend-only.** The Fantrax library is read-only — these scripts will never set a lineup, drop a player, or accept a trade for you. They tell you what to do; you decide and execute manually in Fantrax.
 

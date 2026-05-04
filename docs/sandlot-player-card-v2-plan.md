@@ -33,6 +33,9 @@ Implemented in this pass:
 - `sandlot_db.py` now creates `player_takes` and exposes `get_player_take` / `set_player_take`.
 - `sandlot_skipper.py` now has `SkipperClient.complete()` for non-streaming OpenRouter completions.
 - `player_service.py` now includes `take` in `/api/player/{id}` payloads, caches takes by `(player_id, snapshot_id)`, and degrades gracefully if OpenRouter is unavailable.
+- Player profile loading is now layered: normal `GET /api/player/{id}` is cache-only and returns Fantrax/cached Postgres data immediately; `/refresh`, background warm tasks, and cron do the expensive MLB/OpenRouter work.
+- `player_media` stores MLB game-content media found from recent game logs. The profile payload returns `media.items` from cache first, so the Media Scout section can show clips when available without slowing initial sheet open.
+- `sandlot_cron.py` now pre-warms roster player profiles after each successful Fantrax snapshot. By default it warms MLB ids, game logs, and media; Skipper take pre-generation is opt-in via `SANDLOT_PROFILE_WARM_TAKES=1`.
 
 Validation completed locally:
 
@@ -43,9 +46,10 @@ Validation completed locally:
 
 Still needs browser/preview validation against a real Railway snapshot:
 
-- Real `/api/player/{id}` take generation and cache hit timing
+- Real `/api/player/{id}` cache-only timing, background warm behavior, and `/api/player/{id}/refresh` timing
 - Headshot happy path and fallback path
-- Game-log accordion interaction
+- Game-log/stat accordion interaction
+- MLB media availability for players with recent highlight clips
 - Full sheet visual pass on the in-app browser
 
 ### Frontend (`web/sandlot/v2-pages.jsx`)
@@ -77,9 +81,9 @@ Still needs browser/preview validation against a real Railway snapshot:
    ```
 7. **New helpers** in `sandlot_db.py`: `get_player_take(player_id, snapshot_id)` and `set_player_take(player_id, snapshot_id, text, model)`.
 8. **Add `complete(messages, *, max_tokens)` non-streaming method** to `SkipperClient` in `sandlot_skipper.py`. Same primary→fallback pattern as `stream()`, but returns a single `(text, model)` tuple. Re-uses the existing OpenRouter client.
-9. **Extend `/api/player/{id}` response** to include a `take` field. On request:
-   - Look up `(player_id, latest_snapshot_id)` in `player_takes`. Hit → return cached.
-   - Miss → call `SkipperClient.complete()` with a roster-aware prompt (see below), store the result, return it.
+9. **Extend `/api/player/{id}` response** to include a `take` field. Current behavior:
+   - `GET /api/player/{id}` looks up `(player_id, latest_snapshot_id)` in `player_takes` and returns the cached take if present. It does not generate a take inline.
+   - `POST /api/player/{id}/refresh` can generate/cache a take while also refreshing MLB profile data.
    - On Skipper failure, return `take: { text: null, error: "..." }` and let the frontend render an "unavailable" line so the rest of the card still works.
 10. **Take prompt** — assembles 3 inputs:
     - Target player's data (name, team, pos, slot, recent FP/G, season totals from the existing `/api/player/{id}` payload).
@@ -99,11 +103,12 @@ Still needs browser/preview validation against a real Railway snapshot:
 ### Verification
 
 1. Babel-parse `v2-pages.jsx` and `atoms.jsx`.
-2. Hit `/api/player/{id}` for a rostered player — confirm `take.text` populates on first call (slow, ~2-3s) and is fast on subsequent calls (cache hit).
-3. Headshot: open three players (one with MLB ID resolved, one un-resolved, one with a broken image URL via dev tools) — confirm fallback to initials in each non-happy case.
-4. Trend arrow: open a player on a hot streak vs. a cold streak — confirm ↑ vs ↓ direction.
-5. Accordion: open a player, confirm only the most recent game shows; tap chevron, confirm the next 13 expand below.
-6. Visual regression: scroll the sheet end-to-end; confirm nothing under the new hero/take card was inadvertently dropped.
+2. Hit `/api/player/{id}` for a rostered player — confirm the response is cache-first and fast. If game log/media/take are missing, confirm `profile_cache.needs_refresh` is true and the web service schedules a background warm.
+3. Hit `POST /api/player/{id}/refresh` — confirm MLB game logs/media are refreshed and `take.text` is generated or returned from cache.
+4. Headshot: open three players (one with MLB ID resolved, one un-resolved, one with a broken image URL via dev tools) — confirm fallback to initials in each non-happy case.
+5. Trend arrow: open a player on a hot streak vs. a cold streak — confirm ↑ vs ↓ direction.
+6. Accordion: open a player, confirm the more-stats/game-log section expands in place.
+7. Visual regression: scroll the sheet end-to-end; confirm nothing under the new hero/take card was inadvertently dropped.
 
 ## Phase 2 — Player data aggregation (plan only, separate PR)
 
