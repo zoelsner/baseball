@@ -220,26 +220,10 @@ function V2Eyebrow({ children, color }) {
 // ── App shell ──────────────────────────────────────────────────
 function V2App({ initial }) {
   const [page, setPage] = React.useState(initial?.page || 'today');
-  const [detail, setDetail] = React.useState(initial?.detail || null);
-  const [pushed, setPushed] = React.useState(null); // { type:'player', id }
+  const [detail, setDetail] = React.useState(initial?.detail || null); // player id or null
   const [authed, setAuthed] = React.useState(initial?.auth ? false : true);
   const [model, setModel] = React.useState(v2FallbackModel);
   const [syncState, setSyncState] = React.useState({ state:'loading', label:'loading', error:null });
-
-  // Browser/system back closes the pushed view. Push registers a synthetic
-  // history entry so back() always pops the overlay before leaving the app.
-  const pushView = React.useCallback((view) => {
-    setPushed(view);
-    try { window.history.pushState({ sandlotPush: view }, ''); } catch {}
-  }, []);
-  const popView = React.useCallback(() => {
-    try { window.history.back(); } catch { setPushed(null); }
-  }, []);
-  React.useEffect(() => {
-    const onPop = () => setPushed(null);
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
-  }, []);
 
   const loadSnapshot = React.useCallback(async () => {
     if (window.location.protocol === 'file:') {
@@ -281,11 +265,13 @@ function V2App({ initial }) {
 
   React.useEffect(() => { loadSnapshot(); }, [loadSnapshot]);
 
-  if (!authed) return <V2Auth onSignIn={()=>setAuthed(true)}/>;
-
   const openPlayer = React.useCallback((id) => {
-    if (id) pushView({ type:'player', id });
-  }, [pushView]);
+    if (!id) return;
+    setPage('roster');
+    setDetail(id);
+  }, []);
+
+  if (!authed) return <V2Auth onSignIn={()=>setAuthed(true)}/>;
 
   const pages = {
     today:   <V2Today model={model} sync={syncState} onRefresh={refreshSnapshot} onNav={setPage}/>,
@@ -305,10 +291,7 @@ function V2App({ initial }) {
       <V2TopBar page={page} setPage={setPage} model={model} sync={syncState} onRefresh={refreshSnapshot}/>
       <div style={{ flex:1, overflow:'auto', WebkitOverflowScrolling:'touch' }}>{pages[page]}</div>
       <V2TabBar page={page} setPage={setPage}/>
-      {detail && <V2PlayerSheet player={detail} onClose={()=>setDetail(null)}/>}
-      {pushed?.type === 'player' && (
-        <V2PlayerProfile id={pushed.id} onBack={popView}/>
-      )}
+      {detail && <V2PlayerSheet id={detail} onClose={()=>setDetail(null)}/>}
     </div>
   );
 }
@@ -571,7 +554,7 @@ function V2Roster({ model, onPlayer }) {
 
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:22, overflow:'hidden' }}>
         {list.length ? list.map((p,i)=>(
-          <V2RosterSlot key={p.id} player={p} last={i===list.length-1} onClick={()=>onPlayer(p)}/>
+          <V2RosterSlot key={p.id} player={p} last={i===list.length-1} onClick={()=>onPlayer(p.id)}/>
         )) : (
           <div style={{ padding:18, color:V2.muted, fontSize:13, fontWeight:700 }}>No players in this view.</div>
         )}
@@ -654,7 +637,7 @@ function V2PositionCard({ group, players, onPlayer }) {
         </div>
       </div>
       <div style={{ borderTop:`1px solid ${V2.hairline2}` }}>
-        {players.map((p,i) => <V2RosterSlot key={p.id} player={p} last={i===players.length-1} onClick={()=>onPlayer(p)}/>)}
+        {players.map((p,i) => <V2RosterSlot key={p.id} player={p} last={i===players.length-1} onClick={()=>onPlayer(p.id)}/>)}
       </div>
     </div>
   );
@@ -994,104 +977,13 @@ function V2Settings({ model, sync, onRefresh, onSignOut }) {
 }
 
 // ── Player sheet (inlined from D2 + V2 tokens) ─────────────────
-function V2PlayerSheet({ player, onClose }) {
-  const d = {
-    ...PLAYER_DETAIL,
-    pos: player.pos || PLAYER_DETAIL.pos,
-    team: player.team || PLAYER_DETAIL.team,
-    age: player.age || PLAYER_DETAIL.age,
-    proj: player.proj || player.fppg || 0,
-    l30avg: player.fppg || PLAYER_DETAIL.l30avg,
-    vsExp: player.vsExp || 0,
-    outlook: player.raw
-      ? `${player.name} is currently in ${player.slot || 'BN'} with ${player.fppg ? player.fppg.toFixed(1) : 'no'} FP/G in the latest Fantrax snapshot.`
-      : PLAYER_DETAIL.outlook,
-  };
-  const expColor = d.vsExp >= 1 ? V2.ok : d.vsExp <= -1 ? V2.warn : V2.muted;
-  return (
-    <div onClick={onClose} style={{ position:'absolute', inset:0, background:'rgba(15,23,42,0.32)', display:'flex', alignItems:'flex-end', zIndex:10 }}>
-      <div onClick={e=>e.stopPropagation()} style={{
-        background:V2.bg, borderTopLeftRadius:18, borderTopRightRadius:18, width:'100%', height:'88%', overflow:'auto',
-      }}>
-        <div style={{ height:5, width:42, background:V2.hairline, borderRadius:3, margin:'10px auto' }}/>
-        <div style={{ padding:'8px 16px 16px' }}>
-          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-            <Avatar name={player.name} size={48}/>
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:18, fontWeight:700, letterSpacing:'-0.01em', fontFamily:V2.fontDisplay }}>{player.name}</div>
-              <div style={{ fontSize:11.5, color:V2.muted, marginTop:2 }}>{d.pos} · {d.team} · age {d.age}</div>
-            </div>
-            <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', padding:6 }}>{Icons.close(V2.muted, 14)}</button>
-          </div>
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr 1fr 1fr', gap:6, marginTop:14 }}>
-            <V2KPI label="Today" value={d.proj.toFixed(1)}/>
-            <V2KPI label="L7" value={d.l7}/>
-            <V2KPI label="L30/g" value={d.l30avg.toFixed(1)}/>
-            <V2KPI label="vs Exp" value={`${d.vsExp>=0?'+':''}${d.vsExp.toFixed(1)}`} accent={expColor}/>
-          </div>
-          <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:12, padding:14, marginTop:14 }}>
-            <V2Eyebrow>Outlook</V2Eyebrow>
-            <div style={{ fontSize:13.5, lineHeight:1.55, color:V2.ink, marginTop:6 }}>{d.outlook}</div>
-          </div>
-          <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:12, padding:14, marginTop:10 }}>
-            <V2Eyebrow>Last 14 games</V2Eyebrow>
-            <div style={{ marginTop:8 }}>
-              <Sparkline values={d.trend14} w={300} h={50} stroke={V2.accent} fill={V2.accentSoft} strokeWidth={2}/>
-            </div>
-          </div>
-          <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:12, padding:'4px 0', marginTop:10 }}>
-            {d.splits.map((s,i)=>(
-              <div key={s.label} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 14px', borderBottom: i===d.splits.length-1?'none':`1px solid ${V2.hairline2}`, fontSize:13 }}>
-                <span style={{ color:V2.body, fontWeight:600 }}>{s.label}</span>
-                <div style={{ display:'flex', alignItems:'center', gap:10, minWidth:140 }}>
-                  <div style={{ flex:1, height:5, background:V2.hairline2, borderRadius:3 }}>
-                    <div style={{ width:`${(s.v/15)*100}%`, height:'100%', background:V2.accent, borderRadius:3 }}/>
-                  </div>
-                  <span style={{ fontVariantNumeric:'tabular-nums', fontWeight:700, fontFamily:V2.fontMono, minWidth:32, textAlign:'right' }}>{s.v.toFixed(1)}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-          <div style={{ marginTop:14 }}>
-            <V2Eyebrow>Latest</V2Eyebrow>
-            <div style={{ display:'flex', flexDirection:'column', gap:8, paddingBottom:32, marginTop:8 }}>
-              {d.news.map((n,i)=>(
-                <div key={i} style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:10, padding:'10px 12px' }}>
-                  <div style={{ fontSize:10.5, color:V2.muted, fontWeight:700 }}>{n.src.toUpperCase()} · {n.when}</div>
-                  <div style={{ fontSize:13, marginTop:3, lineHeight:1.5 }}>{n.text}</div>
-                </div>
-              ))}
-              {d.twitter.map((t,i)=>(
-                <a key={`t${i}`} href="#" onClick={e=>e.preventDefault()} style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:10, padding:'10px 12px', textDecoration:'none', color:'inherit', display:'block' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:5, fontSize:10.5, color:V2.muted, fontWeight:700 }}>
-                    {Icons.twitter(V2.muted, 11)} <span>{t.handle.toUpperCase()} · {t.when}</span>
-                  </div>
-                  <div style={{ fontSize:13, marginTop:3, lineHeight:1.5 }}>{t.text}</div>
-                </a>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-function V2KPI({ label, value, accent }) {
-  return (
-    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:10, padding:'10px 8px', textAlign:'center' }}>
-      <div style={{ fontSize:9.5, color:V2.muted, fontWeight:800, letterSpacing:'0.08em', textTransform:'uppercase' }}>{label}</div>
-      <div style={{ fontSize:16, fontWeight:700, color:accent||V2.ink, fontVariantNumeric:'tabular-nums', fontFamily:V2.fontMono, marginTop:4 }}>{value}</div>
-    </div>
-  );
-}
-
-// ── /player profile (push-view) ────────────────────────────────
-function V2PlayerProfile({ id, onBack }) {
+function V2PlayerSheet({ id, onClose }) {
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
   const [syncing, setSyncing] = React.useState(false);
   const [syncCooldown, setSyncCooldown] = React.useState(false);
+  const requestSeqRef = React.useRef(0);
   const cooldownTimerRef = React.useRef(null);
 
   React.useEffect(() => () => {
@@ -1099,18 +991,23 @@ function V2PlayerProfile({ id, onBack }) {
   }, []);
 
   const load = React.useCallback(async () => {
-    setLoading(true); setError(null);
+    const requestSeq = ++requestSeqRef.current;
+    setSyncing(false);
+    setLoading(true); setError(null); setData(null);
     try {
       const r = await fetch(`/api/player/${encodeURIComponent(id)}`);
       if (!r.ok) {
         const text = await r.text().catch(()=>'');
         throw new Error(text.slice(0, 300) || `Failed (${r.status})`);
       }
-      setData(await r.json());
+      const nextData = await r.json();
+      if (requestSeq !== requestSeqRef.current) return;
+      setData(nextData);
     } catch (e) {
+      if (requestSeq !== requestSeqRef.current) return;
       setError(e.message || 'Failed to load player');
     } finally {
-      setLoading(false);
+      if (requestSeq === requestSeqRef.current) setLoading(false);
     }
   }, [id]);
 
@@ -1118,6 +1015,7 @@ function V2PlayerProfile({ id, onBack }) {
 
   const sync = async () => {
     if (syncing || syncCooldown) return;
+    const requestSeq = ++requestSeqRef.current;
     setSyncing(true); setError(null);
     try {
       const r = await fetch(`/api/player/${encodeURIComponent(id)}/refresh`, { method:'POST' });
@@ -1125,10 +1023,15 @@ function V2PlayerProfile({ id, onBack }) {
         const text = await r.text().catch(()=>'');
         throw new Error(text.slice(0, 300) || `Sync failed (${r.status})`);
       }
-      setData(await r.json());
+      const nextData = await r.json();
+      if (requestSeq !== requestSeqRef.current) return;
+      setData(nextData);
     } catch (e) {
+      if (requestSeq !== requestSeqRef.current) return;
       setError(e.message || 'Sync failed');
     } finally {
+      if (requestSeq !== requestSeqRef.current) return;
+      setLoading(false);
       setSyncing(false);
       setSyncCooldown(true);
       if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
@@ -1139,76 +1042,67 @@ function V2PlayerProfile({ id, onBack }) {
     }
   };
 
-  return (
-    <div style={{
-      position:'absolute', inset:0, background:V2.bg, zIndex:11,
-      display:'flex', flexDirection:'column',
-    }}>
-      <V2ProfileTopBar
-        onBack={onBack} onSync={sync}
-        syncing={syncing} disabled={syncCooldown}
-        freshness={data?.snapshot_freshness}
-      />
-      <div style={{ flex:1, overflow:'auto', padding:'4px 16px 28px', display:'flex', flexDirection:'column', gap:14 }}>
-        {loading && !data && <V2ProfileSkeleton/>}
-        {error && !data && (
-          <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:14, padding:14, color:V2.bad, fontSize:13 }}>
-            <div style={{ fontWeight:700, marginBottom:6 }}>Couldn't load player</div>
-            <div style={{ color:V2.body, lineHeight:1.4 }}>{error}</div>
-            <button onClick={load} style={{
-              marginTop:10, padding:'8px 14px', borderRadius:999, border:`1px solid ${V2.hairline}`,
-              background:V2.surface2, color:V2.ink, fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit',
-            }}>Retry</button>
-          </div>
-        )}
-        {data && <V2ProfileBody data={data}/>}
-        {data && error && (
-          <div style={{ color:V2.bad, fontSize:12.5, padding:'2px 4px' }}>{error}</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function V2ProfileTopBar({ onBack, onSync, syncing, disabled, freshness }) {
+  const freshness = data?.snapshot_freshness;
   const fState = freshness?.state;
   const fAge = freshness?.age_minutes;
   const fColor = fState === 'fresh' ? V2.ok : fState === 'stale' ? V2.warn : fState === 'old' ? V2.bad : V2.muted;
   const fLabel = fState ? v2SyncLabel(freshness) : null;
+
   return (
-    <div style={{
-      padding:'14px 14px 12px', background:V2.bg,
-      display:'flex', alignItems:'center', justifyContent:'space-between', gap:10,
-      borderBottom:`1px solid ${V2.hairline}`,
-    }}>
-      <button onClick={onBack} style={{
-        background:'none', border:'none', padding:'6px 8px', cursor:'pointer',
-        display:'flex', alignItems:'center', gap:6, color:V2.ink, fontFamily:'inherit',
-        fontSize:14, fontWeight:600,
+    <div onClick={onClose} style={{ position:'absolute', inset:0, background:'rgba(15,23,42,0.32)', display:'flex', alignItems:'flex-end', zIndex:10 }}>
+      <div onClick={e=>e.stopPropagation()} style={{
+        background:V2.bg, borderTopLeftRadius:18, borderTopRightRadius:18, width:'100%', height:'88%', overflow:'auto',
+        display:'flex', flexDirection:'column',
       }}>
-        <span style={{ fontSize:18, lineHeight:1 }}>←</span>
-        <span>Player</span>
-      </button>
-      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-        {fLabel && (
-          <div title={`Snapshot ${fAge != null ? `${fAge}m old` : 'age unknown'}`} style={{
-            display:'flex', alignItems:'center', gap:6,
-            padding:'5px 10px', borderRadius:999,
-            background:V2.surface, border:`1px solid ${V2.hairline}`,
-          }}>
-            <span style={{ width:6, height:6, background:fColor, borderRadius:'50%' }}/>
-            <span style={{ fontSize:11, color:V2.body, fontWeight:700 }}>{fLabel}</span>
-          </div>
-        )}
-        <button onClick={onSync} disabled={syncing || disabled} title={disabled ? 'Hold on a sec…' : 'Force fresh MLB pull'} style={{
-          background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:999,
-          padding:'7px 12px', display:'flex', alignItems:'center', gap:7,
-          cursor: (syncing || disabled) ? 'not-allowed' : 'pointer',
-          opacity: (syncing || disabled) ? 0.6 : 1,
-          fontFamily:'inherit',
+        <div style={{ height:5, width:42, background:V2.hairline, borderRadius:3, margin:'10px auto', flexShrink:0 }}/>
+        <div style={{
+          padding:'4px 14px 10px', display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, flexShrink:0,
         }}>
-          <span style={{ fontSize:13, color:V2.body, fontWeight:700 }}>{syncing ? 'Syncing…' : 'Sync'}</span>
-        </button>
+          <button onClick={onClose} style={{
+            background:'none', border:'none', padding:6, cursor:'pointer',
+            display:'flex', alignItems:'center', justifyContent:'center',
+          }} aria-label="Close">
+            {Icons.close(V2.muted, 14)}
+          </button>
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            {fLabel && (
+              <div title={`Snapshot ${fAge != null ? `${fAge}m old` : 'age unknown'}`} style={{
+                display:'flex', alignItems:'center', gap:6,
+                padding:'5px 10px', borderRadius:999,
+                background:V2.surface, border:`1px solid ${V2.hairline}`,
+              }}>
+                <span style={{ width:6, height:6, background:fColor, borderRadius:'50%' }}/>
+                <span style={{ fontSize:11, color:V2.body, fontWeight:700 }}>{fLabel}</span>
+              </div>
+            )}
+            <button onClick={sync} disabled={syncing || syncCooldown} title={syncCooldown ? 'Hold on a sec…' : 'Force fresh MLB pull'} style={{
+              background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:999,
+              padding:'7px 12px', display:'flex', alignItems:'center', gap:7,
+              cursor: (syncing || syncCooldown) ? 'not-allowed' : 'pointer',
+              opacity: (syncing || syncCooldown) ? 0.6 : 1,
+              fontFamily:'inherit',
+            }}>
+              <span style={{ fontSize:13, color:V2.body, fontWeight:700 }}>{syncing ? 'Syncing…' : 'Sync'}</span>
+            </button>
+          </div>
+        </div>
+        <div style={{ flex:1, overflow:'auto', padding:'4px 16px 28px', display:'flex', flexDirection:'column', gap:14 }}>
+          {loading && !data && <V2ProfileSkeleton/>}
+          {error && !data && (
+            <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:14, padding:14, color:V2.bad, fontSize:13 }}>
+              <div style={{ fontWeight:700, marginBottom:6 }}>Couldn't load player</div>
+              <div style={{ color:V2.body, lineHeight:1.4 }}>{error}</div>
+              <button onClick={load} style={{
+                marginTop:10, padding:'8px 14px', borderRadius:999, border:`1px solid ${V2.hairline}`,
+                background:V2.surface2, color:V2.ink, fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit',
+              }}>Retry</button>
+            </div>
+          )}
+          {data && <V2ProfileBody data={data}/>}
+          {data && error && (
+            <div style={{ color:V2.bad, fontSize:12.5, padding:'2px 4px' }}>{error}</div>
+          )}
+        </div>
       </div>
     </div>
   );

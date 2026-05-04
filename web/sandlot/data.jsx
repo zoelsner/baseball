@@ -84,31 +84,6 @@ const TRADE = {
   ai: "You give up an in-prime 3B for a younger OF and a mid-rotation SP. Net weekly +2.1 pts and you get younger at two spots. Worth it for dynasty if you trust Castellanos' contact rate.",
 };
 
-// Player outlook for detail screen (uses Reyna)
-const PLAYER_DETAIL = {
-  id:'p4',
-  name:'Tobias Reyna',
-  pos:'3B', team:'ATL', age:28,
-  status:'ok',
-  proj:12.8, l7:88, l30avg:11.4, vsExp:+5.1,
-  outlook: "Reyna is on a heater, slashing .329/.402/.611 over the last 14 games with 4 HR. Atlanta has him hitting cleanup vs RHP. Keep starting.",
-  splits: [
-    { label:'vs RHP', v:11.8 },
-    { label:'vs LHP', v:9.4 },
-    { label:'Home',   v:13.1 },
-    { label:'Away',   v:10.2 },
-  ],
-  trend14: [6.2, 8.1, 9.4, 7.8, 11.2, 12.6, 10.4, 13.8, 14.1, 11.9, 13.2, 15.0, 12.7, 13.5],
-  news: [
-    { src:'Beat', when:'2h', text:'Reyna takes BP early, expected to start Sunday despite minor wrist soreness reported Saturday.' },
-    { src:'AP',   when:'1d', text:'Three-hit night vs Marlins; second multi-HR game in two weeks.' },
-  ],
-  twitter: [
-    { handle:'@ATLBeat', when:'1h', text:'Reyna penciled in cleanup again. Snitker says wrist is "non-issue."' },
-    { handle:'@FantasyEdge', when:'4h', text:'Top 5 3B in fantasy points over the last 30 days. The breakout is real.' },
-  ],
-};
-
 // AI chat seed messages
 const AI_SEED = [
   { role:'user', text:'Should I start Kai Brennan today?' },
@@ -129,6 +104,6 @@ const SUGGESTED_PROMPTS = [
 Object.assign(window, {
   TEAM_NAME, LEAGUE_NAME, OPP_NAME, TODAY,
   ROSTER, LINEUP_SLOTS, BENCH_INSIGHTS,
-  MATCHUP, STANDINGS, TRADE, PLAYER_DETAIL,
+  MATCHUP, STANDINGS, TRADE,
   AI_SEED, SUGGESTED_PROMPTS,
 });
