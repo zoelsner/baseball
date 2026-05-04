@@ -77,7 +77,20 @@ function Avatar({ name, size=32, palette='neutral' }) {
   );
 }
 
+// Build a lowercase-full-name -> fantrax_id map from a snapshot's player_index.
+// Used by Skipper to wrap player mentions as tappable links.
+function buildPlayerNameIndex(playerIndex) {
+  const out = new Map();
+  for (const p of playerIndex || []) {
+    if (!p || !p.id || !p.name) continue;
+    const norm = String(p.name).trim().toLowerCase();
+    if (norm && !out.has(norm)) out.set(norm, p.id);
+  }
+  return out;
+}
+
 Object.assign(window, {
   STATUS_LABEL, vsExpTier,
   Sparkline, Icons, TrendIcon, Avatar,
+  buildPlayerNameIndex,
 });

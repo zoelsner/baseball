@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+import player_service
 import sandlot_db
 import sandlot_skipper
 from sandlot_refresh import run_refresh
@@ -127,6 +128,27 @@ def skipper_history() -> dict[str, Any]:
     })
 
 
+@app.get("/api/player/{fantrax_id}")
+def player_profile(fantrax_id: str) -> dict[str, Any]:
+    return _player_response(fantrax_id, force_refresh=False)
+
+
+@app.post("/api/player/{fantrax_id}/refresh")
+def player_profile_refresh(fantrax_id: str) -> dict[str, Any]:
+    return _player_response(fantrax_id, force_refresh=True)
+
+
+def _player_response(fantrax_id: str, *, force_refresh: bool) -> dict[str, Any]:
+    try:
+        payload = player_service.get_player_profile(fantrax_id, force_refresh=force_refresh)
+    except player_service.PlayerNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("Player profile failed for %s", fantrax_id)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return jsonable_encoder(payload)
+
+
 @app.delete("/api/skipper/messages")
 def skipper_clear() -> dict[str, Any]:
     try:
@@ -224,8 +246,37 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
         "roster_meta": {k: v for k, v in roster_meta.items() if k != "rows"},
         "standings": standings.get("records") or [],
         "my_standing": standings.get("my_record"),
+        "player_index": _player_index(data),
         "errors": row.get("errors") or data.get("errors") or [],
     }
+
+
+def _player_index(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flat list of every player the snapshot knows about.
+
+    Frontend builds a lowercased-name -> fantrax_id map from this so
+    Skipper chat replies can wrap full-name mentions as profile links
+    even when the model forgets to emit a [[name|id]] tag.
+    """
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+
+    def add(rows: Any) -> None:
+        for r in rows or []:
+            if not isinstance(r, dict):
+                continue
+            pid = r.get("id")
+            name = r.get("name")
+            if not pid or not name or pid in seen:
+                continue
+            seen.add(pid)
+            out.append({"id": pid, "name": name, "team": r.get("team")})
+
+    add((data.get("roster") or {}).get("rows"))
+    for team in (data.get("all_team_rosters") or {}).values():
+        add((team or {}).get("rows"))
+    add((data.get("free_agents") or {}).get("players"))
+    return out
 
 
 def _freshness(taken_at: Any) -> dict[str, Any]:

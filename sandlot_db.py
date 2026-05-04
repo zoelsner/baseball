@@ -114,6 +114,26 @@ def init_schema() -> None:
             ON chat_messages (session_id, created_at)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_id_map (
+              fantrax_id TEXT PRIMARY KEY,
+              mlb_id BIGINT,
+              resolved_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS player_game_logs (
+              mlb_id BIGINT PRIMARY KEY,
+              group_type TEXT NOT NULL CHECK (group_type IN ('hitting', 'pitching')),
+              season INTEGER NOT NULL,
+              games JSONB NOT NULL,
+              fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
 
 
 def create_refresh_run(source: str) -> int:
@@ -304,6 +324,74 @@ def clear_chat_messages(session_id: int) -> int:
             (session_id,),
         ).fetchall()
     return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# Player profile cache (fantrax_id <-> mlb_id, plus per-game logs)
+# ---------------------------------------------------------------------------
+
+
+def get_mlb_id(fantrax_id: str) -> dict[str, Any] | None:
+    """Return {mlb_id, resolved_at} or None if never resolved.
+
+    `mlb_id` may be NULL in the row, meaning "we tried to resolve and failed";
+    callers should treat that as a negative cache instead of re-looking-up.
+    """
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT mlb_id, resolved_at FROM player_id_map WHERE fantrax_id = %s",
+            (fantrax_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_mlb_id(fantrax_id: str, mlb_id: int | None) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO player_id_map (fantrax_id, mlb_id, resolved_at)
+            VALUES (%s, %s, now())
+            ON CONFLICT (fantrax_id) DO UPDATE
+            SET mlb_id = EXCLUDED.mlb_id,
+                resolved_at = now()
+            """,
+            (fantrax_id, mlb_id),
+        )
+
+
+def get_player_game_log(mlb_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT mlb_id, group_type, season, games, fetched_at
+            FROM player_game_logs
+            WHERE mlb_id = %s
+            """,
+            (mlb_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_player_game_log(
+    mlb_id: int,
+    *,
+    group_type: str,
+    season: int,
+    games: list[dict[str, Any]],
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO player_game_logs (mlb_id, group_type, season, games, fetched_at)
+            VALUES (%s, %s, %s, %s, now())
+            ON CONFLICT (mlb_id) DO UPDATE
+            SET group_type = EXCLUDED.group_type,
+                season = EXCLUDED.season,
+                games = EXCLUDED.games,
+                fetched_at = now()
+            """,
+            (mlb_id, group_type, season, Jsonb(games)),
+        )
 
 
 def prune_successful_snapshots(keep: int = 30) -> int:

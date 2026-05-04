@@ -51,6 +51,11 @@ Rules:
 - The user's team rows are flagged with `is_me: true`. Other teams (when present) are tier 3 context.
 - If asked about strategy, trade grading, or anything beyond what the data shows, say what you can from the snapshot and note that deeper analysis is a separate feature.
 
+Player linking:
+- When you mention a player who appears in the snapshot, wrap their name in double brackets with their fantrax id, like `[[Brooks Lee|fr_xxxxxxx]]`. Use the exact `id` field from the snapshot row.
+- Do not wrap a name if you cannot find an id for it. Do not wrap team names, league names, manager names, or anything other than individual MLB players.
+- The brackets render as a tappable link in the UI; only wrap each first mention in a paragraph.
+
 Be brief. Most answers are 1-4 sentences."""
 
 
@@ -72,6 +77,7 @@ def detect_tier(prompt: str, snapshot: dict[str, Any]) -> int:
 def _slim_player(p: dict[str, Any]) -> dict[str, Any]:
     """Strip the verbose `raw` field; keep what the model actually needs."""
     return {
+        "id": p.get("id"),
         "name": p.get("name"),
         "slot": p.get("slot"),
         "positions": p.get("positions"),

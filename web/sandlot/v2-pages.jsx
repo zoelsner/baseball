@@ -59,6 +59,7 @@ function v2FallbackModel() {
     leagueTeams: LEAGUE_TEAMS,
     snapshotId: null,
     takenAt: null,
+    playerIndex: [],
   };
 }
 
@@ -117,6 +118,7 @@ function v2NormalizeSnapshot(payload) {
     leagueTeams: leagueTeams.length ? leagueTeams : LEAGUE_TEAMS,
     snapshotId: payload?.snapshot_id || null,
     takenAt: payload?.taken_at || null,
+    playerIndex: payload?.player_index || [],
   };
 }
 
@@ -219,9 +221,25 @@ function V2Eyebrow({ children, color }) {
 function V2App({ initial }) {
   const [page, setPage] = React.useState(initial?.page || 'today');
   const [detail, setDetail] = React.useState(initial?.detail || null);
+  const [pushed, setPushed] = React.useState(null); // { type:'player', id }
   const [authed, setAuthed] = React.useState(initial?.auth ? false : true);
   const [model, setModel] = React.useState(v2FallbackModel);
   const [syncState, setSyncState] = React.useState({ state:'loading', label:'loading', error:null });
+
+  // Browser/system back closes the pushed view. Push registers a synthetic
+  // history entry so back() always pops the overlay before leaving the app.
+  const pushView = React.useCallback((view) => {
+    setPushed(view);
+    try { window.history.pushState({ sandlotPush: view }, ''); } catch {}
+  }, []);
+  const popView = React.useCallback(() => {
+    try { window.history.back(); } catch { setPushed(null); }
+  }, []);
+  React.useEffect(() => {
+    const onPop = () => setPushed(null);
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   const loadSnapshot = React.useCallback(async () => {
     if (window.location.protocol === 'file:') {
@@ -265,13 +283,17 @@ function V2App({ initial }) {
 
   if (!authed) return <V2Auth onSignIn={()=>setAuthed(true)}/>;
 
+  const openPlayer = React.useCallback((id) => {
+    if (id) pushView({ type:'player', id });
+  }, [pushView]);
+
   const pages = {
     today:   <V2Today model={model} sync={syncState} onRefresh={refreshSnapshot} onNav={setPage}/>,
     roster:  <V2Roster model={model} onPlayer={setDetail}/>,
     league:  <V2League model={model}/>,
     fa:      <V2FreeAgents/>,
     trade:   <V2TradeGrader/>,
-    skipper: <V2Skipper model={model} sync={syncState}/>,
+    skipper: <V2Skipper model={model} sync={syncState} onOpenPlayer={openPlayer}/>,
     settings:<V2Settings model={model} sync={syncState} onRefresh={refreshSnapshot} onSignOut={()=>setAuthed(false)}/>,
   };
 
@@ -284,6 +306,9 @@ function V2App({ initial }) {
       <div style={{ flex:1, overflow:'auto', WebkitOverflowScrolling:'touch' }}>{pages[page]}</div>
       <V2TabBar page={page} setPage={setPage}/>
       {detail && <V2PlayerSheet player={detail} onClose={()=>setDetail(null)}/>}
+      {pushed?.type === 'player' && (
+        <V2PlayerProfile id={pushed.id} onBack={popView}/>
+      )}
     </div>
   );
 }
@@ -1060,14 +1085,461 @@ function V2KPI({ label, value, accent }) {
   );
 }
 
+// ── /player profile (push-view) ────────────────────────────────
+function V2PlayerProfile({ id, onBack }) {
+  const [data, setData] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+  const [syncing, setSyncing] = React.useState(false);
+  const [syncCooldown, setSyncCooldown] = React.useState(false);
+  const cooldownTimerRef = React.useRef(null);
+
+  React.useEffect(() => () => {
+    if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+  }, []);
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const r = await fetch(`/api/player/${encodeURIComponent(id)}`);
+      if (!r.ok) {
+        const text = await r.text().catch(()=>'');
+        throw new Error(text.slice(0, 300) || `Failed (${r.status})`);
+      }
+      setData(await r.json());
+    } catch (e) {
+      setError(e.message || 'Failed to load player');
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  const sync = async () => {
+    if (syncing || syncCooldown) return;
+    setSyncing(true); setError(null);
+    try {
+      const r = await fetch(`/api/player/${encodeURIComponent(id)}/refresh`, { method:'POST' });
+      if (!r.ok) {
+        const text = await r.text().catch(()=>'');
+        throw new Error(text.slice(0, 300) || `Sync failed (${r.status})`);
+      }
+      setData(await r.json());
+    } catch (e) {
+      setError(e.message || 'Sync failed');
+    } finally {
+      setSyncing(false);
+      setSyncCooldown(true);
+      if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
+      cooldownTimerRef.current = setTimeout(() => {
+        cooldownTimerRef.current = null;
+        setSyncCooldown(false);
+      }, 5000);
+    }
+  };
+
+  return (
+    <div style={{
+      position:'absolute', inset:0, background:V2.bg, zIndex:11,
+      display:'flex', flexDirection:'column',
+    }}>
+      <V2ProfileTopBar
+        onBack={onBack} onSync={sync}
+        syncing={syncing} disabled={syncCooldown}
+        freshness={data?.snapshot_freshness}
+      />
+      <div style={{ flex:1, overflow:'auto', padding:'4px 16px 28px', display:'flex', flexDirection:'column', gap:14 }}>
+        {loading && !data && <V2ProfileSkeleton/>}
+        {error && !data && (
+          <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:14, padding:14, color:V2.bad, fontSize:13 }}>
+            <div style={{ fontWeight:700, marginBottom:6 }}>Couldn't load player</div>
+            <div style={{ color:V2.body, lineHeight:1.4 }}>{error}</div>
+            <button onClick={load} style={{
+              marginTop:10, padding:'8px 14px', borderRadius:999, border:`1px solid ${V2.hairline}`,
+              background:V2.surface2, color:V2.ink, fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit',
+            }}>Retry</button>
+          </div>
+        )}
+        {data && <V2ProfileBody data={data}/>}
+        {data && error && (
+          <div style={{ color:V2.bad, fontSize:12.5, padding:'2px 4px' }}>{error}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function V2ProfileTopBar({ onBack, onSync, syncing, disabled, freshness }) {
+  const fState = freshness?.state;
+  const fAge = freshness?.age_minutes;
+  const fColor = fState === 'fresh' ? V2.ok : fState === 'stale' ? V2.warn : fState === 'old' ? V2.bad : V2.muted;
+  const fLabel = fState ? v2SyncLabel(freshness) : null;
+  return (
+    <div style={{
+      padding:'14px 14px 12px', background:V2.bg,
+      display:'flex', alignItems:'center', justifyContent:'space-between', gap:10,
+      borderBottom:`1px solid ${V2.hairline}`,
+    }}>
+      <button onClick={onBack} style={{
+        background:'none', border:'none', padding:'6px 8px', cursor:'pointer',
+        display:'flex', alignItems:'center', gap:6, color:V2.ink, fontFamily:'inherit',
+        fontSize:14, fontWeight:600,
+      }}>
+        <span style={{ fontSize:18, lineHeight:1 }}>←</span>
+        <span>Player</span>
+      </button>
+      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+        {fLabel && (
+          <div title={`Snapshot ${fAge != null ? `${fAge}m old` : 'age unknown'}`} style={{
+            display:'flex', alignItems:'center', gap:6,
+            padding:'5px 10px', borderRadius:999,
+            background:V2.surface, border:`1px solid ${V2.hairline}`,
+          }}>
+            <span style={{ width:6, height:6, background:fColor, borderRadius:'50%' }}/>
+            <span style={{ fontSize:11, color:V2.body, fontWeight:700 }}>{fLabel}</span>
+          </div>
+        )}
+        <button onClick={onSync} disabled={syncing || disabled} title={disabled ? 'Hold on a sec…' : 'Force fresh MLB pull'} style={{
+          background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:999,
+          padding:'7px 12px', display:'flex', alignItems:'center', gap:7,
+          cursor: (syncing || disabled) ? 'not-allowed' : 'pointer',
+          opacity: (syncing || disabled) ? 0.6 : 1,
+          fontFamily:'inherit',
+        }}>
+          <span style={{ fontSize:13, color:V2.body, fontWeight:700 }}>{syncing ? 'Syncing…' : 'Sync'}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function V2ProfileSkeleton() {
+  const bar = (h, w='100%', mt=10) => (
+    <div style={{ height:h, width:w, marginTop:mt, background:V2.surface2, borderRadius:8 }}/>
+  );
+  return (
+    <>
+      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
+        {bar(20, '60%', 0)}
+        {bar(12, '40%')}
+      </div>
+      {bar(80)}
+      {bar(80)}
+      {bar(60)}
+      {bar(160)}
+    </>
+  );
+}
+
+function V2ProfileBody({ data }) {
+  const p = data.player || {};
+  const trend = data.trend;
+  const games = data.games || [];
+  const sparkline = data.sparkline || [];
+  const isPitcher = data.group === 'pitching';
+  const status = String(p.injury || '').toLowerCase();
+  const statusLabel = status ? (STATUS_LABEL[status] || p.injury) : 'Active';
+  const statusOk = !status || status === 'ok' || status === 'active';
+
+  return (
+    <>
+      <V2ProfileHero player={p} statusLabel={statusLabel} statusOk={statusOk}/>
+      {data.mlb?.available === false && (
+        <div style={{ background:V2.warnSoft, color:V2.warn, border:`1px solid ${V2.warn}33`, borderRadius:14, padding:'12px 14px', fontSize:12.5, fontWeight:600 }}>
+          {data.mlb.reason || 'MLB stats not available for this player.'}
+        </div>
+      )}
+      {trend && <V2ProfileTrend trend={trend} isPitcher={isPitcher}/>}
+      {games.length > 0 && <V2ProfileSeason games={games} isPitcher={isPitcher} season={data.season}/>}
+      {sparkline.length > 0 && <V2ProfileSparkline points={sparkline}/>}
+      {games.length > 0 && <V2ProfileGameLog games={games} isPitcher={isPitcher}/>}
+    </>
+  );
+}
+
+function V2ProfileHero({ player, statusLabel, statusOk }) {
+  const ageBit = player.age ? ` · Age ${player.age}` : '';
+  const teamBit = player.team ? `${player.team}` : '';
+  const posBit = player.positions || player.slot || '';
+  const meta = [teamBit, posBit].filter(Boolean).join(' · ') + ageBit;
+  const ownerLabel = player.source === 'my_roster'
+    ? 'On your roster'
+    : player.source === 'league_roster'
+      ? `On ${player.owner_team_name || 'another team'}`
+      : player.source === 'free_agent'
+        ? 'Free agent'
+        : null;
+  return (
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:'16px 16px 14px', display:'flex', alignItems:'center', gap:14 }}>
+      <Avatar name={player.name || '?'} size={56} palette="warm"/>
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:20, fontWeight:700, fontFamily:V2.fontDisplay, letterSpacing:'-0.01em', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{player.name || '?'}</div>
+        <div style={{ fontSize:12, color:V2.muted, marginTop:3, fontWeight:600 }}>{meta}</div>
+        <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:8 }}>
+          {ownerLabel && (
+            <span style={{ background:V2.accentSoft, color:V2.accent, fontSize:10.5, fontWeight:800, padding:'3px 8px', borderRadius:999, letterSpacing:'0.04em' }}>{ownerLabel}</span>
+          )}
+          <span style={{
+            background: statusOk ? V2.benchSoft : V2.injuredSoft,
+            color: statusOk ? V2.bench : V2.injured,
+            fontSize:10.5, fontWeight:800, padding:'3px 8px', borderRadius:999, letterSpacing:'0.04em', textTransform:'uppercase',
+          }}>{statusLabel}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function V2ProfileTrend({ trend, isPitcher }) {
+  const dir = trend.direction;
+  const tone = dir === 'up' ? V2.ok : dir === 'down' ? V2.bad : V2.muted;
+  const toneSoft = dir === 'up' ? V2.okSoft : dir === 'down' ? V2.badSoft : V2.surface2;
+  const arrow = dir === 'up' ? '↑' : dir === 'down' ? '↓' : '→';
+  const pct = trend.pct_change;
+  const pctLabel = pct === null || pct === undefined
+    ? '—'
+    : `${pct > 0 ? '+' : ''}${pct.toFixed ? pct.toFixed(1) : pct}%`;
+  const subline = isPitcher
+    ? `from ${trend.season_avg_fpts.toFixed(2)} season avg`
+    : `from ${trend.season_avg_fpts.toFixed(2)} season avg${trend.last_batting_avg !== null && trend.last_batting_avg !== undefined ? ` · ${trend.last_batting_avg.toFixed(3).replace(/^0/, '')} AVG` : ''}`;
+  return (
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:14 }}>
+      <V2Eyebrow>Last {trend.window} games</V2Eyebrow>
+      <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between', marginTop:8, gap:10 }}>
+        <div>
+          <div style={{ fontSize:24, fontWeight:700, fontFamily:V2.fontDisplay, letterSpacing:'-0.02em' }}>
+            {trend.last_avg_fpts.toFixed(2)} <span style={{ fontSize:12, color:V2.muted, fontWeight:700 }}>FP/G</span>
+          </div>
+          <div style={{ fontSize:11.5, color:V2.muted, marginTop:3, fontWeight:600 }}>{subline}</div>
+        </div>
+        <span style={{ background:toneSoft, color:tone, fontSize:13, fontWeight:800, padding:'5px 10px', borderRadius:999 }}>
+          {pctLabel} {arrow}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function V2ProfileSeason({ games, isPitcher, season }) {
+  const stats = isPitcher ? v2ComputePitchingSeason(games) : v2ComputeHittingSeason(games);
+  const cells = isPitcher
+    ? [
+        { label:'ERA',  value: stats.ip ? stats.era.toFixed(2) : '—' },
+        { label:'IP',   value: stats.ip.toFixed(1) },
+        { label:'K',    value: stats.k },
+        { label:'WHIP', value: stats.ip ? stats.whip.toFixed(2) : '—' },
+      ]
+    : [
+        { label:'AVG', value: stats.ab ? stats.avg.toFixed(3).replace(/^0/, '') : '—' },
+        { label:'H',   value: stats.h },
+        { label:'HR',  value: stats.hr },
+        { label:'RBI', value: stats.rbi },
+      ];
+  return (
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:14 }}>
+      <V2Eyebrow>Season · {isPitcher ? 'Pitching' : 'Hitting'} {season ? `· ${season}` : ''}</V2Eyebrow>
+      <V2StatRow stats={cells}/>
+    </div>
+  );
+}
+
+function V2ProfileSparkline({ points }) {
+  return (
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:14 }}>
+      <V2Eyebrow>Last {points.length} games · Fantasy points</V2Eyebrow>
+      <div style={{ marginTop:10 }}>
+        <V2BarSparkline values={points.map(p => Number(p.fpts) || 0)}/>
+      </div>
+    </div>
+  );
+}
+
+function V2BarSparkline({ values, w=320, h=56 }) {
+  if (!values || !values.length) return null;
+  const max = Math.max(0, ...values);
+  const min = Math.min(0, ...values);
+  const span = (max - min) || 1;
+  const slot = w / values.length;
+  const barW = Math.max(4, slot - 4);
+  const zeroY = h * (max / span);
+  return (
+    <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ display:'block' }}>
+      {values.map((v, i) => {
+        const x = i * slot + (slot - barW) / 2;
+        const isZero = !v;
+        const barH = isZero ? 2 : Math.max(2, Math.abs(v) / span * h);
+        const y = v >= 0 ? zeroY - barH : zeroY;
+        const fill = isZero ? V2.hairline : v < 0 ? V2.bad : V2.accent;
+        return <rect key={i} x={x} y={y} width={barW} height={barH} rx={1.5} fill={fill}/>;
+      })}
+    </svg>
+  );
+}
+
+function V2ProfileGameLog({ games, isPitcher }) {
+  const rows = games.slice().reverse().slice(0, 20);
+  return (
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, overflow:'hidden' }}>
+      <div style={{ padding:'12px 14px 6px' }}>
+        <V2Eyebrow>Game log</V2Eyebrow>
+      </div>
+      {rows.map((g, i) => (
+        <div key={i} style={{
+          padding:'10px 14px',
+          borderTop:`1px solid ${V2.hairline2}`,
+          display:'grid',
+          gridTemplateColumns:'52px 1fr auto',
+          alignItems:'center', gap:10,
+          fontSize:12.5,
+        }}>
+          <div style={{ color:V2.muted, fontWeight:700, fontFamily:V2.fontMono }}>{v2ShortDate(g.date)}</div>
+          <div style={{ minWidth:0 }}>
+            <div style={{ fontWeight:700, fontSize:12 }}>{g.home ? 'vs ' : '@ '}{g.opponent || '?'}</div>
+            <div style={{ color:V2.body, marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{g.line || '—'}</div>
+          </div>
+          <div style={{ textAlign:'right', fontFamily:V2.fontMono }}>
+            {!isPitcher && (
+              <div style={{ fontSize:11, color:V2.muted, fontWeight:700 }}>
+                {g.avg_game === null || g.avg_game === undefined ? '—' : g.avg_game.toFixed(3).replace(/^0/, '')}
+              </div>
+            )}
+            <div style={{
+              fontWeight:800, fontSize:13.5,
+              color: (g.fpts_estimated || 0) < 0 ? V2.bad : V2.ink,
+            }}>
+              {(g.fpts_estimated ?? 0).toFixed(1)}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function v2ShortDate(iso) {
+  if (!iso) return '—';
+  const m = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return iso;
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${months[Number(m[2]) - 1]} ${Number(m[3])}`;
+}
+
+function v2ComputeHittingSeason(games) {
+  let ab=0, h=0, hr=0, rbi=0, bb=0, k=0, sb=0;
+  for (const g of games) {
+    ab += g.ab || 0; h += g.h || 0; hr += g.hr || 0; rbi += g.rbi || 0;
+    bb += g.bb || 0; k += g.k || 0; sb += g.sb || 0;
+  }
+  return { ab, h, hr, rbi, bb, k, sb, avg: ab ? h / ab : 0 };
+}
+
+function v2ComputePitchingSeason(games) {
+  let ip=0, h=0, er=0, bb=0, k=0, wins=0, saves=0;
+  for (const g of games) {
+    ip += g.ip || 0; h += g.h || 0; er += g.er || 0;
+    bb += g.bb || 0; k += g.k || 0;
+    if (g.win) wins += 1; if (g.save) saves += 1;
+  }
+  const era = ip ? (er * 9) / ip : 0;
+  const whip = ip ? (bb + h) / ip : 0;
+  return { ip, h, er, bb, k, wins, saves, era, whip };
+}
+
+// ── Skipper player-link rendering ──────────────────────────────
+function V2PlayerLink({ id, name, onOpen }) {
+  return (
+    <span
+      onClick={() => onOpen && onOpen(id)}
+      style={{
+        cursor:'pointer',
+        fontWeight:700,
+        color:V2.accent,
+        borderBottom:`1px dashed ${V2.accent}`,
+        paddingBottom:1,
+      }}
+    >{name}</span>
+  );
+}
+
+const V2_TAG_RE = /\[\[([^\]|]+)\|([^\]]+)\]\]/g;
+const V2_REGEX_ESCAPE_RE = /[.*+?^${}()|[\]\\]/g;
+
+// Build a regex matching any full-name in the snapshot (case-insensitive,
+// longest first). Returns null when the index has no full names yet.
+function v2BuildFallbackRegex(index) {
+  if (!index || index.size === 0) return null;
+  const fullNames = [...index.keys()].filter(n => n && n.includes(' '));
+  if (!fullNames.length) return null;
+  fullNames.sort((a, b) => b.length - a.length);
+  const escaped = fullNames.map(n => n.replace(V2_REGEX_ESCAPE_RE, '\\$&'));
+  return new RegExp(`\\b(${escaped.join('|')})\\b`, 'gi');
+}
+
+function v2SplitTagsAndText(text) {
+  const out = [];
+  let last = 0;
+  for (const m of text.matchAll(V2_TAG_RE)) {
+    if (m.index > last) out.push({ kind:'text', text:text.slice(last, m.index) });
+    out.push({ kind:'link', name:m[1].trim(), id:m[2].trim() });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push({ kind:'text', text:text.slice(last) });
+  return out;
+}
+
+function v2ApplyFallback(parts, index, fallbackRe) {
+  if (!fallbackRe || !index) return parts;
+  const expanded = [];
+  for (const part of parts) {
+    if (part.kind !== 'text') { expanded.push(part); continue; }
+    // matchAll on a global regex resets internal iteration per call, so the
+    // memoized `fallbackRe` is safe to share across renders.
+    const matches = [...part.text.matchAll(fallbackRe)];
+    let lastFb = 0;
+    for (const mm of matches) {
+      if (mm.index > lastFb) expanded.push({ kind:'text', text:part.text.slice(lastFb, mm.index) });
+      const matched = mm[1];
+      const id = index.get(matched.toLowerCase());
+      if (id) expanded.push({ kind:'link', name:matched, id });
+      else expanded.push({ kind:'text', text:matched });
+      lastFb = mm.index + mm[0].length;
+    }
+    if (lastFb < part.text.length) expanded.push({ kind:'text', text:part.text.slice(lastFb) });
+  }
+  return expanded;
+}
+
+function v2RenderSkipperText(text, index, fallbackRe, onOpen) {
+  if (!text) return text;
+  const parts = v2ApplyFallback(v2SplitTagsAndText(text), index, fallbackRe);
+  let key = 0;
+  return parts.map(p => p.kind === 'link'
+    ? <V2PlayerLink key={key++} id={p.id} name={p.name} onOpen={onOpen}/>
+    : <React.Fragment key={key++}>{p.text}</React.Fragment>);
+}
+
 // ── /skipper ───────────────────────────────────────────────────
-function V2Skipper() {
+function V2Skipper({ model, sync, onOpenPlayer }) {
   const prompts = ['Who is my best 2B?', 'Compare my pitching to the league', 'Where am I weakest?'];
   const [msgs, setMsgs] = React.useState([]);
   const [input, setInput] = React.useState('');
   const [streaming, setStreaming] = React.useState(false);
   const [error, setError] = React.useState(null);
   const scrollRef = React.useRef(null);
+
+  const playerNameIndex = React.useMemo(
+    () => buildPlayerNameIndex(model?.playerIndex || []),
+    [model?.playerIndex],
+  );
+  const fallbackRe = React.useMemo(
+    () => v2BuildFallbackRegex(playerNameIndex),
+    [playerNameIndex],
+  );
+  const renderText = React.useCallback(
+    (text) => v2RenderSkipperText(text, playerNameIndex, fallbackRe, onOpenPlayer),
+    [playerNameIndex, fallbackRe, onOpenPlayer],
+  );
 
   // Load history on mount
   React.useEffect(() => {
@@ -1190,7 +1662,7 @@ function V2Skipper() {
             Ask anything about your roster. Skipper reads the latest snapshot and answers from real data only.
           </div>
         )}
-        {msgs.map((m,i)=> <V2Bubble key={i} m={m}/>)}
+        {msgs.map((m,i)=> <V2Bubble key={i} m={m} renderText={renderText}/>)}
         {streaming && msgs.length > 0 && msgs[msgs.length-1].role === 'ai' && !msgs[msgs.length-1].text && (
           <div style={{ color:V2.muted, fontSize:12, padding:'2px 4px 8px' }}>Thinking…</div>
         )}
@@ -1228,15 +1700,16 @@ function V2Skipper() {
 }
 
 // ── Skipper chat (inlined V2Bubble) ────────────────────────────
-function V2Bubble({ m }) {
+function V2Bubble({ m, renderText }) {
   if (m.role==='user') return (
     <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:8 }}>
       <div style={{ background:V2.accent, color:'#fff', padding:'9px 13px', borderRadius:'14px 14px 4px 14px', fontSize:13.5, maxWidth:'82%', lineHeight:1.4 }}>{m.text}</div>
     </div>
   );
+  const body = renderText ? renderText(m.text) : m.text;
   return (
     <div style={{ display:'flex', marginBottom:10 }}>
-      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, color:V2.ink, padding:'10px 13px', borderRadius:'14px 14px 14px 4px', fontSize:13.5, maxWidth:'92%', lineHeight:1.5 }}>{m.text}</div>
+      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, color:V2.ink, padding:'10px 13px', borderRadius:'14px 14px 14px 4px', fontSize:13.5, maxWidth:'92%', lineHeight:1.5 }}>{body}</div>
     </div>
   );
 }
