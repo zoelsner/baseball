@@ -24,7 +24,9 @@ log = logging.getLogger(__name__)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 PRIMARY_MODEL = "moonshotai/kimi-k2"
-FALLBACK_MODEL = "tencent/hunyuan-a13b-instruct:free"
+# Verified via OpenRouter /v1/models: hunyuan-a13b-instruct has no `:free`
+# variant anymore; the current free Tencent model is hy3-preview:free.
+FALLBACK_MODEL = "tencent/hy3-preview:free"
 
 # Keywords that escalate to tier 3 (load every team's roster). Kept short so
 # we err toward tier 2 — tier 3 is ~10x larger context.
