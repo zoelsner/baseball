@@ -131,8 +131,17 @@ def skipper_history() -> dict[str, Any]:
 @app.get("/api/player/{fantrax_id}")
 def player_profile(fantrax_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
     payload = _player_response(fantrax_id, force_refresh=False)
-    if (payload.get("profile_cache") or {}).get("needs_refresh"):
-        background_tasks.add_task(player_service.refresh_cached_profile, fantrax_id, generate_take=False)
+    profile_cache = payload.get("profile_cache") or {}
+    take_state = (profile_cache.get("take") or {}).get("state")
+    take_missing = take_state == "missing"
+    if profile_cache.get("needs_refresh") or take_missing:
+        background_tasks.add_task(
+            player_service.refresh_cached_profile,
+            fantrax_id,
+            generate_take=take_missing,
+        )
+        if take_missing:
+            payload.setdefault("profile_cache", {}).setdefault("take", {})["pending"] = True
     return payload
 
 

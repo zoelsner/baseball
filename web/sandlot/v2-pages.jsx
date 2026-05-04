@@ -1013,6 +1013,40 @@ function V2PlayerSheet({ id, onClose }) {
 
   React.useEffect(() => { load(); }, [load]);
 
+  // Poll for the Skipper take if it's still being generated server-side.
+  React.useEffect(() => {
+    if (!data) return;
+    const take = data.take || {};
+    const takeState = ((data.profile_cache || {}).take || {}).state;
+    const takePending = ((data.profile_cache || {}).take || {}).pending === true;
+    const stillGenerating = !take.text && !take.error && (takePending || takeState === 'missing');
+    if (!stillGenerating) return;
+
+    let attempts = 0;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      attempts += 1;
+      try {
+        const r = await fetch(`/api/player/${encodeURIComponent(id)}`);
+        if (!r.ok || cancelled) return;
+        const next = await r.json();
+        if (cancelled) return;
+        setData(next);
+        const nextTake = next.take || {};
+        const nextPending = ((next.profile_cache || {}).take || {}).pending === true;
+        const nextState = ((next.profile_cache || {}).take || {}).state;
+        const done = nextTake.text || nextTake.error || (!nextPending && nextState !== 'missing');
+        if (done || attempts >= 12) return;
+        timer = setTimeout(tick, 3500);
+      } catch (_) {
+        if (attempts < 12 && !cancelled) timer = setTimeout(tick, 5000);
+      }
+    };
+    let timer = setTimeout(tick, 2500);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [id, data]);
+
   const sync = async () => {
     if (syncing || syncCooldown) return;
     const requestSeq = ++requestSeqRef.current;
@@ -1447,12 +1481,12 @@ function V2ClipRow({ clip }) {
         )}
       </div>
       <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', gap:3 }}>
-        <div style={{ fontSize:13.5, color:V2.ink, fontWeight:700, letterSpacing:'-0.005em' }}>
-          {clip.date ? `${clip.date} · ` : ''}{clip.title}
+        <div style={{ fontSize:13.5, color:V2.ink, fontWeight:700, letterSpacing:'-0.005em' }}>{clip.title}</div>
+        <div style={{ fontSize:11.5, color:V2.muted, fontWeight:500, lineHeight:1.4 }}>
+          {clip.date ? <span style={{ fontFamily:V2.fontMono, fontWeight:700, color:V2.body }}>{v2ShortDate(clip.date)}</span> : null}
+          {clip.date && clip.caption && clip.caption !== clip.title ? ' · ' : null}
+          {clip.caption && clip.caption !== clip.title ? clip.caption : null}
         </div>
-        {clip.caption && (
-          <div style={{ fontSize:11.5, color:V2.muted, fontWeight:500, lineHeight:1.4 }}>{clip.caption}</div>
-        )}
       </div>
       <svg width="11" height="11" viewBox="0 0 12 12" fill="none" style={{ flexShrink:0 }}>
         <path d="M4 3l3 3-3 3" stroke="#94a3b8" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
