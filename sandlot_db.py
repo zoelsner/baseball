@@ -155,6 +155,20 @@ def init_schema() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_briefs (
+              snapshot_id BIGINT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+              brief_type TEXT NOT NULL,
+              subject_key TEXT NOT NULL,
+              text TEXT NOT NULL,
+              model TEXT NOT NULL,
+              input_hash TEXT,
+              generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              PRIMARY KEY (snapshot_id, brief_type, subject_key)
+            )
+            """
+        )
 
 
 def create_refresh_run(source: str) -> int:
@@ -233,6 +247,18 @@ def latest_successful_snapshot() -> dict[str, Any] | None:
             ORDER BY taken_at DESC, id DESC
             LIMIT 1
             """
+        ).fetchone()
+
+
+def snapshot_by_id(snapshot_id: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        return conn.execute(
+            """
+            SELECT *
+            FROM snapshots
+            WHERE id = %s
+            """,
+            (snapshot_id,),
         ).fetchone()
 
 
@@ -467,6 +493,43 @@ def set_player_take(player_id: str, snapshot_id: int, text: str, model: str) -> 
                 generated_at = now()
             """,
             (player_id, snapshot_id, text, model),
+        )
+
+
+def get_ai_brief(snapshot_id: int, brief_type: str, subject_key: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT snapshot_id, brief_type, subject_key, text, model, input_hash, generated_at
+            FROM ai_briefs
+            WHERE snapshot_id = %s AND brief_type = %s AND subject_key = %s
+            """,
+            (snapshot_id, brief_type, subject_key),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def set_ai_brief(
+    snapshot_id: int,
+    brief_type: str,
+    subject_key: str,
+    text: str,
+    model: str,
+    input_hash: str | None = None,
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO ai_briefs
+              (snapshot_id, brief_type, subject_key, text, model, input_hash, generated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, now())
+            ON CONFLICT (snapshot_id, brief_type, subject_key) DO UPDATE
+            SET text = EXCLUDED.text,
+                model = EXCLUDED.model,
+                input_hash = EXCLUDED.input_hash,
+                generated_at = now()
+            """,
+            (snapshot_id, brief_type, subject_key, text, model, input_hash),
         )
 
 

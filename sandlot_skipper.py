@@ -55,6 +55,18 @@ Rules:
 Be brief. Most answers are 1-4 sentences."""
 
 
+def primary_model() -> str:
+    return os.environ.get("SANDLOT_AI_MODEL_PRIMARY", PRIMARY_MODEL).strip() or PRIMARY_MODEL
+
+
+def fallback_model() -> str:
+    return os.environ.get("SANDLOT_AI_MODEL_FALLBACK", FALLBACK_MODEL).strip() or FALLBACK_MODEL
+
+
+def default_model_order() -> tuple[str, str]:
+    return (primary_model(), fallback_model())
+
+
 # ---------------------------------------------------------------------------
 # Tier detection + context formatting
 # ---------------------------------------------------------------------------
@@ -190,11 +202,12 @@ class SkipperClient:
     def stream(self, messages: list[dict[str, str]]) -> Iterator[tuple[str, str]]:
         """Yield ('token', text) chunks plus a final ('model', model_id) once.
 
-        Tries PRIMARY_MODEL first. On error before any tokens stream, falls
-        back to FALLBACK_MODEL. Mid-stream errors are not retried (V1).
+        Tries the environment-configured primary model first. On error before
+        any tokens stream, falls back to the configured fallback. Mid-stream
+        errors are not retried (V1).
         """
         failures: list[str] = []
-        for model in (PRIMARY_MODEL, FALLBACK_MODEL):
+        for model in default_model_order():
             try:
                 stream = self.client.chat.completions.create(
                     model=model,
@@ -235,10 +248,10 @@ class SkipperClient:
         Pass `model_order` to override which model is tried first — e.g. the
         player-take call uses Tencent-first because Kimi's first-token latency
         on a cold prompt regularly pushes the profile load over a noticeable
-        threshold. Defaults to (PRIMARY_MODEL, FALLBACK_MODEL).
+        threshold. Defaults to the environment-configured primary/fallback order.
         """
         failures: list[str] = []
-        for model in (model_order or (PRIMARY_MODEL, FALLBACK_MODEL)):
+        for model in (model_order or default_model_order()):
             try:
                 response = self.client.chat.completions.create(
                     model=model,

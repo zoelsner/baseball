@@ -11,6 +11,7 @@ import os
 import sys
 
 import player_service
+import sandlot_waivers
 from sandlot_refresh import run_refresh
 
 
@@ -21,12 +22,17 @@ def main() -> int:
         logging.info("Sandlot cron refresh stored snapshot_id=%s in %sms", result.snapshot_id, result.duration_ms)
         if os.environ.get("SANDLOT_PROFILE_WARM_DISABLED") == "1":
             logging.info("Sandlot profile warm skipped by SANDLOT_PROFILE_WARM_DISABLED")
-            return 0
-        warm_result = player_service.warm_roster_profiles(
-            snapshot_id=result.snapshot_id,
-            generate_takes=os.environ.get("SANDLOT_PROFILE_WARM_TAKES") == "1",
-        )
-        logging.info("Sandlot profile warm result: %s", warm_result)
+        else:
+            warm_result = player_service.warm_roster_profiles(
+                snapshot_id=result.snapshot_id,
+                generate_takes=os.environ.get("SANDLOT_PROFILE_WARM_TAKES") == "1",
+            )
+            logging.info("Sandlot profile warm result: %s", warm_result)
+        if os.environ.get("SANDLOT_WAIVER_AI_WARM_DISABLED") == "1":
+            logging.info("Sandlot waiver AI warm skipped by SANDLOT_WAIVER_AI_WARM_DISABLED")
+        else:
+            waiver_result = sandlot_waivers.warm_latest_waiver_ai(snapshot_id=result.snapshot_id)
+            logging.info("Sandlot waiver AI warm result: %s", waiver_result)
         return 0
     logging.error("Sandlot cron refresh failed: %s", "; ".join(result.errors))
     return 1

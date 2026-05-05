@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 import player_service
 import sandlot_db
 import sandlot_skipper
+import sandlot_waivers
 from sandlot_refresh import run_refresh
 
 log = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ def latest_snapshot() -> dict[str, Any]:
 
 
 @app.post("/api/refresh")
-def refresh(request: Request) -> dict[str, Any]:
+def refresh(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     _require_refresh_token(request)
     result = run_refresh(source="manual")
     if not result.ok:
@@ -91,6 +92,8 @@ def refresh(request: Request) -> dict[str, Any]:
         )
 
     row = sandlot_db.latest_successful_snapshot()
+    if result.snapshot_id and os.environ.get("SANDLOT_WAIVER_AI_WARM_DISABLED") != "1":
+        background_tasks.add_task(sandlot_waivers.warm_latest_waiver_ai, result.snapshot_id)
     return jsonable_encoder(
         {
             "status": result.status,
@@ -99,6 +102,18 @@ def refresh(request: Request) -> dict[str, Any]:
             "snapshot": _snapshot_payload(row) if row else None,
         }
     )
+
+
+@app.get("/api/waiver-swaps/latest")
+def latest_waiver_swaps() -> dict[str, Any]:
+    try:
+        payload = sandlot_waivers.latest_waiver_payload()
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("Waiver swaps failed")
+        raise HTTPException(status_code=503, detail=f"Waiver swaps unavailable: {exc}") from exc
+    return jsonable_encoder(payload)
 
 
 class SkipperMessageIn(BaseModel):

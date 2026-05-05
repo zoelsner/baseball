@@ -277,7 +277,7 @@ function V2App({ initial }) {
     today:   <V2Today model={model} sync={syncState} onRefresh={refreshSnapshot} onNav={setPage}/>,
     roster:  <V2Roster model={model} onPlayer={setDetail}/>,
     league:  <V2League model={model}/>,
-    fa:      <V2FreeAgents/>,
+    fa:      <V2FreeAgents onOpenPlayer={openPlayer}/>,
     trade:   <V2TradeGrader/>,
     skipper: <V2Skipper model={model} sync={syncState} onOpenPlayer={openPlayer}/>,
     settings:<V2Settings model={model} sync={syncState} onRefresh={refreshSnapshot} onSignOut={()=>setAuthed(false)}/>,
@@ -311,7 +311,7 @@ function V2TopBar({ page, setPage, model, sync, onRefresh }) {
     today:`Fantrax snapshot · ${model.source === 'api' ? 'live data' : 'mock fallback'}`,
     roster:`${model.teamName}`,
     league:`${model.leagueName} · ${model.leagueTeams.length} teams`,
-    fa:`${FREE_AGENTS.length} picks · curated weekly`,
+    fa:'Waiver swaps · ranked from snapshot',
     trade:'Paste an offer for instant analysis',
     skipper:`Reading ${model.teamName}`,
     settings:`${model.leagueName}`,
@@ -350,9 +350,9 @@ function V2TabBar({ page, setPage }) {
     { id:'today',  label:'Today',   icon:Icons.home },
     { id:'roster', label:'Roster',  icon:Icons.list },
     { id:'fa',     label:'Adds',    icon:Icons.spark },
+    { id:'skipper',label:'Skipper', icon:Icons.sparkle },
     { id:'trade',  label:'Trade',   icon:Icons.trade },
     { id:'league', label:'League',  icon:Icons.diamond },
-    { id:'skipper',label:'Skipper', icon:Icons.sparkle },
   ];
   return (
     <div style={{ display:'flex', borderTop:`1px solid ${V2.hairline}`, background:V2.surface, paddingBottom:18, paddingTop:8 }}>
@@ -479,8 +479,8 @@ function V2Today({ model, sync, onRefresh, onNav }) {
           <div style={{ fontSize:14, fontWeight:700, marginTop:6, fontFamily:V2.fontDisplay }}>By position →</div>
         </button>
         <button onClick={()=>onNav('fa')} style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:14, padding:'14px', cursor:'pointer', textAlign:'left', fontFamily:'inherit' }}>
-          <V2Eyebrow color={V2.accent}>{FREE_AGENTS.length} adds</V2Eyebrow>
-          <div style={{ fontSize:14, fontWeight:700, marginTop:6, color:V2.accent, fontFamily:V2.fontDisplay }}>Best pickups →</div>
+          <V2Eyebrow color={V2.accent}>Waiver board</V2Eyebrow>
+          <div style={{ fontSize:14, fontWeight:700, marginTop:6, color:V2.accent, fontFamily:V2.fontDisplay }}>Review swaps →</div>
         </button>
       </div>
 
@@ -759,84 +759,248 @@ function V2TeamRow({ team, expanded, onToggle }) {
 }
 
 // ── /free-agents ───────────────────────────────────────────────
-function V2FreeAgents() {
+function V2FreeAgents({ onOpenPlayer }) {
   const [filter, setFilter] = React.useState('ALL');
-  const positions = ['ALL','OF','2B','SS','SP','RP','3B'];
-  const list = FREE_AGENTS.filter(f => filter==='ALL' || f.pos.includes(filter));
+  const [state, setState] = React.useState({ status:'loading', payload:null, error:null });
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (window.location.protocol === 'file:') {
+      setState({ status:'ready', payload:v2MockWaiverPayload(), error:null });
+      return () => { cancelled = true; };
+    }
+    setState({ status:'loading', payload:null, error:null });
+    fetch('/api/waiver-swaps/latest')
+      .then(async r => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || `waiver swaps ${r.status}`);
+        return data;
+      })
+      .then(data => { if (!cancelled) setState({ status:'ready', payload:data, error:null }); })
+      .catch(err => { if (!cancelled) setState({ status:'error', payload:null, error:err.message }); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const cards = state.payload?.cards || [];
+  const positions = React.useMemo(() => v2WaiverPositions(cards), [cards]);
+  const list = cards.filter(card => {
+    if (filter === 'ALL') return true;
+    const positions = `${card?.add?.positions || ''} ${card?.fills_position || ''}`.toUpperCase();
+    return positions.includes(filter);
+  });
+  const isMock = state.payload?.source === 'mock';
+  const briefState = state.payload?.brief?.state;
+
+  if (state.status === 'loading') {
+    return <V2WaiverState eyebrow="Waiver board" title="Loading waiver swaps" body="Reading the latest Fantrax snapshot." />;
+  }
+  if (state.status === 'error') {
+    return <V2WaiverState eyebrow="Waiver board" title="Waiver swaps unavailable" body={state.error || 'The API did not return a waiver board.'} tone="warn" />;
+  }
+
   return (
     <div style={{ padding:'4px 16px 32px', display:'flex', flexDirection:'column', gap:14 }}>
-      <V2Caution eyebrow="Skipper picks" tone="accent">
-        Six worth-grabbing free agents this week, ranked by upside vs. your weakest slots.
+      <V2Caution eyebrow={isMock ? 'Mock waiver board' : 'Deterministic board'} tone="accent">
+        {cards.length
+          ? `${cards.length} ranked swap${cards.length===1?'':'s'} from the latest snapshot. Review in Fantrax before making any move.`
+          : (state.payload?.message || 'No positive waiver swaps found.')}
       </V2Caution>
-      <div style={{ display:'flex', gap:6, overflowX:'auto', paddingBottom:4, margin:'0 -16px', padding:'0 16px 4px' }}>
-        {positions.map(p=>(
-          <button key={p} onClick={()=>setFilter(p)} style={{
-            padding:'7px 13px', borderRadius:999,
-            border:`1px solid ${filter===p?V2.ink:V2.hairline}`,
-            background: filter===p?V2.ink:V2.surface, color: filter===p?'#fff':V2.body,
-            fontSize:12, fontWeight:700, cursor:'pointer', flexShrink:0, fontFamily:'inherit',
-          }}>{p}</button>
-        ))}
-      </div>
-      {list.map(fa => <V2FACard key={fa.id} fa={fa}/>)}
+
+      {briefState === 'ready' && (
+        <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:16, padding:14 }}>
+          <V2Eyebrow color={V2.accent}>Skipper brief</V2Eyebrow>
+          <div style={{ marginTop:8, fontSize:12.5, color:V2.body, lineHeight:1.55 }}>
+            {v2BriefLines(state.payload?.brief?.text).slice(0,2).map((line,i)=>(
+              <div key={i} style={{ display:'flex', gap:8, marginTop:i?6:0 }}>
+                <span style={{ color:V2.accent, fontWeight:800 }}>•</span>
+                <span>{line}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {positions.length > 1 && (
+        <div style={{ display:'flex', gap:6, overflowX:'auto', paddingBottom:4, margin:'0 -16px', padding:'0 16px 4px' }}>
+          {positions.map(p=>(
+            <button key={p} onClick={()=>setFilter(p)} style={{
+              padding:'7px 13px', borderRadius:999,
+              border:`1px solid ${filter===p?V2.ink:V2.hairline}`,
+              background: filter===p?V2.ink:V2.surface, color: filter===p?'#fff':V2.body,
+              fontSize:12, fontWeight:700, cursor:'pointer', flexShrink:0, fontFamily:'inherit',
+            }}>{p}</button>
+          ))}
+        </div>
+      )}
+
+      {!list.length && (
+        <V2WaiverState eyebrow="No cards" title="Nothing in this filter" body="Try All, or refresh after Fantrax updates the free-agent pool." compact />
+      )}
+      {list.map(card => (
+        <V2WaiverSwapCard key={card.id} card={card} onOpenPlayer={onOpenPlayer}/>
+      ))}
     </div>
   );
 }
-function V2FACard({ fa }) {
-  const expC = fa.vsExp>=1?V2.ok:fa.vsExp<=-1?V2.warn:V2.muted;
+
+function V2WaiverState({ eyebrow, title, body, tone='accent', compact=false }) {
+  const color = tone === 'warn' ? V2.warn : V2.accent;
   return (
-    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, overflow:'hidden' }}>
-      <div style={{ padding:'14px 16px', display:'flex', alignItems:'flex-start', gap:12 }}>
-        <Avatar name={fa.name} size={40}/>
-        <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-            <span style={{ fontSize:15, fontWeight:600, lineHeight:1.2, fontFamily:V2.fontDisplay }}>{fa.name}</span>
-            {fa.trend==='hot' && <span style={{ background:V2.okSoft, color:V2.ok, fontSize:9.5, fontWeight:800, padding:'1px 6px', borderRadius:5 }}>HOT</span>}
-          </div>
-          <div style={{ fontSize:11.5, color:V2.muted, marginTop:3, display:'flex', gap:8 }}>
-            <span>{fa.pos} · {fa.team} · age {fa.age}</span>
-            <span>·</span>
-            <span>{fa.rosteredPct}% rostered</span>
-          </div>
-        </div>
-        <div style={{ textAlign:'right' }}>
-          <div style={{ fontSize:9.5, color:V2.muted, fontWeight:800, letterSpacing:'0.06em', textTransform:'uppercase' }}>L30/G</div>
-          <div style={{ fontSize:16, fontWeight:700, fontVariantNumeric:'tabular-nums', fontFamily:V2.fontMono }}>{fa.l30avg.toFixed(1)}</div>
-          <div style={{ fontSize:10, fontWeight:700, color:expC, fontVariantNumeric:'tabular-nums', marginTop:1 }}>
-            {fa.vsExp>=0?'+':''}{fa.vsExp.toFixed(1)}
-          </div>
-        </div>
+    <div style={{ padding:compact?'0':'4px 16px 32px' }}>
+      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:compact?14:18 }}>
+        <V2Eyebrow color={color}>{eyebrow}</V2Eyebrow>
+        <div style={{ fontSize:compact?16:20, fontWeight:700, fontFamily:V2.fontDisplay, marginTop:8 }}>{title}</div>
+        <div style={{ fontSize:13, color:V2.muted, lineHeight:1.5, marginTop:6 }}>{body}</div>
       </div>
-      <div style={{ padding:'2px 16px 14px' }}>
-        <div style={{ display:'flex', gap:10, alignItems:'flex-start', marginBottom:10 }}>
-          <div style={{ flexShrink:0, width:6, height:6, marginTop:7, background:V2.ok, borderRadius:'50%' }}/>
-          <div style={{ fontSize:13, color:V2.body, lineHeight:1.55 }}>
-            <span style={{ fontWeight:700, color:V2.ok }}>Why grab. </span>{fa.why}
-          </div>
-        </div>
-        <div style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
-          <div style={{ flexShrink:0, width:6, height:6, marginTop:7, background:V2.warn, borderRadius:'50%' }}/>
-          <div style={{ fontSize:13, color:V2.body, lineHeight:1.55 }}>
-            <span style={{ fontWeight:700, color:V2.warn }}>Tradeoffs. </span>{fa.tradeoffs}
-          </div>
-        </div>
-      </div>
-      {fa.swap ? (
-        <div style={{ padding:'12px 16px', display:'flex', alignItems:'center', gap:10, borderTop:`1px solid ${V2.hairline2}` }}>
-          <div style={{ flex:1, minWidth:0 }}>
-            <V2Eyebrow>Suggested swap</V2Eyebrow>
-            <div style={{ fontSize:13, fontWeight:700, color:V2.ink, marginTop:4 }}>Drop {fa.swap.name}</div>
-            <div style={{ fontSize:11.5, color:V2.muted, marginTop:1 }}>{fa.swap.why}</div>
-          </div>
-          <button style={{ background:V2.ink, color:'#fff', border:'none', padding:'10px 16px', borderRadius:999, fontSize:12.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit', flexShrink:0 }}>Add</button>
-        </div>
-      ) : (
-        <div style={{ padding:'12px 16px', display:'flex', justifyContent:'flex-end', borderTop:`1px solid ${V2.hairline2}` }}>
-          <button style={{ background:'none', color:V2.body, border:`1px solid ${V2.hairline}`, padding:'9px 14px', borderRadius:999, fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>Add to watchlist</button>
-        </div>
-      )}
     </div>
   );
+}
+
+function V2WaiverSwapCard({ card, onOpenPlayer }) {
+  const add = card.add || {};
+  const out = card.move_out || {};
+  const conf = v2ConfidenceStyle(card.confidence);
+  const net = v2Signed(card.net_delta, 1);
+  return (
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, overflow:'hidden' }}>
+      <div style={{ padding:'14px 16px 12px', display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
+        <div style={{ minWidth:0 }}>
+          <V2Eyebrow color={V2.accent}>Rank {card.rank || '—'}</V2Eyebrow>
+          <div style={{ display:'flex', alignItems:'baseline', gap:8, marginTop:5 }}>
+            <span style={{ fontSize:26, fontWeight:700, color:V2.accent, fontFamily:V2.fontDisplay, fontVariantNumeric:'tabular-nums' }}>{net}</span>
+            <span style={{ fontSize:11, color:V2.muted, fontWeight:800, letterSpacing:'0.04em', textTransform:'uppercase' }}>FP/G delta</span>
+          </div>
+        </div>
+        <div style={{ background:conf.bg, color:conf.fg, borderRadius:999, padding:'5px 9px', fontSize:11, fontWeight:800, whiteSpace:'nowrap' }}>
+          {card.confidence || 'Medium'}
+        </div>
+      </div>
+
+      <div style={{ padding:'0 16px 14px', display:'grid', gridTemplateColumns:'1fr 26px 1fr', alignItems:'center', gap:8 }}>
+        <V2WaiverPlayer player={add} label="Inspect add"/>
+        <div style={{ display:'flex', justifyContent:'center', color:V2.muted }}>{Icons.swap(V2.muted, 20)}</div>
+        <V2WaiverPlayer player={out} label="Move out" muted/>
+      </div>
+
+      <div style={{ padding:'0 16px 12px', display:'flex', flexWrap:'wrap', gap:6 }}>
+        {(card.evidence_chips || []).map(chip => (
+          <span key={chip} style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:800 }}>
+            {chip}
+          </span>
+        ))}
+      </div>
+
+      <div style={{ borderTop:`1px solid ${V2.hairline2}`, padding:'12px 16px', display:'flex', flexDirection:'column', gap:10 }}>
+        <V2ReasonLine color={V2.ok} label="Why" text={card.why}/>
+        <V2ReasonLine color={V2.warn} label="Risk" text={card.risk}/>
+        {card.dynasty_note && <V2ReasonLine color={V2.muted} label="Dynasty" text={card.dynasty_note}/>}
+      </div>
+
+      <div style={{ borderTop:`1px solid ${V2.hairline2}`, padding:'12px 16px', display:'flex', gap:8 }}>
+        <button onClick={()=>onOpenPlayer?.(add.id)} disabled={!onOpenPlayer || !add.id} style={{
+          flex:1, background:V2.ink, color:'#fff', border:'none', padding:'11px 14px',
+          borderRadius:999, fontSize:12.5, fontWeight:800, cursor:onOpenPlayer && add.id ? 'pointer' : 'default',
+          fontFamily:'inherit',
+        }}>Review swap</button>
+        <button onClick={()=>onOpenPlayer?.(out.id)} disabled={!onOpenPlayer || !out.id} style={{
+          flex:'0 0 auto', background:V2.surface2, color:V2.body, border:'none', padding:'11px 13px',
+          borderRadius:999, fontSize:12, fontWeight:800, cursor:onOpenPlayer && out.id ? 'pointer' : 'default',
+          fontFamily:'inherit',
+        }}>Roster player</button>
+      </div>
+    </div>
+  );
+}
+
+function V2WaiverPlayer({ player, label, muted=false }) {
+  return (
+    <div style={{ minWidth:0, display:'flex', gap:9, alignItems:'center', opacity:muted?0.82:1 }}>
+      <Avatar name={player.name || '?'} size={34}/>
+      <div style={{ minWidth:0 }}>
+        <div style={{ fontSize:10.5, color:V2.muted, fontWeight:800, letterSpacing:'0.06em', textTransform:'uppercase' }}>{label}</div>
+        <div style={{ marginTop:2, fontSize:14.5, fontWeight:700, color:V2.ink, fontFamily:V2.fontDisplay, lineHeight:1.12, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{player.name || 'Unknown'}</div>
+        <div style={{ marginTop:2, fontSize:11, color:V2.muted, fontWeight:650, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+          {player.positions || 'UT'}{player.team ? ` · ${player.team}` : ''}{Number.isFinite(player.fpg) ? ` · ${Number(player.fpg).toFixed(1)}` : ''}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function V2ReasonLine({ color, label, text }) {
+  if (!text) return null;
+  return (
+    <div style={{ display:'flex', gap:9, alignItems:'flex-start' }}>
+      <div style={{ width:6, height:6, borderRadius:'50%', background:color, marginTop:7, flexShrink:0 }}/>
+      <div style={{ fontSize:12.8, color:V2.body, lineHeight:1.5 }}>
+        <span style={{ color, fontWeight:800 }}>{label}. </span>{text}
+      </div>
+    </div>
+  );
+}
+
+function v2ConfidenceStyle(confidence) {
+  if (confidence === 'High') return { fg:V2.ok, bg:V2.okSoft };
+  if (confidence === 'Low') return { fg:V2.warn, bg:V2.warnSoft };
+  return { fg:V2.body, bg:V2.surface2 };
+}
+
+function v2WaiverPositions(cards) {
+  const out = ['ALL'];
+  for (const card of cards || []) {
+    const text = `${card?.add?.positions || ''} ${card?.fills_position || ''}`;
+    for (const token of text.toUpperCase().split(/[^A-Z0-9]+/)) {
+      if (['C','1B','2B','3B','SS','OF','SP','RP','UT'].includes(token) && !out.includes(token)) out.push(token);
+    }
+  }
+  return out;
+}
+
+function v2Signed(value, digits=1) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '—';
+  return `${n>=0?'+':''}${n.toFixed(digits)}`;
+}
+
+function v2BriefLines(text) {
+  return String(text || '')
+    .split(/\n+/)
+    .map(line => line.replace(/^\s*[-*•]\s*/, '').trim())
+    .filter(Boolean);
+}
+
+function v2MockWaiverPayload() {
+  const cards = (FREE_AGENTS || []).filter(f => f.swap).slice(0, 8).map((fa, idx) => {
+    const move = (ROSTER || []).find(p => p.id === fa.swap.id) || {};
+    const addFpg = Number(fa.l30avg || fa.proj30 || 0);
+    const moveFpg = Number(move.proj || move.l30avg || 0);
+    const net = addFpg - moveFpg;
+    return {
+      id:`mock-waiver-${fa.id}`,
+      rank:idx+1,
+      add:{ id:fa.id, name:fa.name, team:fa.team, positions:fa.pos, age:fa.age, fpg:addFpg, score_source:'L30/G' },
+      move_out:{ id:move.id || fa.swap.id, name:fa.swap.name, team:move.team || '', positions:move.pos || '', slot:move.slot || 'BN', age:move.age, fpg:moveFpg, injury:move.injury || move.status },
+      net_delta:Number.isFinite(net) ? Math.round(net * 10) / 10 : fa.vsExp,
+      sort_score:fa.vsExp || 0,
+      fills_position:fa.pos,
+      fit:'direct',
+      confidence:idx < 2 ? 'High' : 'Medium',
+      why:fa.why,
+      risk:fa.tradeoffs,
+      dynasty_note:'Mock card only; real dynasty note comes from Fantrax snapshot data.',
+      evidence_chips:[`${v2Signed(Number.isFinite(net)?net:fa.vsExp, 1)} FP/G`, `${fa.pos} fit`, 'Mock fallback'],
+      explanation:{ state:'deterministic' },
+    };
+  });
+  return {
+    source:'mock',
+    snapshot_id:null,
+    taken_at:null,
+    freshness:{ state:'fallback', age_minutes:null },
+    cards,
+    brief:{ state:'missing', text:null },
+    message:null,
+  };
 }
 
 // ── /trade-grader ──────────────────────────────────────────────
@@ -1618,11 +1782,12 @@ function v2RenderSkipperText(text, index, fallbackRe, onOpen) {
 
 // ── /skipper ───────────────────────────────────────────────────
 function V2Skipper({ model, sync, onOpenPlayer }) {
-  const prompts = ['Who is my best 2B?', 'Compare my pitching to the league', 'Where am I weakest?'];
+  const prompts = ['Best waiver swap to review?', 'Where am I weakest?', 'Who is my best 2B?'];
   const [msgs, setMsgs] = React.useState([]);
   const [input, setInput] = React.useState('');
   const [streaming, setStreaming] = React.useState(false);
   const [error, setError] = React.useState(null);
+  const [brief, setBrief] = React.useState({ status:'loading', data:null, error:null });
   const scrollRef = React.useRef(null);
 
   const playerNameIndex = React.useMemo(
@@ -1637,6 +1802,27 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
     (text) => v2RenderSkipperText(text, playerNameIndex, fallbackRe, onOpenPlayer),
     [playerNameIndex, fallbackRe, onOpenPlayer],
   );
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (window.location.protocol === 'file:') {
+      setBrief({ status:'missing', data:null, error:null });
+      return () => { cancelled = true; };
+    }
+    setBrief({ status:'loading', data:null, error:null });
+    fetch('/api/waiver-swaps/latest')
+      .then(async r => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || `brief ${r.status}`);
+        return data;
+      })
+      .then(data => {
+        if (cancelled) return;
+        setBrief({ status:data?.brief?.state === 'ready' ? 'ready' : 'missing', data:data?.brief || null, error:null });
+      })
+      .catch(err => { if (!cancelled) setBrief({ status:'error', data:null, error:err.message }); });
+    return () => { cancelled = true; };
+  }, [model?.snapshotId]);
 
   // Load history on mount
   React.useEffect(() => {
@@ -1753,6 +1939,7 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
             }}>Clear</button>
           )}
         </div>
+        <V2SkipperRefreshBrief brief={brief} sync={sync}/>
         {msgs.length === 0 && !streaming && (
           <div style={{ color:V2.muted, fontSize:13, padding:'18px 4px', lineHeight:1.5 }}>
             Ask anything about your roster. Skipper reads the latest snapshot and answers from real data only.
@@ -1781,7 +1968,7 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
           <input value={input} onChange={e=>setInput(e.target.value)} disabled={streaming}
             onKeyDown={e=>{if(e.key==='Enter')send();}}
-            placeholder={streaming ? 'Skipper is responding…' : 'Ask about your roster, trades, matchups...'}
+            placeholder={streaming ? 'Skipper is responding…' : 'Ask about your roster, waivers, matchups...'}
             style={{ flex:1, border:`1px solid ${V2.hairline}`, background:V2.surface2, borderRadius:999, padding:'12px 15px', outline:'none', fontSize:13.5, color:V2.ink, fontFamily:'inherit' }}/>
           <button onClick={()=>send()} disabled={streaming} style={{
             width:42, height:42, borderRadius:'50%', background:V2.warn, border:'none',
@@ -1791,6 +1978,41 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
           }}>{Icons.send('#fff', 14)}</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function V2SkipperRefreshBrief({ brief, sync }) {
+  const lines = v2BriefLines(brief?.data?.text);
+  const ready = brief?.status === 'ready' && lines.length;
+  const loading = brief?.status === 'loading';
+  const error = brief?.status === 'error';
+  return (
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:15, marginBottom:14 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+        <V2Eyebrow color={ready ? V2.accent : V2.muted}>Refresh brief</V2Eyebrow>
+        <div style={{ fontSize:10.5, color:V2.muted, fontWeight:800, letterSpacing:'0.04em', textTransform:'uppercase' }}>
+          {sync?.label || 'snapshot'}
+        </div>
+      </div>
+      {ready ? (
+        <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:8 }}>
+          {lines.slice(0,5).map((line,i)=>(
+            <div key={i} style={{ display:'flex', gap:9, alignItems:'flex-start', fontSize:13, color:V2.body, lineHeight:1.45 }}>
+              <span style={{ color:V2.accent, fontWeight:800, marginTop:1 }}>•</span>
+              <span>{line}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ marginTop:8, fontSize:12.5, color:error ? V2.warn : V2.muted, lineHeight:1.5 }}>
+          {loading
+            ? 'Checking for a cached refresh brief...'
+            : error
+              ? `Brief unavailable: ${brief.error}`
+              : 'Brief will appear after the next refresh.'}
+        </div>
+      )}
     </div>
   );
 }
