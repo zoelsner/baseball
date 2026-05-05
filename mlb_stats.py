@@ -28,6 +28,7 @@ MEDIA_ITEM_LIMIT = 5
 
 _PLAYER_INDEX_CACHE: dict[int, list[dict[str, Any]]] = {}
 _TEAM_ABBREV_CACHE: dict[int, dict[int, str]] = {}
+_SCHEDULE_CACHE: dict[str, set[str]] = {}
 _CACHE_LOCK = threading.Lock()
 
 _TEAM_ABBREV_ALIASES = {
@@ -145,6 +146,56 @@ def _get_team_abbreviations(season: int) -> dict[int, str]:
             mapping = {}
         _TEAM_ABBREV_CACHE[season] = mapping
         return mapping
+
+
+def games_today_team_abbrs(target_date: _date | None = None) -> set[str]:
+    """Set of MLB team abbreviations with a game on `target_date` (today by default).
+
+    Used by Sandlot's Today page to flag which roster starters have an MLB game
+    today. Cached per-date in process so repeat hits inside one day are free.
+    Returns an empty set on any failure — callers must treat empty as "unknown"
+    (the UI hides the lineup-status card when no games are reported).
+    """
+    target = target_date or _date.today()
+    key = target.isoformat()
+    cached = _SCHEDULE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    with _CACHE_LOCK:
+        cached = _SCHEDULE_CACHE.get(key)
+        if cached is not None:
+            return cached
+        teams: set[str] = set()
+        try:
+            url = f"{BASE_URL}/schedule"
+            resp = requests.get(
+                url,
+                params={
+                    "sportId": 1,
+                    "date": key,
+                    "fields": "dates,games,teams,away,home,team,id",
+                },
+                timeout=DEFAULT_TIMEOUT,
+            )
+            resp.raise_for_status()
+            abbrev_map = _get_team_abbreviations(target.year)
+            for d in (resp.json().get("dates") or []):
+                for g in (d.get("games") or []):
+                    for side in ("away", "home"):
+                        team_id = (((g.get("teams") or {}).get(side) or {}).get("team") or {}).get("id")
+                        if team_id is None:
+                            continue
+                        try:
+                            abbr = abbrev_map.get(int(team_id))
+                        except (TypeError, ValueError):
+                            abbr = None
+                        if abbr:
+                            teams.add(_normalize_team(abbr) or abbr)
+            log.info("MLB schedule for %s: %d teams in action", key, len(teams))
+        except Exception as exc:
+            log.warning("MLB schedule fetch failed for %s: %s", key, exc)
+        _SCHEDULE_CACHE[key] = teams
+        return teams
 
 
 def fetch_game_log(

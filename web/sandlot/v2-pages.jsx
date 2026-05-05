@@ -82,6 +82,8 @@ function v2EmptyModel() {
     takenAt: null,
     playerIndex: [],
     matchup: null,
+    lineupToday: null,
+    standingsDelta: null,
   };
 }
 
@@ -146,6 +148,8 @@ function v2NormalizeSnapshot(payload) {
     takenAt: payload?.taken_at || null,
     playerIndex: payload?.player_index || [],
     matchup: payload?.matchup || null,
+    lineupToday: payload?.lineup_today || null,
+    standingsDelta: payload?.standings_delta || null,
   };
 }
 
@@ -487,54 +491,72 @@ function V2Auth({ onSignIn }) {
 
 // ── /today ─────────────────────────────────────────────────────
 function V2Today({ model, sync, onRefresh, onNav }) {
-  const rosterCount = model.roster.length;
-  const starters = model.roster.filter(p => !['BN','IL','IR'].includes(String(p.slot || '').toUpperCase())).length;
-  const bench = model.roster.filter(p => String(p.slot || '').toUpperCase() === 'BN').length;
-  const injured = model.roster.filter(p => v2PlayerState(p) === 'injured').length;
   const myTeam = model.leagueTeams.find(t => t.me);
   const topTeam = [...model.leagueTeams].sort((a,b)=>a.rank-b.rank)[0];
-  const syncCopy = sync.state === 'failed'
-    ? sync.error || 'Last refresh failed.'
-    : sync.state === 'loading'
-      ? 'Loading latest Fantrax snapshot…'
-      : sync.state === 'refreshing'
-        ? (sync.notice || 'Refreshing Fantrax data…')
-        : model.source === 'api'
-          ? `Latest successful scrape is ${sync.label} old.`
-          : 'Waiting for the first successful Fantrax scrape.';
+  const matchup = model.matchup;
+  const lineup = model.lineupToday;
+  const delta = model.standingsDelta;
+
+  const matchupHeadline = (() => {
+    if (!matchup) return null;
+    const margin = Number(matchup.margin) || 0;
+    if (matchup.complete) {
+      return margin > 0 ? `Won by ${margin.toFixed(1)}` : margin < 0 ? `Lost by ${Math.abs(margin).toFixed(1)}` : 'Tied';
+    }
+    if (margin > 0) return `Up ${margin.toFixed(1)}`;
+    if (margin < 0) return `Down ${Math.abs(margin).toFixed(1)}`;
+    return 'Tied';
+  })();
+
   return (
-    <div style={{ padding:'4px 16px 28px', display:'flex', flexDirection:'column', gap:16 }}>
+    <div style={{ padding:'4px 16px 28px', display:'flex', flexDirection:'column', gap:14 }}>
       {sync.notice && sync.state !== 'refreshing' && (
         <V2Caution eyebrow="Heads up" tone="warn">{sync.notice}</V2Caution>
       )}
-      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:22, padding:18 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:14 }}>
-          <div>
-            <div style={{ fontSize:13, color:V2.muted, fontWeight:700 }}>Latest sync</div>
-            <div style={{ marginTop:5, fontSize:19, lineHeight:1.25, fontWeight:700, fontFamily:V2.fontDisplay }}>{syncCopy}</div>
-          </div>
-          <div style={{ textAlign:'center', minWidth:76 }}>
-            <div style={{ fontSize:28, fontWeight:700, color:V2.ink, fontFamily:V2.fontMono, letterSpacing:'-0.04em' }}>{rosterCount}</div>
-            <div style={{ fontSize:10.5, color:V2.muted, fontWeight:800, letterSpacing:'0.08em', textTransform:'uppercase' }}>players</div>
-          </div>
-        </div>
-      </div>
+      {sync.state === 'failed' && !sync.notice && (
+        <V2Caution eyebrow="Refresh failed" tone="warn">{sync.error || 'Last refresh failed.'}</V2Caution>
+      )}
 
-      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
-        <V2Eyebrow>Roster shape</V2Eyebrow>
-        <V2StatRow stats={[
-          { value:starters, label:'Starting', color:V2.inLineup },
-          { value:bench, label:'Bench', color:V2.bench },
-          { value:injured, label:'Injured', color:injured ? V2.bad : V2.muted },
-        ]}/>
-      </div>
+      {matchup && (
+        <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:10 }}>
+            <V2Eyebrow>This week</V2Eyebrow>
+            <span style={{ fontSize:11, color:V2.muted, fontWeight:700 }}>
+              {matchup.complete ? 'final' : 'live'}{matchup.period_name ? ` · ${matchup.period_name}` : ''}
+            </span>
+          </div>
+          <V2MatchupDonut matchup={matchup}/>
+          {matchupHeadline && (
+            <div style={{ marginTop:8, fontSize:13, color:V2.body, fontWeight:600 }}>
+              {matchupHeadline} vs <span style={{ fontWeight:700, color:V2.ink }}>{matchup.opponent_team_name || 'opponent'}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {lineup && (
+        <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+            <V2Eyebrow>Today</V2Eyebrow>
+            <span style={{ fontSize:11, color:V2.muted, fontWeight:700 }}>{v2FormatLineupDate(lineup.date)}</span>
+          </div>
+          <V2StatRow stats={[
+            { value:lineup.in_action, label:'In action', color:lineup.in_action ? V2.inLineup : V2.muted },
+            { value:lineup.idle, label:'Idle', color:V2.muted },
+            { value:lineup.injured, label:'Injured', color:lineup.injured ? V2.bad : V2.muted },
+          ]}/>
+        </div>
+      )}
 
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
         <V2Eyebrow>League standing</V2Eyebrow>
         <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:12, marginTop:10 }}>
           <div style={{ minWidth:0 }}>
             <div style={{ fontSize:20, fontWeight:700, fontFamily:V2.fontDisplay }}>{myTeam ? `#${myTeam.rank} ${myTeam.name}` : model.teamName}</div>
-            <div style={{ color:V2.muted, fontSize:12, fontWeight:700, marginTop:3 }}>{myTeam?.record || 'Record unavailable'} {myTeam?.streak ? `· ${myTeam.streak}` : ''}</div>
+            <div style={{ color:V2.muted, fontSize:12, fontWeight:700, marginTop:3 }}>
+              {myTeam?.record || 'Record unavailable'}{myTeam?.streak ? ` · ${myTeam.streak}` : ''}
+              {delta && <V2RankChip delta={delta}/>}
+            </div>
           </div>
           <div style={{ fontSize:18, fontWeight:700, fontFamily:V2.fontMono }}>{myTeam ? Math.round(myTeam.pts).toLocaleString() : '—'}</div>
         </div>
@@ -545,22 +567,34 @@ function V2Today({ model, sync, onRefresh, onNav }) {
         )}
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
-        <button onClick={()=>onNav('roster')} style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:14, padding:'14px', cursor:'pointer', textAlign:'left', fontFamily:'inherit' }}>
-          <V2Eyebrow>Your roster</V2Eyebrow>
-          <div style={{ fontSize:14, fontWeight:700, marginTop:6, fontFamily:V2.fontDisplay }}>By position →</div>
-        </button>
-        <button onClick={()=>onNav('fa')} style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:14, padding:'14px', cursor:'pointer', textAlign:'left', fontFamily:'inherit' }}>
-          <V2Eyebrow color={V2.accent}>Waiver board</V2Eyebrow>
-          <div style={{ fontSize:14, fontWeight:700, marginTop:6, color:V2.accent, fontFamily:V2.fontDisplay }}>Review swaps →</div>
-        </button>
-      </div>
-
       <V2Primary variant="dark" onClick={onRefresh} sub={model.source === 'api' ? `Snapshot ${model.snapshotId || ''}` : 'Waiting for first scrape…'}>
         {sync.state === 'refreshing' ? 'Refreshing...' : 'Refresh Fantrax data'}
       </V2Primary>
     </div>
   );
+}
+
+function V2RankChip({ delta }) {
+  const change = Number(delta?.rank_change) || 0;
+  if (!change) return (
+    <span style={{ marginLeft:8, color:V2.muted, fontSize:11, fontWeight:800, letterSpacing:'0.04em' }}>· FLAT 7D</span>
+  );
+  const up = change > 0;
+  const color = up ? V2.ok : V2.bad;
+  return (
+    <span style={{ marginLeft:8, color, fontSize:11, fontWeight:800, letterSpacing:'0.04em' }}>
+      · {up ? '▲' : '▼'} {Math.abs(change)} 7D
+    </span>
+  );
+}
+
+function v2FormatLineupDate(iso) {
+  if (!iso) return '';
+  const parts = String(iso).split('-');
+  if (parts.length !== 3) return iso;
+  const dt = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  if (Number.isNaN(dt.getTime())) return iso;
+  return dt.toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric' });
 }
 
 function V2DecisionCard({ swap, onPlayer }) {

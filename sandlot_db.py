@@ -262,6 +262,27 @@ def latest_successful_snapshot() -> dict[str, Any] | None:
         ).fetchone()
 
 
+def snapshot_from_days_ago(days: int) -> dict[str, Any] | None:
+    """Most recent successful snapshot taken at least `days` days ago.
+
+    Used to compute week-over-week deltas (rank, wins/losses) for the Today
+    page. Returns None when the deploy hasn't been alive long enough to have
+    a comparison row.
+    """
+    with connect() as conn:
+        return conn.execute(
+            """
+            SELECT *
+            FROM snapshots
+            WHERE status = 'success'
+              AND taken_at <= now() - make_interval(days => %s)
+            ORDER BY taken_at DESC, id DESC
+            LIMIT 1
+            """,
+            (days,),
+        ).fetchone()
+
+
 def snapshot_by_id(snapshot_id: int) -> dict[str, Any] | None:
     with connect() as conn:
         return conn.execute(
