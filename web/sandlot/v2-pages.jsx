@@ -1953,7 +1953,7 @@ function v2IsBrokenSkipperReply(text) {
 
 // ── /skipper ───────────────────────────────────────────────────
 function V2Skipper({ model, sync, onOpenPlayer }) {
-  const prompts = ['Weekly matchup assessment', 'Best waiver swap to review?', 'Where am I weakest?', 'Who is my best 2B?'];
+  const prompts = ['Weekly matchup assessment', 'Deep matchup analysis', 'Best waiver swap to review?', 'Where am I weakest?', 'Who is my best 2B?'];
   const [msgs, setMsgs] = React.useState([]);
   const [input, setInput] = React.useState('');
   const [streaming, setStreaming] = React.useState(false);

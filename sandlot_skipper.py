@@ -44,6 +44,10 @@ TIER3_KEYWORDS = (
     "rivals", "rival", "opponent", "opponents",
     "standings",  # standings are tier 2 already, but rosters add color
     "weakness", "weakest team", "best team",
+    # Deep matchup analysis needs the opponent roster, which only ships
+    # in tier 3. The shallow "Weekly matchup assessment" pill goes through
+    # deterministic_reply and never hits the LLM, so the cost is bounded.
+    "matchup analysis", "deep matchup",
 )
 
 SYSTEM_PROMPT = """You are Skipper, a fantasy baseball assistant for a 12-team Fantrax keeper league.
@@ -61,7 +65,7 @@ Rules:
 - If asked about strategy, trade grading, or anything beyond what the data shows, say what you can from the snapshot and note that deeper analysis is a separate feature.
 - When you name a player from the snapshot, you can optionally wrap them as [[Full Name|id]] using the row's `id` field — this turns the name into a tappable link. Skip this if you don't have an exact id; the UI auto-links full names anyway.
 
-Be brief. Most answers are 1-4 sentences."""
+Be brief by default — most answers are 1-4 sentences. When the user explicitly asks for depth (e.g. "deep", "thorough", "in-depth", "analysis", "slot by slot"), expand into a structured breakdown using bulleted markdown: lead with a one-sentence read, then 4-8 bullets covering opponent threats, your edges, injury / streak factors, and any specific players to start or sit. Stay grounded in the snapshot."""
 
 
 def primary_model() -> str:
@@ -222,7 +226,14 @@ def deterministic_reply(user_msg: str, snapshot: dict[str, Any]) -> str | None:
             "anything should i be worried", "worried about",
         )
     )
-    if asks_matchup:
+    asks_depth = any(
+        token in text
+        for token in (
+            "deep", "deeper", "in-depth", "in depth", "thorough", "detailed",
+            "slot by slot", "slot-by-slot", "analyze", "analysis",
+        )
+    )
+    if asks_matchup and not asks_depth:
         return _matchup_read_reply(snapshot)
     return None
 
