@@ -1147,12 +1147,15 @@ function V2PlayerSheet({ id, onClose }) {
   const [error, setError] = React.useState(null);
   const [syncing, setSyncing] = React.useState(false);
   const [syncCooldown, setSyncCooldown] = React.useState(false);
+  const [activeClip, setActiveClip] = React.useState(null);
   const requestSeqRef = React.useRef(0);
   const cooldownTimerRef = React.useRef(null);
 
   React.useEffect(() => () => {
     if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
   }, []);
+
+  React.useEffect(() => { setActiveClip(null); }, [id]);
 
   const load = React.useCallback(async () => {
     const requestSeq = ++requestSeqRef.current;
@@ -1296,12 +1299,13 @@ function V2PlayerSheet({ id, onClose }) {
               }}>Retry</button>
             </div>
           )}
-          {data && <V2ProfileBody data={data}/>}
+          {data && <V2ProfileBody data={data} onOpenClip={setActiveClip}/>}
           {data && error && (
             <div style={{ color:V2.bad, fontSize:12.5, padding:'2px 4px' }}>{error}</div>
           )}
         </div>
       </div>
+      {activeClip && <V2ClipViewer clip={activeClip} onClose={() => setActiveClip(null)}/>}
     </div>
   );
 }
@@ -1324,7 +1328,7 @@ function V2ProfileSkeleton() {
   );
 }
 
-function V2ProfileBody({ data }) {
+function V2ProfileBody({ data, onOpenClip }) {
   const p = data.player || {};
   const trend = data.trend;
   const games = data.games || [];
@@ -1343,7 +1347,7 @@ function V2ProfileBody({ data }) {
         </div>
       )}
       <V2ProfileStats trend={trend} games={games} sparkline={sparkline} isPitcher={isPitcher} season={data.season}/>
-      <V2ProfileClips clips={data.media?.items || data.clips} player={p}/>
+      <V2ProfileClips clips={data.media?.items || data.clips} player={p} onOpenClip={onOpenClip}/>
     </>
   );
 }
@@ -1573,7 +1577,7 @@ const V2_PROFILE_PLACEHOLDER_CLIPS = [
   { id:'p3', date:'Apr 30', title:'Dodgers note · Normal workload',  caption:'Roberts: "He\'s our guy back there."', kind:'note',  tone:'blue'   },
 ];
 
-function V2ProfileClips({ clips }) {
+function V2ProfileClips({ clips, onOpenClip }) {
   const list = Array.isArray(clips) ? clips : V2_PROFILE_PLACEHOLDER_CLIPS;
   if (!list.length) return null;
   return (
@@ -1581,7 +1585,7 @@ function V2ProfileClips({ clips }) {
       <div style={{ fontSize:11, color:V2.accent, fontWeight:800, letterSpacing:'0.14em', textTransform:'uppercase', padding:'0 14px 12px' }}>
         MLB clips + news
       </div>
-      {list.map((c, i) => <V2ClipRow key={c.id || i} clip={c}/>)}
+      {list.map((c, i) => <V2ClipRow key={c.id || i} clip={c} onOpen={onOpenClip}/>)}
     </div>
   );
 }
@@ -1608,7 +1612,7 @@ function V2BarSparkline({ values, w=320, h=56 }) {
   );
 }
 
-function V2ClipRow({ clip }) {
+function V2ClipRow({ clip, onOpen }) {
   const isNote = clip.kind === 'note';
   const tone = clip.tone || (isNote ? 'blue' : 'orange');
   const hasThumb = !isNote && !!clip.thumbnail;
@@ -1617,17 +1621,20 @@ function V2ClipRow({ clip }) {
     : tone === 'dark'
       ? 'linear-gradient(135deg, #3a2418 0%, #1a0f08 100%)'
       : 'linear-gradient(135deg, #dbe7fe 0%, #7da0d8 100%)';
-  const Wrap = clip.url ? 'a' : 'div';
-  const wrapProps = clip.url
-    ? { href: clip.url, target: '_blank', rel: 'noopener noreferrer' }
+  const clickable = !!clip.url && typeof onOpen === 'function';
+  const Wrap = clickable ? 'button' : 'div';
+  const wrapProps = clickable
+    ? { type:'button', onClick:() => onOpen(clip), title:`Open ${clip.title || 'clip'}` }
     : {};
   return (
     <Wrap
       {...wrapProps}
       style={{
+        appearance:'none', WebkitAppearance:'none', width:'100%',
+        background:'none', border:'none', fontFamily:'inherit', textAlign:'left',
         padding:'10px 14px', borderTop:`1px solid ${V2.hairline2}`,
         display:'flex', alignItems:'center', gap:12,
-        textDecoration:'none', color:'inherit',
+        textDecoration:'none', color:'inherit', cursor:clickable ? 'pointer' : 'default',
       }}
     >
       <div style={{
@@ -1675,6 +1682,71 @@ function V2ClipRow({ clip }) {
         <path d="M4 3l3 3-3 3" stroke="#94a3b8" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
       </svg>
     </Wrap>
+  );
+}
+
+function V2ClipViewer({ clip, onClose }) {
+  const url = clip?.url || '';
+  const directVideo = /\.(mp4|mov|m4v)(\?|#|$)/i.test(url);
+  return (
+    <div
+      onClick={(e) => { e.stopPropagation(); onClose(); }}
+      style={{ position:'absolute', inset:0, zIndex:30, background:'rgba(15,23,42,0.68)', display:'flex', alignItems:'flex-end' }}
+    >
+      <div
+        onClick={e=>e.stopPropagation()}
+        style={{
+          width:'100%', height:'74%', background:V2.bg, borderTopLeftRadius:20, borderTopRightRadius:20,
+          display:'flex', flexDirection:'column', overflow:'hidden', boxShadow:'0 -18px 50px rgba(15,23,42,0.28)',
+        }}
+      >
+        <div style={{ padding:'12px 14px', display:'flex', alignItems:'center', gap:10, borderBottom:`1px solid ${V2.hairline}`, flexShrink:0 }}>
+          <button onClick={onClose} aria-label="Close clip" style={{
+            width:34, height:34, borderRadius:999, border:`1px solid ${V2.hairline}`,
+            background:V2.surface, display:'flex', alignItems:'center', justifyContent:'center',
+            cursor:'pointer',
+          }}>{Icons.close(V2.muted, 14)}</button>
+          <div style={{ minWidth:0, flex:1 }}>
+            <div style={{ fontSize:13.5, color:V2.ink, fontWeight:800, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+              {clip?.title || 'MLB clip'}
+            </div>
+            <div style={{ marginTop:2, fontSize:11.5, color:V2.muted, fontWeight:600, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+              {[clip?.source || 'MLB', clip?.date ? v2ShortDate(clip.date) : null, clip?.duration].filter(Boolean).join(' · ')}
+            </div>
+          </div>
+          {url && (
+            <a href={url} target="_blank" rel="noopener noreferrer" style={{
+              flexShrink:0, padding:'8px 10px', borderRadius:999, border:`1px solid ${V2.hairline}`,
+              background:V2.surface2, color:V2.body, textDecoration:'none', fontSize:11.5, fontWeight:800,
+            }}>Open</a>
+          )}
+        </div>
+        <div style={{ flex:1, background:'#070a12', display:'flex', alignItems:'center', justifyContent:'center' }}>
+          {url ? (
+            directVideo ? (
+              <video src={url} controls autoPlay playsInline style={{ width:'100%', height:'100%', objectFit:'contain', background:'#000' }}/>
+            ) : (
+              <iframe
+                src={url}
+                title={clip?.title || 'MLB clip'}
+                allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+                allowFullScreen
+                style={{ width:'100%', height:'100%', border:0, background:'#000' }}
+              />
+            )
+          ) : (
+            <div style={{ padding:24, color:'#fff', textAlign:'center', fontSize:13, lineHeight:1.45 }}>
+              This item does not include a playable MLB URL yet.
+            </div>
+          )}
+        </div>
+        {clip?.caption && clip.caption !== clip.title && (
+          <div style={{ padding:'12px 14px', background:V2.surface, borderTop:`1px solid ${V2.hairline}`, color:V2.body, fontSize:12.5, lineHeight:1.45 }}>
+            {clip.caption}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
