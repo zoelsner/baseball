@@ -84,17 +84,16 @@ Compute `add_fpg` by preferring these stat keys, in order:
 - `FPG`
 - `FPts/G`
 - `FP/Gm`
-- `Avg`
+- `FP/Game`
+- `Fantasy Points/Game`
 
-If none are available, fall back to:
+Fantrax `Avg` / `Average` may be used only when the row also has a score context such as `Score`, `FPts`, `ProjFPts`, or `FP`. This avoids confusing baseball batting average with fantasy points per game.
 
-- `Score`
-- `FPts`
-- `ProjFPts`
-- `FP`
-- largest numeric value in `_cells`
+If headers are missing and stats only include `_cells`, infer FP/G only from a plausible score-to-average pair such as:
 
-Fallback scores should lower confidence because they may not be true FP/G.
+`rank, status, age, score, avg, rostered%, change%`
+
+Never use the largest numeric `_cells` value. That can turn player rank into fake FP/G. Inferred `_cells` values should lower confidence and include an evidence chip because they are not as reliable as named FP/G fields.
 
 ### Move-Out Candidates
 

@@ -20,8 +20,11 @@ import sandlot_skipper
 
 log = logging.getLogger(__name__)
 
-TRUE_FPG_KEYS = ("FP/G", "FPG", "FPts/G", "FP/Gm", "Avg")
-FALLBACK_SCORE_KEYS = ("Score", "FPts", "ProjFPts", "FP")
+TRUE_FPG_KEYS = ("FP/G", "FPG", "FPts/G", "FP/Gm", "FP/Game", "Fantasy Points/Game")
+FANTRAX_AVG_KEYS = ("Avg", "Average")
+SCORE_CONTEXT_KEYS = ("Score", "FPts", "ProjFPts", "FP", "Fantasy Points")
+MIN_PLAUSIBLE_FPG = 0.5
+MAX_PLAUSIBLE_FPG = 25.0
 
 BRIEF_TYPE_SWAP = "waiver_swap"
 BRIEF_TYPE_REFRESH = "refresh_brief"
@@ -81,6 +84,7 @@ def payload_for_snapshot(
     taken_at = snapshot_row.get("taken_at")
     roster_rows = (data.get("roster") or {}).get("rows") or []
     fa_players = (data.get("free_agents") or {}).get("players") or []
+    freshness = _freshness(taken_at)
 
     message = None
     diagnostics: dict[str, Any] = {
@@ -102,15 +106,22 @@ def payload_for_snapshot(
             message = "No positive waiver swaps found from the latest snapshot."
 
     if overlay_cached_ai and snapshot_id:
-        _overlay_cached_swap_explanations(snapshot_id, cards)
-        brief = _cached_refresh_brief(snapshot_id)
+        _overlay_cached_swap_explanations(snapshot_row, cards)
+        brief = _cached_refresh_brief(
+            snapshot_row,
+            {
+                "freshness": freshness,
+                "cards": cards,
+                "diagnostics": diagnostics,
+            },
+        )
     else:
         brief = {"state": "missing", "text": None, "model": None, "generated_at": None}
 
     return {
         "snapshot_id": snapshot_id,
         "taken_at": taken_at,
-        "freshness": _freshness(taken_at),
+        "freshness": freshness,
         "cards": cards,
         "brief": brief,
         "message": message,
@@ -440,20 +451,78 @@ def _extract_add_fpg(stats: dict[str, Any]) -> tuple[float | None, str | None, b
     for source in TRUE_FPG_KEYS:
         value = _stat_by_key(stats, source)
         parsed = _number(value)
-        if parsed is not None:
+        if _plausible_fpg(parsed, allow_low=True):
             return parsed, source, True
-    for source in FALLBACK_SCORE_KEYS:
+
+    # In Fantrax scoring tables, "Avg" is usually scoring average when it is
+    # paired with a Score/FPts column. Avoid using standalone AVG because that
+    # can be baseball batting average, not fantasy points per game.
+    for source in FANTRAX_AVG_KEYS:
         value = _stat_by_key(stats, source)
         parsed = _number(value)
-        if parsed is not None:
-            return parsed, source, False
-    cells = stats.get("_cells")
-    if isinstance(cells, list):
-        nums = [_number(v) for v in cells]
-        nums = [n for n in nums if n is not None]
-        if nums:
-            return max(nums), "_cells", False
+        if _has_score_context(stats) and _plausible_fpg(parsed):
+            return parsed, source, True
+
+    inferred = _infer_fpg_from_cells(stats.get("_cells"))
+    if inferred is not None:
+        return inferred, "_cells inferred FP/G", False
     return None, None, False
+
+
+def _has_score_context(stats: dict[str, Any]) -> bool:
+    return any(_stat_by_key(stats, key) is not None for key in SCORE_CONTEXT_KEYS)
+
+
+def _plausible_fpg(value: float | None, *, allow_low: bool = False) -> bool:
+    if value is None:
+        return False
+    lower = 0.0 if allow_low else MIN_PLAUSIBLE_FPG
+    return lower < float(value) <= MAX_PLAUSIBLE_FPG
+
+
+def _infer_fpg_from_cells(cells: Any) -> float | None:
+    """Infer Fantrax Avg/FP-G from an unlabeled row without ever using rank.
+
+    A typical available-player row is shaped like:
+    rank, status, age, score, avg, rostered%, change%.
+
+    The old fallback used the largest numeric cell, which turned rank 688 into
+    "+688 FP/G". This only accepts a plausible per-game value and prefers the
+    score -> average pair when the table headers were not captured.
+    """
+    if not isinstance(cells, list):
+        return None
+
+    parsed: list[tuple[int, float, str]] = []
+    for idx, raw in enumerate(cells):
+        text = str(raw or "").strip()
+        if "%" in text:
+            continue
+        value = _number(raw)
+        if value is None:
+            continue
+        parsed.append((idx, value, text))
+
+    for current, following in zip(parsed, parsed[1:]):
+        _idx, score_value, _score_text = current
+        next_idx, avg_value, avg_text = following
+        if next_idx < 3:
+            continue
+        if score_value > avg_value and _plausible_fpg(avg_value) and _has_decimal(avg_text):
+            return avg_value
+
+    candidates = [
+        value
+        for idx, value, text in parsed
+        if idx >= 3 and _plausible_fpg(value) and _has_decimal(text)
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _has_decimal(text: str) -> bool:
+    return bool(re.search(r"\d+\.\d+", text))
 
 
 def _stat_by_key(stats: dict[str, Any], key: str) -> Any:
@@ -594,7 +663,7 @@ def _evidence_chips(
     if move["status_issue"]:
         chips.append(str(move["injury"] or "Status issue"))
     if not add["true_fpg"]:
-        chips.append(f"{add['score_source']} fallback")
+        chips.append(str(add["score_source"] or "Estimated FP/G"))
     if "Age unavailable" in dynasty_note or "soft dynasty warning" in dynasty_note:
         chips.append("Dynasty check")
     return chips[:6]
@@ -620,7 +689,7 @@ def _deterministic_why(
 
 def _deterministic_risk(add: dict[str, Any], move: dict[str, Any], fit: str) -> str:
     if not add["true_fpg"]:
-        return f"{add['name']}'s value uses {add['score_source']} instead of true FP/G, so verify the Fantrax stat column."
+        return f"{add['name']}'s value uses {add['score_source']}; verify the Fantrax stat column before trusting the delta."
     if fit == "loose":
         return "Position fit is loose, so this is a roster-shape review rather than a clean one-for-one replacement."
     if move.get("age") is None or (isinstance(move.get("age"), int) and move["age"] <= 24):
@@ -652,10 +721,19 @@ def _freshness(taken_at: Any) -> dict[str, Any]:
     return {"state": state, "age_minutes": age_minutes}
 
 
-def _overlay_cached_swap_explanations(snapshot_id: int, cards: list[dict[str, Any]]) -> None:
+def _overlay_cached_swap_explanations(snapshot_row: dict[str, Any], cards: list[dict[str, Any]]) -> None:
+    snapshot_id = int(snapshot_row.get("id") or 0)
     for card in cards:
         cached = sandlot_db.get_ai_brief(snapshot_id, BRIEF_TYPE_SWAP, str(card["id"]))
         if not cached:
+            continue
+        expected_hash = _hash_context(_swap_prompt_context(snapshot_row, card))
+        if cached.get("input_hash") and cached.get("input_hash") != expected_hash:
+            card["explanation"] = {
+                "state": "stale",
+                "model": cached.get("model"),
+                "generated_at": cached.get("generated_at"),
+            }
             continue
         parsed = _parse_swap_ai(cached.get("text") or "")
         if parsed.get("why"):
@@ -669,10 +747,19 @@ def _overlay_cached_swap_explanations(snapshot_id: int, cards: list[dict[str, An
         }
 
 
-def _cached_refresh_brief(snapshot_id: int) -> dict[str, Any]:
+def _cached_refresh_brief(snapshot_row: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    snapshot_id = int(snapshot_row.get("id") or 0)
     cached = sandlot_db.get_ai_brief(snapshot_id, BRIEF_TYPE_REFRESH, REFRESH_SUBJECT)
     if not cached:
         return {"state": "missing", "text": None, "model": None, "generated_at": None}
+    expected_hash = _hash_context(_refresh_prompt_context(snapshot_row, payload))
+    if cached.get("input_hash") and cached.get("input_hash") != expected_hash:
+        return {
+            "state": "stale",
+            "text": None,
+            "model": cached.get("model"),
+            "generated_at": cached.get("generated_at"),
+        }
     return {
         "state": "ready",
         "text": cached.get("text"),
