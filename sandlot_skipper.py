@@ -44,7 +44,8 @@ SYSTEM_PROMPT = """You are Skipper, a fantasy baseball assistant for a 12-team F
 You answer questions about the user's roster grounded in the snapshot data they provide. You are direct, neutral, and concise — not a hype-man, not a strategist. The user wants facts and a quick read, not opinion.
 
 Rules:
-- Answer only from the snapshot. If the data isn't there, say "Data unavailable" and stop. Do not speculate.
+- Answer only from the snapshot. If a field is missing, say exactly what is missing and what nearby snapshot data is available. Do not speculate.
+- Never answer with only "Data", "Data unavailable", or another one-word refusal.
 - Cite players by name. Cite numbers when relevant (FP/G, FPts, age, slot, injury status).
 - No emojis. No throat-clearing intros ("Great question!"). No filler outros.
 - Markdown allowed for short lists or **emphasis**. Avoid headers and tables for chat-length replies.
@@ -133,9 +134,12 @@ def build_context(tier: int, snapshot: dict[str, Any]) -> str:
         "snapshot_taken_at": snapshot.get("timestamp"),
         "team_id": snapshot.get("team_id"),
         "team_name": snapshot.get("team_name"),
+        "available_data": _available_data(snapshot),
         "my_roster": _slim_roster(snapshot.get("roster")),
         "standings": _slim_standings(snapshot.get("standings")),
     }
+    if snapshot.get("matchup"):
+        ctx["matchup"] = snapshot.get("matchup")
     if tier >= 3:
         all_rosters = snapshot.get("all_team_rosters") or {}
         ctx["all_team_rosters"] = {
@@ -147,6 +151,83 @@ def build_context(tier: int, snapshot: dict[str, Any]) -> str:
             for tid, team in all_rosters.items()
         }
     return "SNAPSHOT (JSON):\n```json\n" + json.dumps(ctx, default=str, indent=2) + "\n```"
+
+
+def _available_data(snapshot: dict[str, Any]) -> dict[str, bool]:
+    return {
+        "roster": bool(snapshot.get("roster")),
+        "standings": bool(snapshot.get("standings")),
+        "all_team_rosters": bool(snapshot.get("all_team_rosters")),
+        "free_agents": bool(snapshot.get("free_agents")),
+        "matchup": bool(snapshot.get("matchup")),
+        "transactions": bool(snapshot.get("transactions")),
+        "pending_trades": bool(snapshot.get("pending_trades")),
+    }
+
+
+def deterministic_reply(user_msg: str, snapshot: dict[str, Any]) -> str | None:
+    """Return a direct non-LLM answer for known missing-data questions."""
+    text = (user_msg or "").lower()
+    asks_matchup = any(
+        token in text
+        for token in ("matchup", "match-up", "match up", "against my", "against this", "this week against")
+    )
+    if asks_matchup and not snapshot.get("matchup"):
+        return _missing_matchup_reply(snapshot)
+    return None
+
+
+def repair_reply(reply: str, user_msg: str, snapshot: dict[str, Any]) -> str:
+    """Replace broken model refusals with a useful deterministic explanation."""
+    cleaned = (reply or "").strip()
+    normalized = " ".join(cleaned.lower().replace(".", " ").split())
+    if normalized in {"data", "data unavailable", "unavailable", "no data"}:
+        return deterministic_reply(user_msg, snapshot) or _generic_missing_reply(snapshot)
+    return cleaned
+
+
+def is_broken_reply(reply: str | None) -> bool:
+    normalized = " ".join(str(reply or "").strip().lower().replace(".", " ").split())
+    return normalized in {"data", "data unavailable", "unavailable", "no data"}
+
+
+def _missing_matchup_reply(snapshot: dict[str, Any]) -> str:
+    standings = _slim_standings(snapshot.get("standings"))
+    mine = standings.get("my_record") or {}
+    roster = _slim_roster(snapshot.get("roster"))
+    roster_rows = roster.get("rows") or []
+    team_name = snapshot.get("team_name") or "your team"
+    record_bits = []
+    if mine.get("rank") is not None:
+        record_bits.append(f"rank {mine.get('rank')}")
+    if mine.get("win") is not None and mine.get("loss") is not None:
+        record_bits.append(f"{mine.get('win')}-{mine.get('loss')}")
+    if mine.get("fantasy_points") is not None:
+        record_bits.append(f"{mine.get('fantasy_points')} season FP")
+    roster_bits = []
+    if roster.get("active") is not None and roster.get("active_max") is not None:
+        roster_bits.append(f"{roster.get('active')}/{roster.get('active_max')} active")
+    if roster.get("reserve") is not None and roster.get("reserve_max") is not None:
+        roster_bits.append(f"{roster.get('reserve')}/{roster.get('reserve_max')} reserve")
+
+    lines = [
+        "I can read the latest Fantrax snapshot, but this snapshot does not include the weekly matchup scoreboard.",
+        "So I cannot say whether you are winning this week or pull your opponent's current total yet.",
+    ]
+    if record_bits:
+        lines.append(f"What I do have for {team_name}: " + ", ".join(str(v) for v in record_bits) + ".")
+    if roster_bits or roster_rows:
+        roster_text = ", ".join(roster_bits) if roster_bits else f"{len(roster_rows)} rostered players"
+        lines.append(f"Roster context is available: {roster_text}.")
+    lines.append("To answer this properly, the scraper needs matchup fields: opponent, your weekly score, opponent score, and scoring period.")
+    return " ".join(lines)
+
+
+def _generic_missing_reply(snapshot: dict[str, Any]) -> str:
+    available = [name.replace("_", " ") for name, ok in _available_data(snapshot).items() if ok]
+    if available:
+        return "That exact field is not in the latest snapshot. Available snapshot data: " + ", ".join(available) + "."
+    return "The latest snapshot does not have enough data to answer that yet. Run a refresh and try again."
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +251,8 @@ def build_messages(
     for row in history:
         role = row.get("role")
         content = row.get("content")
+        if role == "assistant" and is_broken_reply(content):
+            continue
         if role in ("user", "assistant") and content:
             msgs.append({"role": role, "content": content})
     msgs.append({"role": "user", "content": user_msg})

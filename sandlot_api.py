@@ -206,10 +206,22 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
     context_block = sandlot_skipper.build_context(tier, snapshot)
     history = sandlot_db.list_chat_messages(session_id)
     messages = sandlot_skipper.build_messages(history, user_text, context_block)
+    deterministic_reply = sandlot_skipper.deterministic_reply(user_text, snapshot)
 
     sandlot_db.append_chat_message(session_id, "user", user_text)
 
     def event_stream():
+        if deterministic_reply:
+            try:
+                sandlot_db.append_chat_message(
+                    session_id, "assistant", deterministic_reply, tier=tier, model="deterministic"
+                )
+            except Exception:
+                log.exception("Failed to persist deterministic assistant message")
+            yield _sse({"type": "token", "text": deterministic_reply})
+            yield _sse({"type": "done", "tier": tier, "model": "deterministic"})
+            return
+
         try:
             client = sandlot_skipper.SkipperClient()
         except Exception as exc:
@@ -223,7 +235,6 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
             for kind, payload_text in client.stream(messages):
                 if kind == "token":
                     assistant_buf.append(payload_text)
-                    yield _sse({"type": "token", "text": payload_text})
                 elif kind == "model":
                     used_model = payload_text
         except Exception as exc:
@@ -231,8 +242,9 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
             yield _sse({"type": "error", "message": str(exc)})
             return
 
-        full = "".join(assistant_buf).strip()
+        full = sandlot_skipper.repair_reply("".join(assistant_buf), user_text, snapshot)
         if full:
+            yield _sse({"type": "token", "text": full})
             try:
                 sandlot_db.append_chat_message(
                     session_id, "assistant", full, tier=tier, model=used_model

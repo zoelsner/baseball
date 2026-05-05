@@ -1780,6 +1780,11 @@ function v2RenderSkipperText(text, index, fallbackRe, onOpen) {
     : <React.Fragment key={key++}>{p.text}</React.Fragment>);
 }
 
+function v2IsBrokenSkipperReply(text) {
+  const normalized = String(text || '').trim().toLowerCase().replace(/[.]/g, ' ').replace(/\s+/g, ' ');
+  return ['data', 'data unavailable', 'unavailable', 'no data'].includes(normalized);
+}
+
 // ── /skipper ───────────────────────────────────────────────────
 function V2Skipper({ model, sync, onOpenPlayer }) {
   const prompts = ['Best waiver swap to review?', 'Where am I weakest?', 'Who is my best 2B?'];
@@ -1831,10 +1836,12 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`history ${r.status}`)))
       .then(data => {
         if (cancelled) return;
-        const loaded = (data.messages || []).map(m => ({
-          role: m.role === 'assistant' ? 'ai' : m.role,
-          text: m.content,
-        }));
+        const loaded = (data.messages || [])
+          .filter(m => !(m.role === 'assistant' && v2IsBrokenSkipperReply(m.content)))
+          .map(m => ({
+            role: m.role === 'assistant' ? 'ai' : m.role,
+            text: m.content,
+          }));
         setMsgs(loaded);
       })
       .catch(e => { if (!cancelled) setError(`Couldn't load history: ${e.message}`); });
@@ -2024,6 +2031,7 @@ function V2Bubble({ m, renderText }) {
       <div style={{ background:V2.accent, color:'#fff', padding:'9px 13px', borderRadius:'14px 14px 4px 14px', fontSize:13.5, maxWidth:'82%', lineHeight:1.4 }}>{m.text}</div>
     </div>
   );
+  if (v2IsBrokenSkipperReply(m.text)) return null;
   const body = renderText ? renderText(m.text) : m.text;
   return (
     <div style={{ display:'flex', marginBottom:10 }}>
