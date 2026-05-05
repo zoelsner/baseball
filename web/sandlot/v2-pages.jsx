@@ -69,18 +69,19 @@ function v2PlayerState(p) {
   return 'ok';
 }
 
-function v2FallbackModel() {
+function v2EmptyModel() {
   return {
-    source: 'mock',
-    sync: { state:'fallback', label:'mock', ageMinutes:null, error:null },
-    teamName: TEAM_NAME,
-    leagueName: LEAGUE_NAME,
-    roster: ROSTER,
+    source: 'empty',
+    sync: { state:'loading', label:'loading', ageMinutes:null, error:null, notice:null },
+    teamName: 'Your team',
+    leagueName: '',
+    roster: [],
     rosterMeta: {},
-    leagueTeams: LEAGUE_TEAMS,
+    leagueTeams: [],
     snapshotId: null,
     takenAt: null,
     playerIndex: [],
+    matchup: null,
   };
 }
 
@@ -131,12 +132,13 @@ function v2NormalizeSnapshot(payload) {
       label: v2SyncLabel(freshness),
       ageMinutes: freshness.age_minutes ?? null,
       error: null,
+      notice: null,
     },
-    teamName: payload?.team_name || TEAM_NAME,
-    leagueName: LEAGUE_NAME,
-    roster: roster.length ? roster : ROSTER,
+    teamName: payload?.team_name || 'Your team',
+    leagueName: '',
+    roster,
     rosterMeta: payload?.roster_meta || {},
-    leagueTeams: leagueTeams.length ? leagueTeams : LEAGUE_TEAMS,
+    leagueTeams,
     snapshotId: payload?.snapshot_id || null,
     takenAt: payload?.taken_at || null,
     playerIndex: payload?.player_index || [],
@@ -239,49 +241,78 @@ function V2Eyebrow({ children, color }) {
   );
 }
 
+// Shared by initial-load auto-retry and the manual refresh button.
+async function v2FetchRefresh() {
+  const res = await fetch('/api/refresh', { method:'POST' });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const message = payload?.detail?.errors?.join('; ') || payload?.detail || `Refresh failed (${res.status})`;
+    throw new Error(typeof message === 'string' ? message : JSON.stringify(message));
+  }
+  return v2NormalizeSnapshot(payload.snapshot);
+}
+
 // ── App shell ──────────────────────────────────────────────────
 function V2App({ initial }) {
   const [page, setPage] = React.useState(initial?.page || 'today');
   const [detail, setDetail] = React.useState(initial?.detail || null); // player id or null
   const [authed, setAuthed] = React.useState(initial?.auth ? false : true);
-  const [model, setModel] = React.useState(v2FallbackModel);
-  const [syncState, setSyncState] = React.useState({ state:'loading', label:'loading', error:null });
+  const [model, setModel] = React.useState(v2EmptyModel);
+  const [syncState, setSyncState] = React.useState({ state:'loading', label:'loading', error:null, notice:null });
 
   const loadSnapshot = React.useCallback(async () => {
     if (window.location.protocol === 'file:') {
-      setModel(v2FallbackModel());
-      setSyncState({ state:'fallback', label:'mock', error:null });
+      setSyncState({ state:'failed', label:'no data', error:'Open over http(s) to load real data', notice:null });
       return;
     }
-    setSyncState(s => ({ ...s, state:'loading', label:'loading', error:null }));
+    setSyncState({ state:'loading', label:'loading', error:null, notice:null });
+
+    // Step 1: read the latest stored snapshot.
+    let snapshot = null;
+    let firstPullError = null;
     try {
       const res = await fetch('/api/snapshot/latest');
       if (!res.ok) throw new Error(res.status === 404 ? 'No snapshot yet' : `Snapshot failed (${res.status})`);
-      const payload = await res.json();
-      const next = v2NormalizeSnapshot(payload);
-      setModel(next);
-      setSyncState(next.sync);
+      snapshot = v2NormalizeSnapshot(await res.json());
     } catch (err) {
-      setModel(v2FallbackModel());
-      setSyncState({ state:'fallback', label:'mock', error:err.message });
+      firstPullError = err.message;
+    }
+
+    // An empty roster from a "successful" snapshot is just as broken as a failed pull.
+    const firstPullEmpty = snapshot && snapshot.roster.length === 0;
+    if (snapshot && !firstPullEmpty) {
+      setModel(snapshot);
+      setSyncState({ ...snapshot.sync });
+      return;
+    }
+
+    // Step 2: auto-trigger a fresh refresh and surface the first-pull failure.
+    const reason = firstPullError || 'first snapshot was empty';
+    setSyncState({ state:'refreshing', label:'retrying', error:null, notice:`First pull failed (${reason}); refreshing…` });
+    try {
+      const next = await v2FetchRefresh();
+      setModel(next);
+      setSyncState({ ...next.sync, notice:`First pull failed (${reason}); auto-refreshed.` });
+    } catch (refreshErr) {
+      if (snapshot) setModel(snapshot);
+      setSyncState({
+        state: 'failed',
+        label: 'failed',
+        error: `First pull failed (${reason}); refresh also failed: ${refreshErr.message}`,
+        notice: null,
+      });
     }
   }, []);
 
   const refreshSnapshot = React.useCallback(async () => {
     if (window.location.protocol === 'file:') return;
-    setSyncState(s => ({ ...s, state:'refreshing', label:'syncing', error:null }));
+    setSyncState(s => ({ ...s, state:'refreshing', label:'syncing', error:null, notice:null }));
     try {
-      const res = await fetch('/api/refresh', { method:'POST' });
-      const payload = await res.json().catch(()=>({}));
-      if (!res.ok) {
-        const message = payload?.detail?.errors?.join('; ') || payload?.detail || `Refresh failed (${res.status})`;
-        throw new Error(typeof message === 'string' ? message : JSON.stringify(message));
-      }
-      const next = v2NormalizeSnapshot(payload.snapshot);
+      const next = await v2FetchRefresh();
       setModel(next);
-      setSyncState(next.sync);
+      setSyncState({ ...next.sync });
     } catch (err) {
-      setSyncState({ state:'failed', label:'failed', error:err.message });
+      setSyncState({ state:'failed', label:'failed', error:err.message, notice:null });
     }
   }, []);
 
@@ -330,7 +361,7 @@ function V2TopBar({ page, setPage, model, sync, onRefresh }) {
   };
   const isHero = page==='today';
   const eyebrow = {
-    today:`Fantrax snapshot · ${model.source === 'api' ? 'live data' : 'mock fallback'}`,
+    today:`Fantrax snapshot · ${model.source === 'api' ? 'live data' : 'no data yet'}`,
     roster:`${model.teamName}`,
     league:`${model.leagueName} · ${model.leagueTeams.length} teams`,
     fa:'Waiver swaps · ranked from snapshot',
@@ -338,7 +369,7 @@ function V2TopBar({ page, setPage, model, sync, onRefresh }) {
     skipper:`Reading ${model.teamName}`,
     settings:`${model.leagueName}`,
   }[page];
-  const syncColor = sync.state === 'failed' ? V2.bad : sync.state === 'refreshing' ? V2.warn : sync.state === 'fallback' ? V2.muted : V2.ok;
+  const syncColor = sync.state === 'failed' ? V2.bad : (sync.state === 'refreshing' || sync.state === 'loading') ? V2.warn : sync.notice ? V2.warn : V2.ok;
   return (
     <div style={{ padding: isHero?'18px 20px 16px':'16px 18px 12px', background:V2.bg }}>
       <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:10 }}>
@@ -451,12 +482,19 @@ function V2Today({ model, sync, onRefresh, onNav }) {
   const myTeam = model.leagueTeams.find(t => t.me);
   const topTeam = [...model.leagueTeams].sort((a,b)=>a.rank-b.rank)[0];
   const syncCopy = sync.state === 'failed'
-    ? sync.error || 'Last refresh failed. Existing data stays visible.'
-    : model.source === 'api'
-      ? `Latest successful scrape is ${sync.label} old.`
-      : 'Showing mock data until the first successful Fantrax scrape is stored.';
+    ? sync.error || 'Last refresh failed.'
+    : sync.state === 'loading'
+      ? 'Loading latest Fantrax snapshot…'
+      : sync.state === 'refreshing'
+        ? (sync.notice || 'Refreshing Fantrax data…')
+        : model.source === 'api'
+          ? `Latest successful scrape is ${sync.label} old.`
+          : 'Waiting for the first successful Fantrax scrape.';
   return (
     <div style={{ padding:'4px 16px 28px', display:'flex', flexDirection:'column', gap:16 }}>
+      {sync.notice && sync.state !== 'refreshing' && (
+        <V2Caution eyebrow="Heads up" tone="warn">{sync.notice}</V2Caution>
+      )}
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:22, padding:18 }}>
         <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:14 }}>
           <div>
@@ -506,7 +544,7 @@ function V2Today({ model, sync, onRefresh, onNav }) {
         </button>
       </div>
 
-      <V2Primary variant="dark" onClick={onRefresh} sub={model.source === 'api' ? `Snapshot ${model.snapshotId || ''}` : 'First Railway scrape will replace mock data'}>
+      <V2Primary variant="dark" onClick={onRefresh} sub={model.source === 'api' ? `Snapshot ${model.snapshotId || ''}` : 'Waiting for first scrape…'}>
         {sync.state === 'refreshing' ? 'Refreshing...' : 'Refresh Fantrax data'}
       </V2Primary>
     </div>
