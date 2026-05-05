@@ -118,6 +118,27 @@ def latest_waiver_swaps() -> dict[str, Any]:
 
 class SkipperMessageIn(BaseModel):
     content: str = Field(..., min_length=1, max_length=4000)
+    model: str | None = Field(default=None, max_length=120)
+    reasoning: bool = False
+    reasoning_effort: str | None = Field(default=None, max_length=20)
+
+
+@app.get("/api/skipper/options")
+def skipper_options() -> dict[str, Any]:
+    return {
+        "default_model": sandlot_skipper.primary_model(),
+        "models": [
+            {"id": "moonshotai/kimi-k2", "label": "Kimi K2", "primary": True},
+            {"id": "tencent/hy3-preview:free", "label": "Tencent HY3 free"},
+            {"id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash"},
+            {"id": "deepseek/deepseek-v4-pro", "label": "DeepSeek V4 Pro"},
+        ],
+        "reasoning": {
+            "default_enabled": False,
+            "default_effort": "medium",
+            "efforts": ["minimal", "low", "medium", "high"],
+        },
+    }
 
 
 @app.get("/api/skipper/messages")
@@ -207,6 +228,11 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
     history = sandlot_db.list_chat_messages(session_id)
     messages = sandlot_skipper.build_messages(history, user_text, context_block)
     deterministic_reply = sandlot_skipper.deterministic_reply(user_text, snapshot)
+    selected_model = payload.model
+    model_order = sandlot_skipper.model_order(selected_model)
+    reasoning_effort = sandlot_skipper.normalize_reasoning_effort(
+        payload.reasoning_effort if payload.reasoning else None
+    )
 
     sandlot_db.append_chat_message(session_id, "user", user_text)
 
@@ -219,7 +245,13 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
             except Exception:
                 log.exception("Failed to persist deterministic assistant message")
             yield _sse({"type": "token", "text": deterministic_reply})
-            yield _sse({"type": "done", "tier": tier, "model": "deterministic"})
+            yield _sse({
+                "type": "done",
+                "tier": tier,
+                "model": "deterministic",
+                "selected_model": selected_model,
+                "reasoning": bool(reasoning_effort),
+            })
             return
 
         try:
@@ -232,7 +264,11 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
         assistant_buf: list[str] = []
         used_model: str | None = None
         try:
-            for kind, payload_text in client.stream(messages):
+            for kind, payload_text in client.stream(
+                messages,
+                model_order=model_order,
+                reasoning_effort=reasoning_effort,
+            ):
                 if kind == "token":
                     assistant_buf.append(payload_text)
                 elif kind == "model":
@@ -251,7 +287,13 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
                 )
             except Exception as exc:
                 log.exception("Failed to persist assistant message")
-        yield _sse({"type": "done", "tier": tier, "model": used_model})
+        yield _sse({
+            "type": "done",
+            "tier": tier,
+            "model": used_model,
+            "selected_model": selected_model,
+            "reasoning": bool(reasoning_effort),
+        })
 
     return StreamingResponse(
         event_stream(),

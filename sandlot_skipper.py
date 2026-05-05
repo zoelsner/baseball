@@ -27,6 +27,13 @@ PRIMARY_MODEL = "moonshotai/kimi-k2"
 # Verified via OpenRouter /v1/models: hunyuan-a13b-instruct has no `:free`
 # variant anymore; the current free Tencent model is hy3-preview:free.
 FALLBACK_MODEL = "tencent/hy3-preview:free"
+ALLOWED_CHAT_MODELS = (
+    PRIMARY_MODEL,
+    FALLBACK_MODEL,
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro",
+)
+ALLOWED_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 
 # Keywords that escalate to tier 3 (load every team's roster). Kept short so
 # we err toward tier 2 — tier 3 is ~10x larger context.
@@ -67,6 +74,31 @@ def fallback_model() -> str:
 
 def default_model_order() -> tuple[str, str]:
     return (primary_model(), fallback_model())
+
+
+def allowed_chat_models() -> tuple[str, ...]:
+    configured = (primary_model(), fallback_model(), *ALLOWED_CHAT_MODELS)
+    return tuple(dict.fromkeys(m for m in configured if m))
+
+
+def model_order(selected_model: str | None = None) -> tuple[str, ...]:
+    """Selected model first; Kimi remains the default primary fallback."""
+    allowed = allowed_chat_models()
+    selected = (selected_model or "").strip()
+    ordered = []
+    if selected in allowed:
+        ordered.append(selected)
+    ordered.extend(default_model_order())
+    return tuple(dict.fromkeys(m for m in ordered if m))
+
+
+def normalize_reasoning_effort(reasoning_effort: str | None) -> str | None:
+    effort = (reasoning_effort or "").strip().lower()
+    if effort in ("", "off", "none", "false", "0"):
+        return None
+    if effort in ALLOWED_REASONING_EFFORTS:
+        return effort
+    return "medium"
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +488,13 @@ class SkipperClient:
             },
         )
 
-    def stream(self, messages: list[dict[str, str]]) -> Iterator[tuple[str, str]]:
+    def stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model_order: tuple[str, ...] | None = None,
+        reasoning_effort: str | None = None,
+    ) -> Iterator[tuple[str, str]]:
         """Yield ('token', text) chunks plus a final ('model', model_id) once.
 
         Tries the environment-configured primary model first. On error before
@@ -464,14 +502,18 @@ class SkipperClient:
         errors are not retried (V1).
         """
         failures: list[str] = []
-        for model in default_model_order():
+        extra_body = _reasoning_extra_body(reasoning_effort)
+        for model in (model_order or default_model_order()):
             try:
-                stream = self.client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    stream=True,
-                    temperature=0.3,
-                )
+                kwargs = {
+                    "model": model,
+                    "messages": messages,
+                    "stream": True,
+                    "temperature": 0.3,
+                }
+                if extra_body:
+                    kwargs["extra_body"] = extra_body
+                stream = self.client.chat.completions.create(**kwargs)
                 yielded_any = False
                 for chunk in stream:
                     try:
@@ -499,6 +541,7 @@ class SkipperClient:
         *,
         max_tokens: int = 220,
         model_order: tuple[str, ...] | None = None,
+        reasoning_effort: str | None = None,
     ) -> tuple[str, str]:
         """Return a single completion plus the model id, using the stream fallback order.
 
@@ -508,15 +551,19 @@ class SkipperClient:
         threshold. Defaults to the environment-configured primary/fallback order.
         """
         failures: list[str] = []
+        extra_body = _reasoning_extra_body(reasoning_effort)
         for model in (model_order or default_model_order()):
             try:
-                response = self.client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    stream=False,
-                    temperature=0.3,
-                    max_tokens=max_tokens,
-                )
+                kwargs = {
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "temperature": 0.3,
+                    "max_tokens": max_tokens,
+                }
+                if extra_body:
+                    kwargs["extra_body"] = extra_body
+                response = self.client.chat.completions.create(**kwargs)
                 try:
                     text = response.choices[0].message.content or ""
                 except (AttributeError, IndexError):
@@ -531,3 +578,10 @@ class SkipperClient:
                 log.warning("Skipper model %s failed: %s; trying fallback", model, e)
                 continue
         raise RuntimeError("All Skipper models failed: " + " | ".join(failures))
+
+
+def _reasoning_extra_body(reasoning_effort: str | None) -> dict[str, Any] | None:
+    effort = normalize_reasoning_effort(reasoning_effort)
+    if not effort:
+        return None
+    return {"reasoning": {"effort": effort, "exclude": True}}

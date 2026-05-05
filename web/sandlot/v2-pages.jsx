@@ -32,6 +32,27 @@ const V2 = {
   fontMono: '"JetBrains Mono","Roboto Mono",ui-monospace,monospace',
 };
 
+const V2_SKIPPER_MODELS = [
+  { id:'moonshotai/kimi-k2', label:'Kimi K2', short:'Kimi' },
+  { id:'tencent/hy3-preview:free', label:'Tencent HY3 free', short:'Tencent' },
+  { id:'deepseek/deepseek-v4-flash', label:'DeepSeek V4 Flash', short:'DS Flash' },
+  { id:'deepseek/deepseek-v4-pro', label:'DeepSeek V4 Pro', short:'DS Pro' },
+];
+const V2_SKIPPER_DEFAULT_MODEL = 'moonshotai/kimi-k2';
+
+function v2StoredValue(key, fallback) {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function v2StoreValue(key, value) {
+  try { window.localStorage.setItem(key, value); } catch {}
+}
+
 function v2StateColor(state){
   if (state==='ok')      return { fg:V2.inLineup, bg:V2.inLineupSoft, label:'In lineup' };
   if (state==='bench')   return { fg:V2.bench,    bg:V2.benchSoft,    label:'Bench' };
@@ -1865,6 +1886,11 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
   const [streaming, setStreaming] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [brief, setBrief] = React.useState({ status:'loading', data:null, error:null });
+  const [chatModel, setChatModel] = React.useState(() => {
+    const stored = v2StoredValue('sandlot.skipper.model', V2_SKIPPER_DEFAULT_MODEL);
+    return V2_SKIPPER_MODELS.some(m => m.id === stored) ? stored : V2_SKIPPER_DEFAULT_MODEL;
+  });
+  const [reasoning, setReasoning] = React.useState(() => v2StoredValue('sandlot.skipper.reasoning', 'off') === 'on');
   const scrollRef = React.useRef(null);
 
   const playerNameIndex = React.useMemo(
@@ -1879,6 +1905,17 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
     (text) => v2RenderSkipperText(text, playerNameIndex, fallbackRe, onOpenPlayer),
     [playerNameIndex, fallbackRe, onOpenPlayer],
   );
+  const activeModel = V2_SKIPPER_MODELS.find(m => m.id === chatModel) || V2_SKIPPER_MODELS[0];
+
+  const updateChatModel = React.useCallback((next) => {
+    setChatModel(next);
+    v2StoreValue('sandlot.skipper.model', next);
+  }, []);
+
+  const updateReasoning = React.useCallback((next) => {
+    setReasoning(next);
+    v2StoreValue('sandlot.skipper.reasoning', next ? 'on' : 'off');
+  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1940,7 +1977,12 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
       const resp = await fetch('/api/skipper/messages', {
         method: 'POST',
         headers: { 'Content-Type':'application/json' },
-        body: JSON.stringify({ content: t }),
+        body: JSON.stringify({
+          content: t,
+          model: chatModel,
+          reasoning,
+          reasoning_effort: reasoning ? 'medium' : null,
+        }),
       });
       if (!resp.ok || !resp.body) {
         const detail = await resp.text().catch(() => '');
@@ -2017,6 +2059,36 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
               fontFamily:'inherit',
             }}>Clear</button>
           )}
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:8, margin:'0 0 12px', overflowX:'auto', paddingBottom:1 }}>
+          <label style={{
+            display:'flex', alignItems:'center', gap:7, flexShrink:0,
+            background:V2.surface, border:`1px solid ${V2.hairline}`,
+            borderRadius:999, padding:'6px 10px', color:V2.body,
+          }}>
+            <span style={{ fontSize:10.5, fontWeight:800, color:V2.muted, letterSpacing:'0.06em', textTransform:'uppercase' }}>Model</span>
+            <select value={chatModel} onChange={e=>updateChatModel(e.target.value)} disabled={streaming} style={{
+              border:'none', background:'transparent', color:V2.ink, outline:'none',
+              fontFamily:'inherit', fontSize:12, fontWeight:800, maxWidth:120,
+              opacity: streaming ? 0.65 : 1,
+            }}>
+              {V2_SKIPPER_MODELS.map(m => <option key={m.id} value={m.id}>{m.short}</option>)}
+            </select>
+          </label>
+          <button type="button" onClick={()=>updateReasoning(!reasoning)} disabled={streaming} title="Use OpenRouter reasoning for this model" style={{
+            flexShrink:0, display:'flex', alignItems:'center', gap:7,
+            border:`1px solid ${reasoning ? V2.accent : V2.hairline}`,
+            background:reasoning ? V2.accentSoft : V2.surface,
+            color:reasoning ? V2.accent : V2.body,
+            borderRadius:999, padding:'7px 11px', cursor:streaming ? 'not-allowed' : 'pointer',
+            opacity:streaming ? 0.65 : 1, fontFamily:'inherit',
+          }}>
+            <span style={{ width:7, height:7, borderRadius:'50%', background:reasoning ? V2.accent : V2.muted }}/>
+            <span style={{ fontSize:11.5, fontWeight:800 }}>Reasoning {reasoning ? 'on' : 'off'}</span>
+          </button>
+          <div style={{ flexShrink:0, color:V2.muted, fontSize:10.5, fontWeight:700 }}>
+            {activeModel.label}
+          </div>
         </div>
         <V2SkipperRefreshBrief brief={brief} sync={sync}/>
         {msgs.length === 0 && !streaming && (
