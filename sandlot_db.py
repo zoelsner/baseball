@@ -80,10 +80,22 @@ def init_schema() -> None:
               finished_at TIMESTAMPTZ,
               source TEXT NOT NULL DEFAULT 'manual',
               status TEXT,
-              snapshot_id BIGINT REFERENCES snapshots(id),
+              snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL,
               duration_ms INTEGER,
               error TEXT
             )
+            """
+        )
+        # Migrate existing deployments: the FK was originally created without an
+        # ON DELETE action, which blocks prune_successful_snapshots once the
+        # keep window fills. Rewrite the constraint to ON DELETE SET NULL so the
+        # cron audit row survives even when its underlying snapshot is pruned.
+        conn.execute("ALTER TABLE refresh_runs DROP CONSTRAINT IF EXISTS refresh_runs_snapshot_id_fkey")
+        conn.execute(
+            """
+            ALTER TABLE refresh_runs
+              ADD CONSTRAINT refresh_runs_snapshot_id_fkey
+              FOREIGN KEY (snapshot_id) REFERENCES snapshots(id) ON DELETE SET NULL
             """
         )
         conn.execute(
