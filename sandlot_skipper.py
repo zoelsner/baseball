@@ -44,11 +44,20 @@ TIER3_KEYWORDS = (
     "rivals", "rival", "opponent", "opponents",
     "standings",  # standings are tier 2 already, but rosters add color
     "weakness", "weakest team", "best team",
-    # Deep matchup analysis needs the opponent roster, which only ships
-    # in tier 3. The shallow "Weekly matchup assessment" pill goes through
-    # deterministic_reply and never hits the LLM, so the cost is bounded.
-    "matchup analysis", "deep matchup",
 )
+
+# Phrases that mean "compare me only against the team I'm playing this
+# week". Deep matchup needs the opponent's roster, but NOT every team's —
+# we extract just the opponent and stay at tier 2 to keep context small.
+DEEP_MATCHUP_KEYWORDS = (
+    "matchup analysis", "deep matchup", "matchup deep",
+    "deep weekly matchup", "thorough matchup",
+)
+
+
+def is_deep_matchup_request(prompt: str) -> bool:
+    p = (prompt or "").lower()
+    return any(kw in p for kw in DEEP_MATCHUP_KEYWORDS)
 
 SYSTEM_PROMPT = """You are Skipper, a fantasy baseball assistant for a 12-team Fantrax keeper league.
 
@@ -175,10 +184,11 @@ def _slim_matchup(matchup: dict[str, Any] | None) -> dict[str, Any] | None:
     return {k: matchup.get(k) for k in keep}
 
 
-def build_context(tier: int, snapshot: dict[str, Any]) -> str:
+def build_context(tier: int, snapshot: dict[str, Any], prompt: str = "") -> str:
     """Render the snapshot as a compact JSON-ish text block for the model."""
     import json
 
+    matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
     ctx: dict[str, Any] = {
         "snapshot_taken_at": snapshot.get("timestamp"),
         "team_id": snapshot.get("team_id"),
@@ -187,9 +197,20 @@ def build_context(tier: int, snapshot: dict[str, Any]) -> str:
         "my_roster": _slim_roster(snapshot.get("roster")),
         "standings": _slim_standings(snapshot.get("standings")),
     }
-    if snapshot.get("matchup"):
-        ctx["matchup"] = _slim_matchup(snapshot.get("matchup"))
-    if tier >= 3:
+    if matchup:
+        ctx["matchup"] = _slim_matchup(matchup)
+
+    # Deep matchup: include only the opponent's roster, not every team — the
+    # user is asking for a slot-by-slot read against this week's opponent
+    # only. Saves ~10x context vs tier 3.
+    if is_deep_matchup_request(prompt):
+        opp = _opponent_roster(snapshot, matchup)
+        if opp:
+            ctx["opponent_roster"] = {
+                "team_name": opp.get("team_name"),
+                "rows": [_slim_player(p) for p in (opp.get("rows") or [])],
+            }
+    elif tier >= 3:
         all_rosters = snapshot.get("all_team_rosters") or {}
         ctx["all_team_rosters"] = {
             tid: {

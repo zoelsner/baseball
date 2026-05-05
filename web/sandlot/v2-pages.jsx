@@ -140,6 +140,7 @@ function v2NormalizeSnapshot(payload) {
     snapshotId: payload?.snapshot_id || null,
     takenAt: payload?.taken_at || null,
     playerIndex: payload?.player_index || [],
+    matchup: payload?.matchup || null,
   };
 }
 
@@ -1951,6 +1952,64 @@ function v2IsBrokenSkipperReply(text) {
   return ['data', 'data unavailable', 'unavailable', 'no data'].includes(normalized);
 }
 
+const V2_DEEP_MATCHUP_RE = /\b(deep matchup|matchup analysis|matchup deep|thorough matchup)\b/i;
+function v2IsDeepMatchupPrompt(text) {
+  return V2_DEEP_MATCHUP_RE.test(String(text || ''));
+}
+
+// Donut ring: my-score vs opponent-score for the current weekly matchup.
+// Sized to ~3 lines of bubble text (62px). Color scale tracks the margin —
+// green when comfortably ahead, amber when within ±10, red when trailing.
+function V2MatchupDonut({ matchup }) {
+  if (!matchup) return null;
+  const my  = Number(matchup.my_score) || 0;
+  const opp = Number(matchup.opponent_score) || 0;
+  const total = my + opp;
+  const myPct = total > 0 ? Math.max(0, Math.min(1, my / total)) : 0.5;
+  const margin = my - opp;
+  const fillColor = margin >= 10 ? '#16a34a' : margin <= -10 ? '#dc2626' : '#d97706';
+
+  const size = 62;
+  const stroke = 8;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const filled = circumference * myPct;
+
+  const myName  = matchup.my_team_name || 'You';
+  const oppName = matchup.opponent_team_name || 'Opponent';
+
+  return (
+    <div style={{
+      display:'flex', alignItems:'center', gap:12, marginBottom:8,
+      padding:'8px 10px', background:V2.surface2, border:`1px solid ${V2.hairline}`, borderRadius:12,
+    }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink:0 }}>
+        <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke={V2.hairline} strokeWidth={stroke}/>
+        <circle
+          cx={size/2} cy={size/2} r={radius}
+          fill="none" stroke={fillColor} strokeWidth={stroke}
+          strokeDasharray={`${filled} ${circumference}`}
+          strokeLinecap="round"
+          transform={`rotate(-90 ${size/2} ${size/2})`}
+        />
+      </svg>
+      <div style={{ display:'flex', flexDirection:'column', gap:1, fontSize:12, color:V2.body, minWidth:0, flex:1 }}>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
+          <span style={{ color:V2.ink, fontWeight:700, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{myName}</span>
+          <span style={{ color:V2.ink, fontVariantNumeric:'tabular-nums', fontWeight:700 }}>{my.toFixed(1)}</span>
+        </div>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
+          <span style={{ color:V2.muted, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{oppName}</span>
+          <span style={{ color:V2.muted, fontVariantNumeric:'tabular-nums' }}>{opp.toFixed(1)}</span>
+        </div>
+        <div style={{ fontSize:11, fontWeight:800, color:fillColor, letterSpacing:'0.02em' }}>
+          {margin > 0 ? `+${margin.toFixed(1)} lead` : margin < 0 ? `${margin.toFixed(1)} behind` : 'tied'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── /skipper ───────────────────────────────────────────────────
 function V2Skipper({ model, sync, onOpenPlayer }) {
   const prompts = ['Weekly matchup assessment', 'Deep matchup analysis', 'Best waiver swap to review?', 'Where am I weakest?', 'Who is my best 2B?'];
@@ -2042,8 +2101,10 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
     if (!t || streaming) return;
     setError(null);
     setInput('');
-    // Optimistically append user message + empty AI bubble we'll fill via stream.
-    setMsgs(m => [...m, { role:'user', text:t }, { role:'ai', text:'' }]);
+    // Tag the upcoming AI bubble with chart:'matchup' when the prompt asks for
+    // a deep matchup read so V2Bubble can render the donut alongside the text.
+    const aiSeed = v2IsDeepMatchupPrompt(t) ? { role:'ai', text:'', chart:'matchup' } : { role:'ai', text:'' };
+    setMsgs(m => [...m, { role:'user', text:t }, aiSeed]);
     setStreaming(true);
 
     try {
@@ -2169,7 +2230,7 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
             Ask anything about your roster. Skipper reads the latest snapshot and answers from real data only.
           </div>
         )}
-        {msgs.map((m,i)=> <V2Bubble key={i} m={m} renderText={renderText}/>)}
+        {msgs.map((m,i)=> <V2Bubble key={i} m={m} renderText={renderText} matchup={model?.matchup}/>)}
         {streaming && msgs.length > 0 && msgs[msgs.length-1].role === 'ai' && !msgs[msgs.length-1].text && (
           <div style={{ color:V2.muted, fontSize:12, padding:'2px 4px 8px' }}>Thinking…</div>
         )}
@@ -2242,7 +2303,7 @@ function V2SkipperRefreshBrief({ brief, sync }) {
 }
 
 // ── Skipper chat (inlined V2Bubble) ────────────────────────────
-function V2Bubble({ m, renderText }) {
+function V2Bubble({ m, renderText, matchup }) {
   if (m.role==='user') return (
     <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:8 }}>
       <div style={{ background:V2.accent, color:'#fff', padding:'9px 13px', borderRadius:'14px 14px 4px 14px', fontSize:13.5, maxWidth:'82%', lineHeight:1.4 }}>{m.text}</div>
@@ -2250,9 +2311,13 @@ function V2Bubble({ m, renderText }) {
   );
   if (v2IsBrokenSkipperReply(m.text)) return null;
   const body = renderText ? renderText(m.text) : m.text;
+  const showDonut = m.chart === 'matchup' && matchup && (matchup.my_score != null || matchup.opponent_score != null);
   return (
     <div style={{ display:'flex', marginBottom:10 }}>
-      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, color:V2.ink, padding:'10px 13px', borderRadius:'14px 14px 14px 4px', fontSize:13.5, maxWidth:'92%', lineHeight:1.5 }}>{body}</div>
+      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, color:V2.ink, padding:'10px 13px', borderRadius:'14px 14px 14px 4px', fontSize:13.5, maxWidth:'92%', lineHeight:1.5 }}>
+        {showDonut && <V2MatchupDonut matchup={matchup}/>}
+        {body}
+      </div>
     </div>
   );
 }

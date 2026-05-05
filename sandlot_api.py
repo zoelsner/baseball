@@ -224,7 +224,7 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
 
     snapshot = snapshot_row.get("data") or {}
     tier = sandlot_skipper.detect_tier(user_text, snapshot)
-    context_block = sandlot_skipper.build_context(tier, snapshot)
+    context_block = sandlot_skipper.build_context(tier, snapshot, prompt=user_text)
     history = sandlot_db.list_chat_messages(session_id)
     messages = sandlot_skipper.build_messages(history, user_text, context_block)
     deterministic_reply = sandlot_skipper.deterministic_reply(user_text, snapshot)
