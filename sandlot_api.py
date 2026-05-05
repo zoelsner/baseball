@@ -94,6 +94,14 @@ def refresh(request: Request, background_tasks: BackgroundTasks) -> dict[str, An
     row = sandlot_db.latest_successful_snapshot()
     if result.snapshot_id and os.environ.get("SANDLOT_WAIVER_AI_WARM_DISABLED") != "1":
         background_tasks.add_task(sandlot_waivers.warm_latest_waiver_ai, result.snapshot_id)
+    # Mirror the cron's profile warm so manual refresh doesn't leave every
+    # cached take un-keyed against the new snapshot_id.
+    if result.snapshot_id and os.environ.get("SANDLOT_PROFILE_WARM_DISABLED") != "1":
+        background_tasks.add_task(
+            player_service.warm_roster_profiles,
+            snapshot_id=result.snapshot_id,
+            generate_takes=os.environ.get("SANDLOT_PROFILE_WARM_TAKES") == "1",
+        )
     return jsonable_encoder(
         {
             "status": result.status,

@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
@@ -188,11 +189,34 @@ def warm_roster_profiles(
 
     warmed = 0
     errors: list[str] = []
-    for fantrax_id in ids:
-        if refresh_cached_profile(fantrax_id, generate_take=generate_takes) is None:
-            errors.append(fantrax_id)
-        else:
-            warmed += 1
+    workers = max(1, min(int(os.environ.get("SANDLOT_PROFILE_WARM_PARALLELISM", "8")), len(ids) or 1))
+    if workers <= 1 or len(ids) <= 1:
+        for fantrax_id in ids:
+            if refresh_cached_profile(fantrax_id, generate_take=generate_takes) is None:
+                errors.append(fantrax_id)
+            else:
+                warmed += 1
+    else:
+        # refresh_cached_profile already swallows its own exceptions; each call
+        # opens its own Postgres connection and HTTP session, so a thread pool
+        # is safe and gives a meaningful speedup on the LLM-bound take path.
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="profile-warm") as ex:
+            future_to_id = {
+                ex.submit(refresh_cached_profile, fid, generate_take=generate_takes): fid
+                for fid in ids
+            }
+            for fut in as_completed(future_to_id):
+                fid = future_to_id[fut]
+                try:
+                    result = fut.result()
+                except Exception as exc:
+                    log.warning("Profile warm raised for %s: %s", fid, exc)
+                    errors.append(fid)
+                    continue
+                if result is None:
+                    errors.append(fid)
+                else:
+                    warmed += 1
     return {"attempted": len(ids), "warmed": warmed, "failed": len(errors), "errors": errors[:10]}
 
 
