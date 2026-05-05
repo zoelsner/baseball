@@ -1873,6 +1873,79 @@ function v2RenderSkipperText(text, index, fallbackRe, onOpen) {
     : <React.Fragment key={key++}>{p.text}</React.Fragment>);
 }
 
+// Render Skipper output as React: paragraphs, bullet lists, and inline
+// **bold** — with player tags / fuzzy player-name matches still becoming
+// V2PlayerLink. Skipper's prompt allows markdown but the model often glues
+// list items onto one line with " - **Label** —" separators; we normalize
+// that into real bullets before splitting into blocks.
+function v2RenderSkipperMarkdown(text, index, fallbackRe, onOpen) {
+  if (!text) return text;
+  const normalized = String(text).replace(/(^|[^\n])\s+-\s+(?=\*\*)/g, '$1\n- ');
+  const lines = normalized.split('\n');
+
+  const blocks = [];
+  let para = [];
+  let list = null;
+  const flushPara = () => {
+    if (para.length) { blocks.push({ type:'p', text:para.join(' ') }); para = []; }
+  };
+  const flushList = () => {
+    if (list) { blocks.push({ type:'ul', items:list }); list = null; }
+  };
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) { flushPara(); flushList(); continue; }
+    const li = line.match(/^[-*]\s+(.*)$/);
+    if (li) {
+      flushPara();
+      if (!list) list = [];
+      list.push(li[1]);
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  flushPara();
+  flushList();
+
+  if (!blocks.length) return null;
+
+  const renderInline = (s) => {
+    const out = [];
+    const re = /\*\*([^*\n]+)\*\*/g;
+    let last = 0;
+    let key = 0;
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      if (m.index > last) {
+        out.push(<React.Fragment key={key++}>{v2RenderSkipperText(s.slice(last, m.index), index, fallbackRe, onOpen)}</React.Fragment>);
+      }
+      out.push(<strong key={key++} style={{ fontWeight:700 }}>{v2RenderSkipperText(m[1], index, fallbackRe, onOpen)}</strong>);
+      last = m.index + m[0].length;
+    }
+    if (last < s.length) {
+      out.push(<React.Fragment key={key++}>{v2RenderSkipperText(s.slice(last), index, fallbackRe, onOpen)}</React.Fragment>);
+    }
+    return out;
+  };
+
+  let bk = 0;
+  return blocks.map(b => {
+    if (b.type === 'ul') {
+      return (
+        <ul key={bk++} style={{ margin:'4px 0', paddingLeft:18 }}>
+          {b.items.map((item, i) => (
+            <li key={i} style={{ margin:'3px 0' }}>{renderInline(item)}</li>
+          ))}
+        </ul>
+      );
+    }
+    return (
+      <p key={bk++} style={{ margin:'4px 0' }}>{renderInline(b.text)}</p>
+    );
+  });
+}
+
 function v2IsBrokenSkipperReply(text) {
   const normalized = String(text || '').trim().toLowerCase().replace(/[.]/g, ' ').replace(/\s+/g, ' ');
   return ['data', 'data unavailable', 'unavailable', 'no data'].includes(normalized);
@@ -1902,7 +1975,7 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
     [playerNameIndex],
   );
   const renderText = React.useCallback(
-    (text) => v2RenderSkipperText(text, playerNameIndex, fallbackRe, onOpenPlayer),
+    (text) => v2RenderSkipperMarkdown(text, playerNameIndex, fallbackRe, onOpenPlayer),
     [playerNameIndex, fallbackRe, onOpenPlayer],
   );
   const activeModel = V2_SKIPPER_MODELS.find(m => m.id === chatModel) || V2_SKIPPER_MODELS[0];
