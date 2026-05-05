@@ -186,6 +186,36 @@ def player_profile_refresh(fantrax_id: str) -> dict[str, Any]:
     return _player_response(fantrax_id, force_refresh=True)
 
 
+@app.get("/api/team/{team_id}/roster")
+def team_roster(team_id: str) -> dict[str, Any]:
+    try:
+        row = sandlot_db.latest_successful_snapshot()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="No successful Fantrax snapshot has been stored yet")
+    data = row.get("data") or {}
+    all_team_rosters = data.get("all_team_rosters") or {}
+    team = all_team_rosters.get(team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail=f"Team {team_id} not in latest snapshot")
+    return jsonable_encoder({
+        "snapshot_id": row.get("id"),
+        "taken_at": row.get("taken_at"),
+        "team_id": team.get("team_id") or team_id,
+        "team_name": team.get("team_name"),
+        "team_short": team.get("team_short"),
+        "is_me": bool(team.get("is_me")),
+        "rows": team.get("rows") or [],
+        "active": team.get("active"),
+        "active_max": team.get("active_max"),
+        "reserve": team.get("reserve"),
+        "reserve_max": team.get("reserve_max"),
+        "injured": team.get("injured"),
+        "injured_max": team.get("injured_max"),
+    })
+
+
 def _player_response(fantrax_id: str, *, force_refresh: bool) -> dict[str, Any]:
     try:
         payload = player_service.get_player_profile(fantrax_id, force_refresh=force_refresh)

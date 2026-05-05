@@ -85,35 +85,38 @@ function v2EmptyModel() {
   };
 }
 
+// Shared mapper so user roster + per-team roster stay byte-identical.
+function v2NormalizeRosterRow(p, idx) {
+  const positions = Array.isArray(p.all_positions) && p.all_positions.length
+    ? p.all_positions.filter(Boolean).join('/')
+    : (p.positions || p.pos || 'UT');
+  const slot = p.slot || p.slot_full || 'BN';
+  const status = (p.injury || p.status || '').toString().toLowerCase();
+  const fppg = v2Number(p.fppg);
+  const fpts = v2Number(p.fpts);
+  return {
+    id: p.id || `${p.name || 'player'}-${idx}`,
+    name: p.name || 'Unknown player',
+    pos: positions,
+    team: p.team || '',
+    slot,
+    fppg,
+    fpts,
+    proj: fppg || 0,
+    vsExp: 0,
+    status,
+    injury: p.injury || null,
+    age: p.age,
+    opp: '',
+    trend: 'steady',
+    alert: null,
+    raw: p,
+  };
+}
+
 function v2NormalizeSnapshot(payload) {
   const freshness = payload?.freshness || {};
-  const roster = (payload?.roster || []).filter(Boolean).map((p, idx) => {
-    const positions = Array.isArray(p.all_positions) && p.all_positions.length
-      ? p.all_positions.filter(Boolean).join('/')
-      : (p.positions || p.pos || 'UT');
-    const slot = p.slot || p.slot_full || 'BN';
-    const status = (p.injury || p.status || '').toString().toLowerCase();
-    const fppg = v2Number(p.fppg);
-    const fpts = v2Number(p.fpts);
-    return {
-      id: p.id || `${p.name || 'player'}-${idx}`,
-      name: p.name || 'Unknown player',
-      pos: positions,
-      team: p.team || '',
-      slot,
-      fppg,
-      fpts,
-      proj: fppg || 0,
-      vsExp: 0,
-      status,
-      injury: p.injury || null,
-      age: p.age,
-      opp: '',
-      trend: 'steady',
-      alert: null,
-      raw: p,
-    };
-  });
+  const roster = (payload?.roster || []).filter(Boolean).map(v2NormalizeRosterRow);
   const leagueTeams = (payload?.standings || []).map((t, idx) => ({
     id: t.team_id || `${t.team_name || 'team'}-${idx}`,
     name: t.team_name || 'Unknown team',
@@ -254,11 +257,18 @@ async function v2FetchRefresh() {
 
 // ── App shell ──────────────────────────────────────────────────
 function V2App({ initial }) {
-  const [page, setPage] = React.useState(initial?.page || 'today');
+  const [page, setPageRaw] = React.useState(initial?.page || 'today');
   const [detail, setDetail] = React.useState(initial?.detail || null); // player id or null
+  const [leagueTeam, setLeagueTeam] = React.useState(null); // { id, name, mgr, ... } or null
   const [authed, setAuthed] = React.useState(initial?.auth ? false : true);
   const [model, setModel] = React.useState(v2EmptyModel);
   const [syncState, setSyncState] = React.useState({ state:'loading', label:'loading', error:null, notice:null });
+
+  // Reset the in-page team-roster overlay whenever we leave the league tab.
+  const setPage = React.useCallback((next) => {
+    if (next !== 'league') setLeagueTeam(null);
+    setPageRaw(next);
+  }, []);
 
   const loadSnapshot = React.useCallback(async () => {
     if (window.location.protocol === 'file:') {
@@ -329,7 +339,9 @@ function V2App({ initial }) {
   const pages = {
     today:   <V2Today model={model} sync={syncState} onRefresh={refreshSnapshot} onNav={setPage}/>,
     roster:  <V2Roster model={model} onPlayer={setDetail}/>,
-    league:  <V2League model={model}/>,
+    league:  leagueTeam
+      ? <V2TeamRoster teamId={leagueTeam.id} teamMeta={leagueTeam} onBack={()=>setLeagueTeam(null)} onPlayer={setDetail}/>
+      : <V2League model={model} onOpenTeam={setLeagueTeam}/>,
     fa:      <V2FreeAgents onOpenPlayer={openPlayer}/>,
     trade:   <V2TradeGrader/>,
     skipper: <V2Skipper model={model} sync={syncState} onOpenPlayer={openPlayer}/>,
@@ -628,6 +640,85 @@ function V2Roster({ model, onPlayer }) {
   );
 }
 
+function V2TeamRoster({ teamId, teamMeta, onBack, onPlayer }) {
+  const [view, setView] = React.useState('starting');
+  const [state, setState] = React.useState({ status:'loading', payload:null, error:null });
+
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!teamId) return;
+    setState({ status:'loading', payload:null, error:null });
+    fetch(`/api/team/${encodeURIComponent(teamId)}/roster`)
+      .then(async r => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data?.detail || `Team roster ${r.status}`);
+        return data;
+      })
+      .then(data => { if (!cancelled) setState({ status:'ready', payload:data, error:null }); })
+      .catch(err => { if (!cancelled) setState({ status:'error', payload:null, error:err.message }); });
+    return () => { cancelled = true; };
+  }, [teamId]);
+
+  const roster = React.useMemo(() => {
+    return ((state.payload?.rows) || []).filter(Boolean).map(v2NormalizeRosterRow);
+  }, [state.payload]);
+
+  const list = roster.filter(p => {
+    const slot = String(p.slot || '').toUpperCase();
+    if (view === 'starting') return !['BN','IL','IR'].includes(slot);
+    if (view === 'bench') return slot === 'BN';
+    return true;
+  });
+
+  const teamName = state.payload?.team_name || teamMeta?.name || 'Team';
+  const subline = [teamMeta?.mgr, teamMeta?.record, teamMeta?.streak].filter(Boolean).join(' · ');
+
+  return (
+    <div style={{ padding:'4px 16px 32px', display:'flex', flexDirection:'column', gap:14 }}>
+      <button onClick={onBack} style={{
+        alignSelf:'flex-start', background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:999,
+        padding:'6px 12px', fontSize:12, fontWeight:700, color:V2.body, cursor:'pointer', fontFamily:'inherit',
+      }}>← Standings</button>
+
+      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:'14px 16px' }}>
+        <V2Eyebrow>Team roster</V2Eyebrow>
+        <div style={{ marginTop:6, fontSize:20, fontWeight:700, fontFamily:V2.fontDisplay, lineHeight:1.2 }}>{teamName}</div>
+        {subline && <div style={{ marginTop:4, fontSize:12, color:V2.muted, fontWeight:600 }}>{subline}</div>}
+      </div>
+
+      {state.status === 'loading' && (
+        <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:18, color:V2.muted, fontSize:13, fontWeight:700 }}>
+          Loading roster from latest snapshot…
+        </div>
+      )}
+
+      {state.status === 'error' && (
+        <V2Caution eyebrow="Roster unavailable" tone="warn">{state.error || 'Could not load this team’s roster.'}</V2Caution>
+      )}
+
+      {state.status === 'ready' && (
+        <>
+          <V2Segment items={[{value:'starting',label:'Starting'},{value:'bench',label:'Bench'},{value:'all',label:'All'}]} value={view} onChange={setView}/>
+
+          <div style={{ display:'flex', gap:14, padding:'2px 4px' }}>
+            <Legend color={V2.inLineup} label="In lineup"/>
+            <Legend color={V2.bench} label="Bench"/>
+            <Legend color={V2.injured} label="Injured"/>
+          </div>
+
+          <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:22, overflow:'hidden' }}>
+            {list.length ? list.map((p,i)=>(
+              <V2RosterSlot key={p.id} player={p} last={i===list.length-1} onClick={()=>onPlayer(p.id)}/>
+            )) : (
+              <div style={{ padding:18, color:V2.muted, fontSize:13, fontWeight:700 }}>No players in this view.</div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function V2MiniInsight({ title, value, note, tone }) {
   const c = tone==='ok' ? V2.ok : V2.warn;
   return (
@@ -751,9 +842,8 @@ function V2RosterSlot({ player, last, onClick }) {
 }
 
 // ── /league ────────────────────────────────────────────────────
-function V2League({ model }) {
+function V2League({ model, onOpenTeam }) {
   const [sort, setSort] = React.useState('rank');
-  const [team, setTeam] = React.useState(null);
   const sorters = {
     rank:(a,b)=>a.rank-b.rank,
     pts:(a,b)=>b.pts-a.pts,
@@ -764,7 +854,7 @@ function V2League({ model }) {
     <div style={{ padding:'4px 16px 32px', display:'flex', flexDirection:'column', gap:12 }}>
       <V2Segment items={[{value:'rank',label:'Rank'},{value:'pts',label:'Points'},{value:'name',label:'Name'}]} value={sort} onChange={setSort}/>
       <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-        {list.length ? list.map(t => <V2TeamRow key={t.id} team={t} expanded={team===t.id} onToggle={()=>setTeam(team===t.id?null:t.id)}/>) : (
+        {list.length ? list.map(t => <V2TeamRow key={t.id} team={t} onOpen={()=>onOpenTeam && onOpenTeam(t)}/>) : (
           <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:14, padding:18, color:V2.muted, fontSize:13, fontWeight:700 }}>
             No standings in the latest snapshot.
           </div>
@@ -773,11 +863,11 @@ function V2League({ model }) {
     </div>
   );
 }
-function V2TeamRow({ team, expanded, onToggle }) {
+function V2TeamRow({ team, onOpen }) {
   const tierColor = team.rank<=4 ? V2.ok : team.rank<=8 ? V2.accent : V2.warn;
   return (
     <div style={{ background: team.me?V2.accentSoft:V2.surface, border:`1px solid ${team.me?V2.accent:V2.hairline}`, borderRadius:14, overflow:'hidden' }}>
-      <button onClick={onToggle} style={{
+      <button onClick={onOpen} style={{
         width:'100%', display:'flex', alignItems:'center', gap:12, padding:'12px 14px',
         background:'none', cursor:'pointer', textAlign:'left', border:'none', fontFamily:'inherit',
       }}>
@@ -797,23 +887,6 @@ function V2TeamRow({ team, expanded, onToggle }) {
           {team.pts.toLocaleString()}
         </div>
       </button>
-      {expanded && (
-        <div style={{ borderTop:`1px solid ${V2.hairline2}`, padding:'12px 14px' }}>
-          <V2Eyebrow>Position strength</V2Eyebrow>
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:6, marginTop:8 }}>
-            {POSITION_GROUPS.slice(0,9).map(g => {
-              const r = ((g.rankInLeague + team.rank) % 12) + 1;
-              const c = r<=3?V2.ok:r<=8?V2.accent:V2.warn;
-              return (
-                <div key={g.pos} style={{ background:V2.surface2, borderRadius:8, padding:'7px 9px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-                  <span style={{ fontSize:11, fontWeight:700, color:V2.muted }}>{g.pos}</span>
-                  <span style={{ fontSize:11.5, fontWeight:800, color:c, fontVariantNumeric:'tabular-nums' }}>#{r}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
