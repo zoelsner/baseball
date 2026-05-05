@@ -210,6 +210,78 @@ def extract_standings(api: FantraxAPI, my_team_id: str) -> dict | None:
     return {"records": records, "my_record": my_record}
 
 
+def extract_matchup(api: FantraxAPI, my_team_id: str) -> dict | None:
+    """Return the current weekly matchup from Fantrax's schedule view.
+
+    This is the data Skipper needs for "how is my matchup going?" questions.
+    Fantrax exposes it through the standings SCHEDULE view, wrapped by
+    fantraxapi as scoring_period_results().
+    """
+    try:
+        periods = api.scoring_period_results(season=True, playoffs=False)
+    except Exception as e:
+        log.error("matchup schedule failed: %s", e)
+        return None
+
+    if not periods:
+        return None
+
+    today = datetime.now(timezone.utc).date()
+    current = None
+    for period in periods.values():
+        start = getattr(period, "start", None)
+        end = getattr(period, "end", None)
+        if start and end and start <= today <= end:
+            current = period
+            break
+    if current is None:
+        current = next((p for p in periods.values() if getattr(p, "current", False)), None)
+    if current is None:
+        roster_period = None
+        try:
+            roster_period = api.team_roster(my_team_id).period_number
+        except Exception:
+            pass
+        if roster_period is not None:
+            current = periods.get(roster_period)
+    if current is None:
+        return None
+
+    for matchup in getattr(current, "matchups", []) or []:
+        away = getattr(matchup, "away", None)
+        home = getattr(matchup, "home", None)
+        away_id = getattr(away, "id", None)
+        home_id = getattr(home, "id", None)
+        if my_team_id not in (away_id, home_id):
+            continue
+
+        is_away = my_team_id == away_id
+        opponent = home if is_away else away
+        my_score = matchup.away_score if is_away else matchup.home_score
+        opponent_score = matchup.home_score if is_away else matchup.away_score
+        margin = round(float(my_score or 0) - float(opponent_score or 0), 2)
+        return {
+            "source": "fantrax_schedule",
+            "period_number": getattr(getattr(current, "period", None), "number", None),
+            "period_name": getattr(current, "name", None),
+            "start": str(getattr(current, "start", "")) or None,
+            "end": str(getattr(current, "end", "")) or None,
+            "days": getattr(current, "days", None),
+            "complete": getattr(current, "complete", None),
+            "current": getattr(current, "current", None),
+            "matchup_key": getattr(matchup, "matchup_key", None),
+            "my_team_id": my_team_id,
+            "my_team_name": getattr(away if is_away else home, "name", None) or str(away if is_away else home),
+            "my_side": "away" if is_away else "home",
+            "my_score": my_score,
+            "opponent_team_id": getattr(opponent, "id", None),
+            "opponent_team_name": getattr(opponent, "name", None) or str(opponent),
+            "opponent_score": opponent_score,
+            "margin": margin,
+        }
+    return None
+
+
 def extract_transactions(api: FantraxAPI, count: int = 50) -> list[dict]:
     try:
         txns = api.transactions(count=count)
@@ -517,6 +589,7 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
         "roster": None,
         "all_team_rosters": None,
         "standings": None,
+        "matchup": None,
         "transactions": None,
         "pending_trades": None,
         "free_agents": None,
@@ -535,6 +608,7 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
         ("roster",           lambda: extract_roster(api, team_id)),
         ("all_team_rosters", lambda: extract_all_team_rosters(api, team_id)),
         ("standings",        lambda: extract_standings(api, team_id)),
+        ("matchup",          lambda: extract_matchup(api, team_id)),
         ("transactions",     lambda: extract_transactions(api)),
         ("pending_trades",   lambda: extract_pending_trades(api, team_id)),
         ("free_agents",      lambda: extract_free_agents(session, league_id)),

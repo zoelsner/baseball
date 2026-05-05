@@ -285,6 +285,7 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
         "roster_meta": {k: v for k, v in roster_meta.items() if k != "rows"},
         "standings": standings.get("records") or [],
         "my_standing": standings.get("my_record"),
+        "matchup": data.get("matchup"),
         "player_index": _player_index(data),
         "errors": row.get("errors") or data.get("errors") or [],
     }

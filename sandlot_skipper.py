@@ -47,6 +47,7 @@ Rules:
 - Answer only from the snapshot. If a field is missing, say exactly what is missing and what nearby snapshot data is available. Do not speculate.
 - Never answer with only "Data", "Data unavailable", or another one-word refusal.
 - Cite players by name. Cite numbers when relevant (FP/G, FPts, age, slot, injury status).
+- For matchup questions, prefer the `matchup` object for score/opponent, then use both rosters to call out concrete pressure points. If exact live score is missing, say that briefly and still give the best roster-based read.
 - No emojis. No throat-clearing intros ("Great question!"). No filler outros.
 - Markdown allowed for short lists or **emphasis**. Avoid headers and tables for chat-length replies.
 - The user's team rows are flagged with `is_me: true`. Other teams (when present) are tier 3 context.
@@ -126,6 +127,18 @@ def _slim_standings(standings: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _slim_matchup(matchup: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(matchup, dict):
+        return None
+    keep = (
+        "source", "period_number", "period_name", "start", "end", "days",
+        "complete", "current", "my_team_id", "my_team_name", "my_side",
+        "my_score", "opponent_team_id", "opponent_team_name",
+        "opponent_score", "margin",
+    )
+    return {k: matchup.get(k) for k in keep}
+
+
 def build_context(tier: int, snapshot: dict[str, Any]) -> str:
     """Render the snapshot as a compact JSON-ish text block for the model."""
     import json
@@ -139,7 +152,7 @@ def build_context(tier: int, snapshot: dict[str, Any]) -> str:
         "standings": _slim_standings(snapshot.get("standings")),
     }
     if snapshot.get("matchup"):
-        ctx["matchup"] = snapshot.get("matchup")
+        ctx["matchup"] = _slim_matchup(snapshot.get("matchup"))
     if tier >= 3:
         all_rosters = snapshot.get("all_team_rosters") or {}
         ctx["all_team_rosters"] = {
@@ -166,14 +179,19 @@ def _available_data(snapshot: dict[str, Any]) -> dict[str, bool]:
 
 
 def deterministic_reply(user_msg: str, snapshot: dict[str, Any]) -> str | None:
-    """Return a direct non-LLM answer for known missing-data questions."""
+    """Return a direct non-LLM answer for known high-value product flows."""
     text = (user_msg or "").lower()
     asks_matchup = any(
         token in text
-        for token in ("matchup", "match-up", "match up", "against my", "against this", "this week against")
+        for token in (
+            "matchup", "match-up", "match up", "against my", "against this",
+            "this week against", "how am i doing", "how's it going",
+            "how is it going", "anything i should be worried",
+            "anything should i be worried", "worried about",
+        )
     )
-    if asks_matchup and not snapshot.get("matchup"):
-        return _missing_matchup_reply(snapshot)
+    if asks_matchup:
+        return _matchup_read_reply(snapshot)
     return None
 
 
@@ -191,7 +209,65 @@ def is_broken_reply(reply: str | None) -> bool:
     return normalized in {"data", "data unavailable", "unavailable", "no data"}
 
 
+def _matchup_read_reply(snapshot: dict[str, Any]) -> str:
+    matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
+    roster = _slim_roster(snapshot.get("roster"))
+    my_rows = roster.get("rows") or []
+    all_rosters = snapshot.get("all_team_rosters") or {}
+    opponent = _opponent_roster(snapshot, matchup)
+    opponent_rows = opponent.get("rows") if opponent else []
+
+    lines: list[str] = []
+    if matchup:
+        opponent_name = matchup.get("opponent_team_name") or "your opponent"
+        my_score = _num(matchup.get("my_score"))
+        opp_score = _num(matchup.get("opponent_score"))
+        if my_score is not None and opp_score is not None:
+            margin = round(my_score - opp_score, 2)
+            if margin > 0:
+                state = f"You're up {margin:g}"
+            elif margin < 0:
+                state = f"You're down {abs(margin):g}"
+            else:
+                state = "You're tied"
+            period = matchup.get("period_name") or f"period {matchup.get('period_number')}"
+            lines.append(f"{state} against {opponent_name}: {my_score:g} to {opp_score:g} in {period}.")
+            if my_score == 0 and opp_score == 0:
+                lines.append("That usually means the period has not started or Fantrax has not posted scoring yet.")
+        else:
+            lines.append(f"I found this week's opponent ({opponent_name}), but Fantrax did not return both live scores.")
+    else:
+        lines.append("I do not have the live matchup scoreboard in this snapshot yet, but I can still read roster pressure from your latest Fantrax data.")
+
+    concerns = _matchup_concerns(my_rows)
+    if concerns:
+        lines.append("Watch: " + "; ".join(concerns[:3]) + ".")
+    elif my_rows:
+        lines.append("No active injury or sub-1.0 FP/G flags show up in your lineup snapshot.")
+
+    if opponent_rows:
+        edges = _position_edges(my_rows, opponent_rows)
+        if edges:
+            lines.append("Position read: " + "; ".join(edges[:3]) + ".")
+        opp_top = _top_players(opponent_rows, limit=3)
+        if opp_top:
+            lines.append("Opponent threats: " + ", ".join(_player_label(p) for p in opp_top) + ".")
+    elif matchup:
+        lines.append("I have the score/opponent, but not opponent roster rows to compare individual players.")
+    elif all_rosters:
+        lines.append("I can see league rosters, but not the current opponent mapping in this snapshot. A fresh scrape should add the matchup object.")
+
+    if len(lines) == 1:
+        lines.append(_roster_summary_sentence(snapshot))
+    return " ".join(line for line in lines if line)
+
+
 def _missing_matchup_reply(snapshot: dict[str, Any]) -> str:
+    """Backward-compatible wrapper kept for older tests/imports."""
+    return _matchup_read_reply(snapshot)
+
+
+def _roster_summary_sentence(snapshot: dict[str, Any]) -> str:
     standings = _slim_standings(snapshot.get("standings"))
     mine = standings.get("my_record") or {}
     roster = _slim_roster(snapshot.get("roster"))
@@ -210,17 +286,115 @@ def _missing_matchup_reply(snapshot: dict[str, Any]) -> str:
     if roster.get("reserve") is not None and roster.get("reserve_max") is not None:
         roster_bits.append(f"{roster.get('reserve')}/{roster.get('reserve_max')} reserve")
 
-    lines = [
-        "I can read the latest Fantrax snapshot, but this snapshot does not include the weekly matchup scoreboard.",
-        "So I cannot say whether you are winning this week or pull your opponent's current total yet.",
-    ]
+    lines = []
     if record_bits:
         lines.append(f"What I do have for {team_name}: " + ", ".join(str(v) for v in record_bits) + ".")
     if roster_bits or roster_rows:
         roster_text = ", ".join(roster_bits) if roster_bits else f"{len(roster_rows)} rostered players"
         lines.append(f"Roster context is available: {roster_text}.")
-    lines.append("To answer this properly, the scraper needs matchup fields: opponent, your weekly score, opponent score, and scoring period.")
     return " ".join(lines)
+
+
+def _opponent_roster(snapshot: dict[str, Any], matchup: dict[str, Any] | None) -> dict[str, Any] | None:
+    all_rosters = snapshot.get("all_team_rosters") or {}
+    if not isinstance(all_rosters, dict):
+        return None
+    opponent_id = matchup.get("opponent_team_id") if matchup else None
+    if opponent_id and isinstance(all_rosters.get(opponent_id), dict):
+        return all_rosters[opponent_id]
+    opponent_name = (matchup or {}).get("opponent_team_name")
+    if opponent_name:
+        for team in all_rosters.values():
+            if isinstance(team, dict) and team.get("team_name") == opponent_name:
+                return team
+    return None
+
+
+def _active_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    inactive = {"BN", "BENCH", "RES", "RESERVE", "IR", "IL", "INJ", "INJ RES", "MINORS"}
+    out = []
+    for row in rows or []:
+        if not row.get("name"):
+            continue
+        slot = str(row.get("slot") or "").upper()
+        if slot in inactive:
+            continue
+        out.append(row)
+    return out
+
+
+def _num(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def _top_players(rows: list[dict[str, Any]], limit: int = 3) -> list[dict[str, Any]]:
+    return sorted(
+        _active_rows(rows),
+        key=lambda p: _num(p.get("fppg")) if _num(p.get("fppg")) is not None else -999,
+        reverse=True,
+    )[:limit]
+
+
+def _player_label(row: dict[str, Any]) -> str:
+    fppg = _num(row.get("fppg"))
+    suffix = f" ({fppg:g} FP/G)" if fppg is not None else ""
+    return f"{row.get('name')}{suffix}"
+
+
+def _matchup_concerns(rows: list[dict[str, Any]]) -> list[str]:
+    concerns: list[str] = []
+    for row in _active_rows(rows):
+        injury = row.get("injury")
+        if injury:
+            concerns.append(f"{row.get('name')} is {injury}")
+    low = [
+        row for row in _active_rows(rows)
+        if _num(row.get("fppg")) is not None and (_num(row.get("fppg")) or 0) < 1.0
+    ]
+    if low:
+        names = ", ".join(row.get("name") for row in low[:3] if row.get("name"))
+        concerns.append(f"low FP/G active spots: {names}")
+    return concerns
+
+
+def _position_list(row: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for field in (row.get("slot"), row.get("positions")):
+        if isinstance(field, str):
+            values.extend(part.strip().upper() for part in field.split(",") if part.strip())
+        elif isinstance(field, list):
+            values.extend(str(part).strip().upper() for part in field if str(part).strip())
+    return values
+
+
+def _position_best(rows: list[dict[str, Any]], pos: str) -> float | None:
+    vals = [
+        _num(row.get("fppg"))
+        for row in _active_rows(rows)
+        if pos in _position_list(row) and _num(row.get("fppg")) is not None
+    ]
+    return max(vals) if vals else None
+
+
+def _position_edges(my_rows: list[dict[str, Any]], opp_rows: list[dict[str, Any]]) -> list[str]:
+    edges = []
+    for pos in ("C", "1B", "2B", "3B", "SS", "OF", "SP", "RP"):
+        mine = _position_best(my_rows, pos)
+        theirs = _position_best(opp_rows, pos)
+        if mine is None or theirs is None:
+            continue
+        delta = round(mine - theirs, 2)
+        if abs(delta) < 0.5:
+            continue
+        label = "edge" if delta > 0 else "pressure"
+        edges.append((abs(delta), f"{pos} {label} {delta:+g} FP/G"))
+    edges.sort(reverse=True, key=lambda x: x[0])
+    return [text for _, text in edges]
 
 
 def _generic_missing_reply(snapshot: dict[str, Any]) -> str:
