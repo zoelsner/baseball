@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  python-import-smoke:
+    name: Python import smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install runtime deps
+        run: pip install -r requirements.txt
+      - name: Import every Sandlot module
+        # Single combined import — fails fast on syntax/import errors that
+        # would otherwise only surface on Railway boot. Web-app modules only;
+        # the legacy CLI (audit.py / league_intel.py) is excluded per CLAUDE.md.
+        run: |
+          python -c "
+          import sandlot_api
+          import sandlot_skipper
+          import sandlot_db
+          import sandlot_refresh
+          import sandlot_cron
+          import sandlot_waivers
+          import player_service
+          import mlb_stats
+          print('all imports OK')
+          "
+
+  jsx-parse:
+    name: JSX parse (Babel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install Babel parser
+        run: npm install --no-save @babel/parser
+      - name: Parse every web/sandlot JSX file
+        # The Sandlot frontend has no bundler — Babel runs in-browser via
+        # @babel/standalone. `node --check` doesn't understand JSX, so we
+        # parse with @babel/parser to catch syntax errors before deploy.
+        run: |
+          node -e "
+          const parser = require('@babel/parser');
+          const fs = require('fs');
+          const path = require('path');
+          const dir = 'web/sandlot';
+          const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsx'));
+          let failed = 0;
+          for (const f of files) {
+            const src = fs.readFileSync(path.join(dir, f), 'utf8');
+            try {
+              parser.parse(src, { sourceType: 'module', plugins: ['jsx'] });
+              console.log('OK    ' + f);
+            } catch (e) {
+              console.error('FAIL  ' + f + ': ' + e.message);
+              failed++;
+            }
+          }
+          if (failed) process.exit(1);
+          "
