@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import date as _date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,6 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-import mlb_stats
 import player_service
 import sandlot_db
 import sandlot_skipper
@@ -81,6 +80,7 @@ def latest_snapshot() -> dict[str, Any]:
 def refresh(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     _require_refresh_token(request)
     result = run_refresh(source="manual")
+    row = sandlot_db.latest_successful_snapshot()
     if not result.ok:
         raise HTTPException(
             status_code=502,
@@ -89,10 +89,12 @@ def refresh(request: Request, background_tasks: BackgroundTasks) -> dict[str, An
                 "snapshot_id": result.snapshot_id,
                 "duration_ms": result.duration_ms,
                 "errors": result.errors,
+                "fallback": bool(row),
+                "fallback_reason": "Showing latest successful Fantrax snapshot because refresh failed.",
+                "snapshot": _snapshot_payload(row) if row else None,
             },
         )
 
-    row = sandlot_db.latest_successful_snapshot()
     if result.snapshot_id and os.environ.get("SANDLOT_WAIVER_AI_WARM_DISABLED") != "1":
         background_tasks.add_task(sandlot_waivers.warm_latest_waiver_ai, result.snapshot_id)
     # Mirror the cron's profile warm so manual refresh doesn't leave every
@@ -353,8 +355,6 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     roster_meta = data.get("roster") or {}
     standings = data.get("standings") or {}
     taken_at = row.get("taken_at")
-    roster_rows = roster_meta.get("rows") or []
-    my_team_id = data.get("team_id") or row.get("team_id")
     return {
         "snapshot_id": row.get("id"),
         "taken_at": taken_at,
@@ -362,83 +362,15 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
         "status": row.get("status"),
         "freshness": _freshness(taken_at),
         "league_id": data.get("league_id") or row.get("league_id"),
-        "team_id": my_team_id,
+        "team_id": data.get("team_id") or row.get("team_id"),
         "team_name": data.get("team_name") or row.get("team_name"),
-        "roster": roster_rows,
+        "roster": roster_meta.get("rows") or [],
         "roster_meta": {k: v for k, v in roster_meta.items() if k != "rows"},
         "standings": standings.get("records") or [],
         "my_standing": standings.get("my_record"),
         "matchup": data.get("matchup"),
         "player_index": _player_index(data),
-        "lineup_today": _lineup_today(roster_rows),
-        "standings_delta": _standings_delta(my_team_id, standings.get("my_record")),
         "errors": row.get("errors") or data.get("errors") or [],
-    }
-
-
-_RESERVE_SLOTS = {"BN", "IL", "IR", "MIN", "RES"}
-
-
-def _lineup_today(roster_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Counts of starters playing today vs idle, plus injured count.
-
-    Returns None when the MLB schedule lookup fails so the UI can hide the card
-    instead of misleading the user with a zero count.
-    """
-    if not roster_rows:
-        return None
-    games_today = mlb_stats.games_today_team_abbrs()
-    if not games_today:
-        return None
-    in_action = 0
-    idle = 0
-    injured = 0
-    for p in roster_rows:
-        if not isinstance(p, dict):
-            continue
-        slot = str(p.get("slot") or "").upper()
-        injury = p.get("injury")
-        if injury or slot in {"IL", "IR"}:
-            injured += 1
-        if slot in _RESERVE_SLOTS:
-            continue
-        team = (p.get("team") or "").strip().upper()
-        if team and team in games_today:
-            in_action += 1
-        else:
-            idle += 1
-    return {
-        "in_action": in_action,
-        "idle": idle,
-        "injured": injured,
-        "date": _date.today().isoformat(),
-    }
-
-
-def _standings_delta(
-    my_team_id: str | None,
-    current_my: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Week-over-week rank/record delta for the user's team. None on cold start."""
-    if not my_team_id or not current_my:
-        return None
-    try:
-        prior = sandlot_db.snapshot_from_days_ago(7)
-    except Exception as exc:
-        log.warning("snapshot_from_days_ago failed: %s", exc)
-        return None
-    if not prior:
-        return None
-    prior_data = prior.get("data") or {}
-    prior_records = ((prior_data.get("standings") or {}).get("records")) or []
-    prior_my = next((r for r in prior_records if r.get("team_id") == my_team_id), None)
-    if not prior_my:
-        return None
-    return {
-        "rank_change": (prior_my.get("rank") or 0) - (current_my.get("rank") or 0),
-        "wins_change": (current_my.get("win") or 0) - (prior_my.get("win") or 0),
-        "losses_change": (current_my.get("loss") or 0) - (prior_my.get("loss") or 0),
-        "prior_taken_at": prior.get("taken_at"),
     }
 
 
