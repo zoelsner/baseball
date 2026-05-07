@@ -363,7 +363,7 @@ function V2App({ initial }) {
       ? <V2TeamRoster teamId={leagueTeam.id} teamMeta={leagueTeam} onBack={()=>setLeagueTeam(null)} onPlayer={setDetail}/>
       : <V2League model={model} onOpenTeam={setLeagueTeam}/>,
     fa:      <V2FreeAgents onOpenPlayer={openPlayer}/>,
-    trade:   <V2TradeGrader/>,
+    trade:   <V2TradeGrader model={model}/>,
     skipper: <V2Skipper model={model} sync={syncState} onOpenPlayer={openPlayer}/>,
     settings:<V2Settings model={model} sync={syncState} onRefresh={refreshSnapshot} onSignOut={()=>setAuthed(false)}/>,
   };
@@ -1413,93 +1413,250 @@ function v2MockWaiverPayload() {
 }
 
 // ── /trade-grader ──────────────────────────────────────────────
-function V2TradeGrader() {
-  const [text, setText] = React.useState("You give: Tobias Reyna\nYou get: Niko Castellanos, Rell Brookings");
-  const [graded, setGraded] = React.useState(true);
-  const grade = () => { if (!text.trim()) return; setGraded(true); };
+const TRADE_PICK_MAX = 5;
+
+function v2GradeColor(letter) {
+  if (!letter) return V2.body;
+  const head = String(letter).charAt(0);
+  if (head === 'A') return V2.ok;
+  if (head === 'B') return V2.body;
+  if (head === 'C') return V2.warn;
+  return V2.injured;
+}
+
+function V2PlayerPicker({ label, source, model, value, onChange }) {
+  const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState('');
+
+  const candidates = React.useMemo(() => {
+    const idx = (model && model.playerIndex) || [];
+    return idx.filter(p => p && p.source === source);
+  }, [model, source]);
+
+  const valueIds = React.useMemo(() => new Set(value.map(p => p.id)), [value]);
+  const filtered = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = candidates.filter(p => !valueIds.has(p.id));
+    if (!q) return list.slice(0, 80);
+    return list
+      .filter(p => (p.name || '').toLowerCase().includes(q) || (p.team || '').toLowerCase().includes(q))
+      .slice(0, 60);
+  }, [candidates, valueIds, query]);
+
+  const add = (p) => {
+    if (value.length >= TRADE_PICK_MAX) return;
+    onChange([...value, p]);
+    setQuery('');
+    setOpen(false);
+  };
+  const remove = (id) => onChange(value.filter(p => p.id !== id));
+
+  return (
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:14 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+        <V2Eyebrow color={source === 'mine' ? V2.injured : V2.ok}>{label}</V2Eyebrow>
+        <span style={{ fontFamily:V2.fontMono, fontSize:10.5, fontWeight:700, color:V2.muted, letterSpacing:'0.04em' }}>
+          {value.length}/{TRADE_PICK_MAX}
+        </span>
+      </div>
+
+      <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:6 }}>
+        {value.map(p => (
+          <div key={p.id} style={{
+            background:V2.surface2, borderRadius:10, padding:'8px 10px',
+            display:'flex', alignItems:'center', gap:10,
+          }}>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{
+                fontSize:13.5, fontWeight:600, color:V2.ink, lineHeight:1.25,
+                whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis',
+              }}>{p.name}</div>
+              <div style={{ fontSize:11, color:V2.muted, marginTop:2, fontFamily:V2.fontMono }}>
+                {p.slot || p.positions || '—'} · {p.team || '—'}
+                {p.fppg != null ? ` · ${Number(p.fppg).toFixed(1)} FP/G` : ''}
+              </div>
+            </div>
+            <button onClick={()=>remove(p.id)} aria-label="Remove" style={{
+              flexShrink:0, width:24, height:24, border:'none', borderRadius:6,
+              background:'transparent', color:V2.muted, cursor:'pointer', fontSize:18, lineHeight:1,
+            }}>×</button>
+          </div>
+        ))}
+
+        {value.length < TRADE_PICK_MAX && (
+          !open ? (
+            <button onClick={()=>setOpen(true)} style={{
+              background:'transparent', border:`1px dashed ${V2.hairline}`, borderRadius:10,
+              padding:'10px 12px', color:V2.body, fontSize:12.5, fontWeight:600, cursor:'pointer',
+              fontFamily:'inherit', textAlign:'left',
+            }}>+ Add player</button>
+          ) : (
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              <input
+                autoFocus
+                value={query}
+                onChange={e=>setQuery(e.target.value)}
+                placeholder={`Search ${source === 'mine' ? 'your roster' : 'other teams'}…`}
+                style={{
+                  width:'100%', border:`1px solid ${V2.hairline}`, borderRadius:10,
+                  padding:'9px 12px', fontSize:13, fontFamily:'inherit', outline:'none',
+                  background:V2.surface2, color:V2.ink,
+                }}/>
+              <div style={{
+                maxHeight:240, overflowY:'auto',
+                border:`1px solid ${V2.hairline2}`, borderRadius:10, background:V2.surface2,
+              }}>
+                {filtered.length === 0 ? (
+                  <div style={{ padding:'12px 14px', fontSize:12, color:V2.muted }}>
+                    No matches{candidates.length === 0 ? ' — snapshot has no players from this side yet' : ''}.
+                  </div>
+                ) : filtered.map((p, i) => (
+                  <button key={p.id} onClick={()=>add(p)} style={{
+                    width:'100%', textAlign:'left', display:'flex', flexDirection:'column', gap:2,
+                    padding:'9px 12px', border:'none', cursor:'pointer',
+                    background:'transparent', borderBottom: i === filtered.length - 1 ? 'none' : `1px solid ${V2.hairline2}`,
+                    fontFamily:'inherit',
+                  }}>
+                    <div style={{ fontSize:13, fontWeight:600, color:V2.ink }}>{p.name}</div>
+                    <div style={{ fontSize:10.5, color:V2.muted, fontFamily:V2.fontMono }}>
+                      {p.slot || p.positions || '—'} · {p.team || '—'}
+                      {p.fppg != null ? ` · ${Number(p.fppg).toFixed(1)} FP/G` : ''}
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <button onClick={()=>{ setOpen(false); setQuery(''); }} style={{
+                background:'transparent', border:'none', color:V2.muted, fontSize:11.5, fontWeight:600,
+                cursor:'pointer', padding:'4px 0', textAlign:'left', fontFamily:'inherit',
+              }}>Cancel</button>
+            </div>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+function V2TradeGradeCard({ result }) {
+  const fairness = Math.max(0, Math.min(1, Number(result.fairness) || 0));
+  const fairnessPct = (fairness * 100).toFixed(0);
+  const dash = (fairness * 188.5).toFixed(1);
+  const grade = result.letter_grade || '—';
+  const color = v2GradeColor(grade);
+  const myDelta = Number(result.my_delta) || 0;
+  const theirDelta = Number(result.their_delta) || 0;
+  const ageDelta = result.age_delta;
+  const fmt = (n) => `${n >= 0 ? '+' : ''}${Number(n).toFixed(1)}`;
+  return (
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:14 }}>
+        <div style={{ flex:1, minWidth:0 }}>
+          <V2Eyebrow color={color}>Skipper grade</V2Eyebrow>
+          <div style={{
+            fontSize:48, fontWeight:600, color, letterSpacing:'-0.03em', lineHeight:1,
+            marginTop:6, fontFamily:V2.fontDisplay,
+          }}>{grade}</div>
+          <div style={{ fontSize:12, color:V2.body, marginTop:8, fontWeight:600 }}>{result.headline || ''}</div>
+        </div>
+        <div style={{ width:74, height:74, position:'relative', flexShrink:0 }}>
+          <svg width="74" height="74" viewBox="0 0 74 74">
+            <circle cx="37" cy="37" r="30" fill="none" stroke={V2.hairline} strokeWidth="6"/>
+            <circle cx="37" cy="37" r="30" fill="none" stroke={color} strokeWidth="6"
+              strokeDasharray={`${dash} 188.5`} transform="rotate(-90 37 37)" strokeLinecap="round"/>
+          </svg>
+          <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center' }}>
+            <div style={{ fontSize:14, fontWeight:700, fontFamily:V2.fontMono }}>{fairnessPct}</div>
+            <div style={{ fontSize:8.5, color:V2.muted, fontWeight:700, letterSpacing:'0.06em' }}>FAIR</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop:14, paddingTop:14, borderTop:`1px solid ${V2.hairline2}` }}>
+        <V2StatRow stats={[
+          { value: fmt(myDelta), label:'Your wkly Δ', color: myDelta >= 0 ? V2.ok : V2.injured },
+          { value: fmt(theirDelta), label:'Their wkly Δ', color: theirDelta >= 0 ? V2.ok : V2.warn },
+          {
+            value: ageDelta == null ? '—' : `${ageDelta > 0 ? '+' : ''}${Number(ageDelta).toFixed(1)} yr`,
+            label:'Avg age Δ',
+            color: ageDelta == null ? V2.muted : (ageDelta <= 0 ? V2.ok : V2.warn),
+          },
+        ]}/>
+      </div>
+
+      {result.rationale ? (
+        <div style={{ marginTop:14, background:V2.surface2, borderRadius:12, padding:12, display:'flex', gap:10 }}>
+          <div style={{ flexShrink:0, marginTop:1 }}>{Icons.sparkle(V2.accent, 14)}</div>
+          <div style={{ fontSize:13, color:V2.body, lineHeight:1.55 }}>{result.rationale}</div>
+        </div>
+      ) : null}
+
+      {(result.model || result.cached) ? (
+        <div style={{ marginTop:10, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <div style={{ fontSize:10, color:V2.muted, fontFamily:V2.fontMono, letterSpacing:'0.04em' }}>
+            {result.cached ? 'CACHED' : 'FRESH'}{result.model ? ` · ${result.model}` : ''}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function V2TradeGrader({ model }) {
+  const [give, setGive] = React.useState([]);
+  const [get, setGet] = React.useState([]);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const [result, setResult] = React.useState(null);
+
+  const ready = give.length > 0 && get.length > 0 && !loading;
+
+  const grade = async () => {
+    if (!ready) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/trades/grade', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ give: give.map(p => p.id), get: get.map(p => p.id) }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = body && body.detail ? String(body.detail) : `Grade failed (${res.status})`;
+        throw new Error(detail);
+      }
+      setResult(body);
+    } catch (e) {
+      setError(e && e.message ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div style={{ padding:'4px 16px 32px', display:'flex', flexDirection:'column', gap:14 }}>
-      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
-        <V2Eyebrow>Paste an offer</V2Eyebrow>
-        <textarea
-          value={text}
-          onChange={e=>setText(e.target.value)}
-          placeholder={"e.g.\nYou give: Tobias Reyna\nYou get: Niko Castellanos, Rell Brookings"}
-          style={{
-            width:'100%', minHeight:110, marginTop:8,
-            border:`1px solid ${V2.hairline}`, borderRadius:12,
-            padding:'12px 14px', fontSize:13.5, fontFamily:'inherit', outline:'none', resize:'vertical',
-            background:V2.surface2, color:V2.ink, lineHeight:1.5,
-          }}/>
-        <div style={{ marginTop:14 }}>
-          <V2Primary onClick={grade} sub={graded?'Re-run with new context →':'Skipper analyzes vs. your roster shape & league context'}>
-            {Icons.sparkle('#fff', 14)} {graded?'Re-grade with Claude':'Grade with Claude'}
-          </V2Primary>
-        </div>
-      </div>
-
-      {graded && (
-        <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
-            <div>
-              <V2Eyebrow color={V2.ok}>Skipper grade</V2Eyebrow>
-              <div style={{ fontSize:48, fontWeight:600, color:V2.ok, letterSpacing:'-0.03em', lineHeight:1, marginTop:6, fontFamily:V2.fontDisplay }}>A−</div>
-              <div style={{ fontSize:11.5, color:V2.muted, marginTop:6 }}>Take it · solid value for both sides</div>
-            </div>
-            <div style={{ width:74, height:74, position:'relative', flexShrink:0 }}>
-              <svg width="74" height="74" viewBox="0 0 74 74">
-                <circle cx="37" cy="37" r="30" fill="none" stroke={V2.hairline} strokeWidth="6"/>
-                <circle cx="37" cy="37" r="30" fill="none" stroke={V2.ok} strokeWidth="6"
-                  strokeDasharray={`${TRADE.fairness * 188.5} 188.5`} transform="rotate(-90 37 37)" strokeLinecap="round"/>
-              </svg>
-              <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center' }}>
-                <div style={{ fontSize:14, fontWeight:700, fontVariantNumeric:'tabular-nums', fontFamily:V2.fontMono }}>{(TRADE.fairness*100).toFixed(0)}</div>
-                <div style={{ fontSize:8.5, color:V2.muted, fontWeight:700, letterSpacing:'0.06em' }}>FAIR</div>
-              </div>
-            </div>
-          </div>
-
-          <div style={{ marginTop:14, paddingTop:14, borderTop:`1px solid ${V2.hairline2}` }}>
-            <V2StatRow stats={[
-              { value:`+${TRADE.myDelta}`, label:'Your wkly Δ', color:V2.ok },
-              { value:`${TRADE.oppDelta}`, label:'Their wkly Δ', color:V2.warn },
-              { value:'-2 yr', label:'Avg age Δ', color:V2.ok },
-            ]}/>
-          </div>
-
-          <div style={{ marginTop:14, background:V2.surface2, borderRadius:12, padding:12, display:'flex', gap:10 }}>
-            <div style={{ flexShrink:0, marginTop:1 }}>{Icons.sparkle(V2.accent, 14)}</div>
-            <div style={{ fontSize:13, color:V2.body, lineHeight:1.55 }}>{TRADE.ai}</div>
-          </div>
-        </div>
-      )}
+      <V2PlayerPicker label="You give" source="mine" model={model} value={give} onChange={setGive}/>
+      <V2PlayerPicker label="You get" source="league" model={model} value={get} onChange={setGet}/>
 
       <div>
-        <div style={{ padding:'0 4px 8px' }}><V2Eyebrow>Recent</V2Eyebrow></div>
-        <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:14, overflow:'hidden' }}>
-          {RECENT_GRADES.map((g,i)=>(
-            <div key={g.id} style={{
-              padding:'12px 14px', borderBottom: i===RECENT_GRADES.length-1?'none':`1px solid ${V2.hairline2}`,
-              display:'flex', alignItems:'center', gap:12,
-            }}>
-              <div style={{
-                width:36, height:36, borderRadius:10, fontSize:13, fontWeight:800, color:'#fff',
-                background: g.accent==='good'?V2.ok:V2.injured, display:'flex', alignItems:'center', justifyContent:'center',
-                fontFamily:V2.fontMono,
-              }}>{g.grade}</div>
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{ fontSize:13.5, fontWeight:600, lineHeight:1.2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontFamily:V2.fontDisplay }}>{g.summary}</div>
-                <div style={{ fontSize:11, color:V2.muted, marginTop:3 }}>{g.when} · {g.taken?'accepted':'declined'}</div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <V2Primary onClick={grade} disabled={!ready} sub={ready ? 'Snapshot · cached on repeat' : 'Pick at least one player on each side'}>
+          {Icons.sparkle('#fff', 14)} {loading ? 'Grading…' : (result ? 'Re-grade' : 'Grade')}
+        </V2Primary>
       </div>
 
+      {error ? (
+        <div style={{
+          background:V2.badSoft, border:`1px solid ${V2.bad}`, borderRadius:12, padding:'10px 12px',
+          fontSize:12.5, color:V2.bad,
+        }}>{error}</div>
+      ) : null}
+
+      {result ? <V2TradeGradeCard result={result}/> : null}
+
       <div style={{ background:V2.surface2, border:`1px dashed ${V2.hairline}`, borderRadius:14, padding:16, textAlign:'center' }}>
-        <V2Eyebrow>Coming · Phase 4</V2Eyebrow>
-        <div style={{ fontSize:13.5, color:V2.body, marginTop:8, lineHeight:1.55 }}>
-          <span style={{ fontWeight:700, color:V2.ink, fontFamily:V2.fontDisplay }}>Trade Scout</span> will run every 4 days and surface trade ideas tailored to your weakest positions.
+        <V2Eyebrow>Next</V2Eyebrow>
+        <div style={{ fontSize:13, color:V2.body, marginTop:8, lineHeight:1.55 }}>
+          Counter offers and "discuss with Skipper" land in the next slice.
         </div>
       </div>
     </div>
