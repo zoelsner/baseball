@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 import player_service
 import sandlot_db
 import sandlot_skipper
+import sandlot_trades
 import sandlot_waivers
 from sandlot_refresh import run_refresh
 
@@ -125,6 +126,29 @@ def latest_waiver_swaps() -> dict[str, Any]:
         log.exception("Waiver swaps failed")
         raise HTTPException(status_code=503, detail=f"Waiver swaps unavailable: {exc}") from exc
     return jsonable_encoder(payload)
+
+
+class TradeGradeIn(BaseModel):
+    give: list[str] = Field(..., min_length=1, max_length=5)
+    get: list[str] = Field(..., min_length=1, max_length=5)
+
+
+@app.post("/api/trades/grade")
+def grade_trade(payload: TradeGradeIn) -> dict[str, Any]:
+    try:
+        snapshot_row = sandlot_db.latest_successful_snapshot()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
+    if not snapshot_row:
+        raise HTTPException(status_code=409, detail="No Fantrax snapshot yet — run a refresh first")
+    try:
+        result = sandlot_trades.grade_offer(snapshot_row, payload.give, payload.get)
+    except sandlot_trades.TradeGradeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("Trade grade failed")
+        raise HTTPException(status_code=500, detail=f"Trade grade failed: {exc}") from exc
+    return jsonable_encoder(result)
 
 
 class SkipperMessageIn(BaseModel):
@@ -377,14 +401,17 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
 def _player_index(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Flat list of every player the snapshot knows about.
 
-    Frontend builds a lowercased-name -> fantrax_id map from this so
-    Skipper chat replies can wrap full-name mentions as profile links
-    even when the model forgets to emit a [[name|id]] tag.
+    Frontend uses this two ways:
+    1. Skipper chat replies: lowercased-name -> fantrax_id map so full-name
+       mentions become profile links even when the model forgets to emit a
+       [[name|id]] tag.
+    2. Trade tab pickers: filter by `source` ("mine" / "league" / "free_agent")
+       to populate the give/get autocompletes.
     """
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
 
-    def add(rows: Any) -> None:
+    def add(rows: Any, *, source: str, team_id: str | None = None) -> None:
         for r in rows or []:
             if not isinstance(r, dict):
                 continue
@@ -393,12 +420,27 @@ def _player_index(data: dict[str, Any]) -> list[dict[str, Any]]:
             if not pid or not name or pid in seen:
                 continue
             seen.add(pid)
-            out.append({"id": pid, "name": name, "team": r.get("team")})
+            out.append({
+                "id": pid,
+                "name": name,
+                "team": r.get("team"),
+                "slot": r.get("slot"),
+                "positions": r.get("positions"),
+                "fppg": r.get("fppg"),
+                "age": r.get("age"),
+                "source": source,
+                "team_id": team_id,
+            })
 
-    add((data.get("roster") or {}).get("rows"))
-    for team in (data.get("all_team_rosters") or {}).values():
-        add((team or {}).get("rows"))
-    add((data.get("free_agents") or {}).get("players"))
+    add((data.get("roster") or {}).get("rows"), source="mine",
+        team_id=data.get("team_id"))
+    for tid, team in (data.get("all_team_rosters") or {}).items():
+        if not isinstance(team, dict):
+            continue
+        if team.get("is_me"):
+            continue
+        add(team.get("rows"), source="league", team_id=tid)
+    add((data.get("free_agents") or {}).get("players"), source="free_agent")
     return out
 
 
