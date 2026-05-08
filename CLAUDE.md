@@ -45,6 +45,16 @@ There is **no test suite** — no `tests/`, no `conftest.py`, no pytest in `requ
 - Snapshots are stored as JSONB in `snapshots.data`. The frontend reads from `_snapshot_payload()` in `sandlot_api.py`, which derives a flat shape (roster rows, standings, player_index) from the raw blob.
 - Skipper chat: primary `moonshotai/kimi-k2`, fallback `tencent/hy3-preview:free`. Streams via SSE through `sandlot_skipper.SkipperClient`. Fallback only triggers on **pre-stream** errors / empty stream — mid-stream cutoffs are not retried in V1.
 - Single-user app — Sandlot routes are mostly unauthenticated by design. `/api/refresh` is the only one with an optional `SANDLOT_REFRESH_TOKEN` guard.
+- **Cached-AI pattern** (`ai_briefs` table): deterministic compute → AI overlay → cache by `(snapshot_id, brief_type, subject_key)` with `input_hash` for staleness. `sandlot_waivers.py` and `sandlot_trades.py` are reference. Use `sandlot_db.{get,set}_ai_brief` for new cached-AI features.
+- **Model order helpers** in `sandlot_skipper`: `default_model_order()` = Kimi-first (chat default). For cold short prompts (takes, grades), pass `model_order=(fallback_model(), primary_model())` to put Tencent first.
+- **Snapshot blob shape**: `data["roster"]["rows"]` (mine), `data["all_team_rosters"]` (`{team_id: {rows, is_me, ...}}`), `data["free_agents"]["players"]`, `data["standings"]`. `_player_index()` flattens all three with a `source` field.
+
+## Git workflow
+
+- **Non-trivial work goes through PRs.** Branch `<type>/<issue#>-<slug>`, open PR, wait for CI green, merge with `--squash --delete-branch`. Direct push to `main` is fine for one-line fixes only.
+- **CI** (`.github/workflows/ci.yml`) runs two jobs on every PR: `python-import-smoke` (imports every Sandlot module) and `jsx-parse` (Babel-parses every `web/sandlot/*.jsx`). No tests, so green CI ≠ "works" — just "doesn't break boot".
+- **Labels** (`gh label list`): `type:feature` / `type:bug` / `type:chore`, `area:backend` / `area:frontend`. Use both axes when filing.
+- `gh` is authed as `zoelsner` for `zoelsner/baseball`. Use the `distill-issue` skill (`.claude/skills/distill-issue/SKILL.md`) for structured issues.
 
 ## Deploy
 
