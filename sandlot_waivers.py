@@ -45,6 +45,7 @@ GENERIC_POSITIONS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "HIT", "
 PITCHER_POSITIONS = {"SP", "RP", "P"}
 HITTER_POSITIONS = {"C", "1B", "2B", "3B", "SS", "OF", "UT"}
 STATUS_ISSUE_TOKENS = ("DTD", "OUT", "IL", "IL10", "IL60", "IR", "SUSP", "NA", "D/L")
+INJURY_STASH_TOKENS = ("IL", "IL10", "IL60", "IR", "D/L")
 
 WAIVER_SWAP_SYSTEM_PROMPT = """You explain one deterministic fantasy baseball waiver swap.
 
@@ -91,6 +92,8 @@ def payload_for_snapshot(
         "weak_positions": [],
         "free_agent_count": len(fa_players),
         "move_out_count": 0,
+        "protected_move_out_count": 0,
+        "protected_move_outs": [],
     }
     if not fa_players:
         cards: list[dict[str, Any]] = []
@@ -137,7 +140,7 @@ def build_waiver_cards(
     limit: int = CARD_LIMIT,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     weak_positions = _weak_positions(roster_rows)
-    move_candidates = _move_out_candidates(roster_rows, weak_positions)
+    move_candidates, protected_move_outs = _move_out_candidates(roster_rows, weak_positions)
     add_candidates = [_add_candidate(p) for p in fa_players]
     add_candidates = [p for p in add_candidates if p and p["fpg"] > 0]
 
@@ -192,6 +195,8 @@ def build_waiver_cards(
         "free_agent_count": len(fa_players),
         "usable_add_count": len(add_candidates),
         "move_out_count": len(move_candidates),
+        "protected_move_out_count": len(protected_move_outs),
+        "protected_move_outs": protected_move_outs[:8],
         "candidate_count": len(candidates),
     }
     return selected, diagnostics
@@ -285,13 +290,17 @@ def _add_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) -> list[dict[str, Any]]:
+def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
     out: list[dict[str, Any]] = []
+    protected: list[str] = []
     for row in rows:
         if not isinstance(row, dict) or not row.get("name"):
             continue
         tokens = _position_tokens(row)
         fpg = _number(row.get("fppg"))
+        if _protect_injury_stash(row, fpg):
+            protected.append(str(row.get("name") or "Unknown player"))
+            continue
         is_bench = _is_bench(row)
         status_issue = _has_status_issue(row)
         weak_starter = bool(tokens & set(weak_positions)) and not is_bench and not status_issue
@@ -315,7 +324,7 @@ def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) 
             }
         )
     if out:
-        return out
+        return out, protected
 
     fallback = []
     for row in rows:
@@ -323,6 +332,9 @@ def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) 
             continue
         fpg = _number(row.get("fppg"))
         if fpg is None:
+            continue
+        if _protect_injury_stash(row, fpg):
+            protected.append(str(row.get("name") or "Unknown player"))
             continue
         tokens = _position_tokens(row)
         fallback.append(
@@ -343,7 +355,7 @@ def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) 
             }
         )
     fallback.sort(key=lambda p: (p["fpg"], p["name"]))
-    return fallback[:6]
+    return fallback[:6], protected
 
 
 def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak_positions: list[str]) -> dict[str, Any] | None:
@@ -586,6 +598,24 @@ def _same_position_group(a: set[str], b: set[str]) -> bool:
 def _has_status_issue(row: dict[str, Any]) -> bool:
     joined = " ".join(str(row.get(k) or "") for k in ("injury", "status", "slot", "slot_full")).upper()
     return any(token in joined for token in STATUS_ISSUE_TOKENS)
+
+
+def _has_injury_stash_status(row: dict[str, Any]) -> bool:
+    joined = " ".join(str(row.get(k) or "") for k in ("injury", "status")).upper()
+    return any(token in joined for token in INJURY_STASH_TOKENS)
+
+
+def _protect_injury_stash(row: dict[str, Any], _fpg: float | None) -> bool:
+    """Do not turn missing current-season production into a drop suggestion.
+
+    Fantrax can report IL/IR players with misleading current-season lines:
+    sometimes 0 FP/G because they have not played, sometimes a good FP/G from
+    a small pre-injury sample. Without a separate current-news signal, injury
+    status is not enough evidence to recommend moving that player out. Keep
+    those players out of the waiver-drop board until a richer injury/news layer
+    can classify return timing and long-absence risk.
+    """
+    return _has_injury_stash_status(row)
 
 
 def _is_bench(row: dict[str, Any]) -> bool:

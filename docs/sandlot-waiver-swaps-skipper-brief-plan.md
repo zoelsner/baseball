@@ -100,12 +100,14 @@ Never use the largest numeric `_cells` value. That can turn player rank into fak
 Move-out candidates come from:
 
 - all bench players
-- injured, DTD, OUT, IL, or IR players
+- injured, DTD, OUT, IL, or IR players, with a safety guard for IL/IR stashes
 - weak starters when the free agent shares position eligibility or fills the same roster need
 
 Use `fppg` from roster rows as `move_out_fpg`.
 
 Young or unknown-age players are not hard-excluded. They receive a dynasty warning.
+
+Safety rule: do not suggest moving out an IL/IR player unless a separate current-news/long-absence signal exists. A current-season Fantrax line can be misleading for injured players: `0 FP/G` can mean "has not played yet," while a small pre-injury sample can overstate or understate the real decision. These players should be counted in diagnostics as protected move-out candidates until the news layer can classify return timing.
 
 ### Position Matching
 
@@ -167,6 +169,8 @@ Penalties:
 - `-1.0` if move-out age is 24 or younger
 
 Hide cards with `net_delta <= 0` unless the move-out player has an injury/status issue and the add has a usable positive score.
+
+Before scoring, filter out protected IL/IR stashes. This keeps the deterministic board from recommending drops for injured high-value players solely because Fantrax reports a stale, missing, or contextless current-season FP/G while they are out.
 
 Deduping:
 
