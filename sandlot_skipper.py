@@ -54,10 +54,30 @@ DEEP_MATCHUP_KEYWORDS = (
     "deep weekly matchup", "thorough matchup",
 )
 
+# Phrases that ask about the waiver wire / free agents / pickups. Only
+# inject `free_agents` into context on these — the FA list is large.
+WAIVER_KEYWORDS = (
+    "waiver", "free agent", "free agents", "fa ", "pickup", "pick up",
+    "pick-up", "drop", "add ", "should i add", "add/drop", "add or drop",
+    "stream", "streamer",
+)
+
+# Per-position cap when we do inject free agents. Keeps context bounded.
+FREE_AGENTS_PER_POS = 5
+
+# How many recent transactions / pending trades to surface.
+TRANSACTIONS_KEEP = 10
+RECENT_GAMES_KEEP = 5
+
 
 def is_deep_matchup_request(prompt: str) -> bool:
     p = (prompt or "").lower()
     return any(kw in p for kw in DEEP_MATCHUP_KEYWORDS)
+
+
+def is_waiver_request(prompt: str) -> bool:
+    p = (prompt or "").lower()
+    return any(kw in p for kw in WAIVER_KEYWORDS)
 
 SYSTEM_PROMPT = """You are Skipper, a fantasy baseball assistant for a 12-team Fantrax keeper league.
 
@@ -68,6 +88,11 @@ Rules:
 - Never answer with only "Data", "Data unavailable", or another one-word refusal.
 - Cite players by name. Cite numbers when relevant (FP/G, FPts, age, slot, injury status).
 - For matchup questions, prefer the `matchup` object for score/opponent, then use both rosters to call out concrete pressure points. If exact live score is missing, say that briefly and still give the best roster-based read.
+- For "win probability" / "chance to win" / "odds" questions, cite `win_probability.win_pct_pretty` and the `win_probability.method` tag. The number is computed deterministically from the snapshot (roster + form + probable starters); do not invent your own probability. Mention `confidence` when it's not "high".
+- For "what's coming up" / "who's playing tomorrow" / probable-starter questions, use `probable_pitchers.by_date` and `mlb_recent_games`.
+- For roster-construction questions (drops, adds, waivers), use `transactions`, `pending_trades`, and (when present) `free_agents`.
+- Today's lineup awareness: `lineup_today` reports active starters in_action vs idle vs injured for today's MLB slate.
+- Week-over-week trend: `standings_delta` reports rank/W/L change vs 7 days ago.
 - No emojis. No throat-clearing intros ("Great question!"). No filler outros.
 - Markdown allowed for short lists or **emphasis**. Avoid headers and tables for chat-length replies. When you use a bulleted list, put each "- " marker on its own line (no inline " - " separators).
 - The user's team rows are flagged with `is_me: true`. Other teams (when present) are tier 3 context.
@@ -184,8 +209,20 @@ def _slim_matchup(matchup: dict[str, Any] | None) -> dict[str, Any] | None:
     return {k: matchup.get(k) for k in keep}
 
 
-def build_context(tier: int, snapshot: dict[str, Any], prompt: str = "") -> str:
-    """Render the snapshot as a compact JSON-ish text block for the model."""
+def build_context(
+    tier: int,
+    snapshot: dict[str, Any],
+    prompt: str = "",
+    *,
+    extras: dict[str, Any] | None = None,
+) -> str:
+    """Render the snapshot as a compact JSON-ish text block for the model.
+
+    `extras` is for API-derived fields that aren't on the raw blob (e.g.
+    `lineup_today`, `standings_delta`, `win_probability` computed from
+    sandlot_api / sandlot_winprob). When omitted we still surface what
+    lives directly on the blob.
+    """
     import json
 
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
@@ -199,6 +236,41 @@ def build_context(tier: int, snapshot: dict[str, Any], prompt: str = "") -> str:
     }
     if matchup:
         ctx["matchup"] = _slim_matchup(matchup)
+
+    # Always-on derived signals (cheap, ~1 KB each, real Skipper-relevant data).
+    extras = extras or {}
+    win_probability = extras.get("win_probability") or snapshot.get("win_probability")
+    if win_probability:
+        ctx["win_probability"] = _slim_win_probability(win_probability)
+    lineup_today = extras.get("lineup_today") or snapshot.get("lineup_today")
+    if lineup_today:
+        ctx["lineup_today"] = lineup_today
+    standings_delta = extras.get("standings_delta") or snapshot.get("standings_delta")
+    if standings_delta:
+        ctx["standings_delta"] = standings_delta
+
+    # Snapshot-blob fields we previously hid from the model.
+    transactions = _slim_transactions(snapshot.get("transactions"))
+    if transactions:
+        ctx["transactions_recent"] = transactions
+    pending_trades = _slim_pending_trades(snapshot.get("pending_trades"))
+    if pending_trades:
+        ctx["pending_trades"] = pending_trades
+    probables = _slim_probable_pitchers(snapshot.get("probable_pitchers"))
+    if probables:
+        ctx["probable_pitchers"] = probables
+
+    # Recent form for active rostered players, only when the prompt is
+    # form-shaped — keeps context tight on routine questions.
+    if _is_form_request(prompt):
+        recent = _slim_recent_form(snapshot.get("mlb_recent_games"), snapshot)
+        if recent:
+            ctx["recent_form"] = recent
+
+    if is_waiver_request(prompt):
+        free_agents = _slim_free_agents(snapshot.get("free_agents"))
+        if free_agents:
+            ctx["free_agents"] = free_agents
 
     # Deep matchup: include only the opponent's roster, not every team — the
     # user is asking for a slot-by-slot read against this week's opponent
@@ -232,7 +304,163 @@ def _available_data(snapshot: dict[str, Any]) -> dict[str, bool]:
         "matchup": bool(snapshot.get("matchup")),
         "transactions": bool(snapshot.get("transactions")),
         "pending_trades": bool(snapshot.get("pending_trades")),
+        "probable_pitchers": bool((snapshot.get("probable_pitchers") or {}).get("by_date")),
+        "mlb_recent_games": bool(snapshot.get("mlb_recent_games")),
+        "win_probability": bool(snapshot.get("win_probability")),
+        "lineup_today": bool(snapshot.get("lineup_today")),
+        "standings_delta": bool(snapshot.get("standings_delta")),
     }
+
+
+def _slim_win_probability(wp: dict[str, Any]) -> dict[str, Any]:
+    """Strip win-prob payload to fields a model should cite."""
+    if not isinstance(wp, dict):
+        return {}
+    keep = (
+        "method", "win_pct", "win_pct_pretty", "confidence",
+        "my_score", "opp_score",
+        "my_proj_remaining", "opp_proj_remaining",
+        "my_proj_total", "opp_proj_total",
+        "margin_now", "margin_proj",
+        "days_total", "elapsed_days", "days_remaining",
+        "bench_upside",
+    )
+    out = {k: wp.get(k) for k in keep if wp.get(k) is not None}
+    breakdown = wp.get("active_breakdown") or []
+    if breakdown:
+        out["active_breakdown_top"] = [
+            {k: row.get(k) for k in ("name", "slot", "team", "fppg", "form", "expected_remaining")}
+            for row in breakdown[:5]
+            if isinstance(row, dict)
+        ]
+    return out
+
+
+def _slim_transactions(transactions: Any) -> list[dict[str, Any]]:
+    if not isinstance(transactions, list):
+        return []
+    keep = ("id", "type", "player_id", "player_name", "team_id", "team_name",
+            "drop_player_id", "drop_player_name", "period", "timestamp", "status")
+    rows = []
+    for t in transactions[:TRANSACTIONS_KEEP]:
+        if not isinstance(t, dict):
+            continue
+        rows.append({k: t.get(k) for k in keep if t.get(k) is not None})
+    return rows
+
+
+def _slim_pending_trades(trades: Any) -> list[dict[str, Any]]:
+    if not isinstance(trades, list):
+        return []
+    out = []
+    for t in trades:
+        if not isinstance(t, dict):
+            continue
+        out.append({
+            "id": t.get("id"),
+            "status": t.get("status"),
+            "proposed_at": t.get("proposed_at") or t.get("timestamp"),
+            "from_team": t.get("from_team") or t.get("proposing_team"),
+            "to_team": t.get("to_team") or t.get("receiving_team"),
+            "from_players": t.get("from_players") or t.get("proposing_players") or [],
+            "to_players": t.get("to_players") or t.get("receiving_players") or [],
+        })
+    return out
+
+
+def _slim_probable_pitchers(probables: Any) -> dict[str, Any]:
+    """Keep only the by_date map (most useful for chat); drop large indexes."""
+    if not isinstance(probables, dict):
+        return {}
+    by_date = probables.get("by_date") or {}
+    if not by_date:
+        return {}
+    return {"by_date": by_date}
+
+
+_FORM_KEYWORDS = (
+    "form", "lately", "recent", "trend", "trending",
+    "hot", "cold", "slumping", "streak",
+    "last week", "last 7", "past week",
+    "performance", "performing",
+)
+
+
+def _is_form_request(prompt: str) -> bool:
+    p = (prompt or "").lower()
+    return any(kw in p for kw in _FORM_KEYWORDS)
+
+
+def _slim_recent_form(recent: Any, snapshot: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Surface last-5 games per *active* player on my roster only."""
+    if not isinstance(recent, dict) or not recent:
+        return {}
+    my_rows = ((snapshot.get("roster") or {}).get("rows")) or []
+    active_ids: set[str] = set()
+    for row in my_rows:
+        if not isinstance(row, dict):
+            continue
+        slot = (row.get("slot") or "").upper()
+        if slot in {"BN", "RES", "MIN", "IL", "IR"}:
+            continue
+        fid = row.get("id")
+        if fid:
+            active_ids.add(str(fid))
+    out: dict[str, list[dict[str, Any]]] = {}
+    for fid, games in recent.items():
+        if str(fid) not in active_ids or not isinstance(games, list):
+            continue
+        slim = []
+        for g in games[-RECENT_GAMES_KEEP:]:
+            if not isinstance(g, dict):
+                continue
+            slim.append({
+                "date": g.get("date"),
+                "fpts": g.get("fpts_estimated"),
+                "opp": g.get("opponent"),
+            })
+        if slim:
+            out[str(fid)] = slim
+    return out
+
+
+def _slim_free_agents(fa: Any) -> dict[str, list[dict[str, Any]]]:
+    """Top FREE_AGENTS_PER_POS free agents per position by FP/G."""
+    if not isinstance(fa, dict):
+        return {}
+    players = fa.get("players")
+    if not isinstance(players, list):
+        return {}
+    by_pos: dict[str, list[dict[str, Any]]] = {}
+    for p in players:
+        if not isinstance(p, dict):
+            continue
+        positions = p.get("positions") or ""
+        if isinstance(positions, list):
+            tokens = [str(x).strip().upper() for x in positions if str(x).strip()]
+        else:
+            tokens = [t.strip().upper() for t in str(positions).split(",") if t.strip()]
+        if not tokens:
+            tokens = ["UNK"]
+        slim = {
+            "id": p.get("id"),
+            "name": p.get("name"),
+            "team": p.get("team"),
+            "positions": positions,
+            "fppg": p.get("fppg"),
+            "fpts": p.get("fpts"),
+            "injury": p.get("injury"),
+        }
+        for pos in tokens:
+            by_pos.setdefault(pos, []).append(slim)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for pos, rows in by_pos.items():
+        rows.sort(
+            key=lambda r: (_num(r.get("fppg")) if _num(r.get("fppg")) is not None else -999),
+            reverse=True,
+        )
+        out[pos] = rows[:FREE_AGENTS_PER_POS]
+    return out
 
 
 def deterministic_reply(user_msg: str, snapshot: dict[str, Any]) -> str | None:

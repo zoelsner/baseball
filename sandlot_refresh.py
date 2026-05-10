@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 import auth
 import fantrax_data
 import sandlot_db
+import sandlot_form
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,12 @@ def run_refresh(source: str = "manual") -> RefreshResult:
         team_id = os.environ["FANTRAX_TEAM_ID"]
         session, cookies, cookie_source = _session_from_available_cookies()
         snapshot = fantrax_data.collect_all(session, league_id, team_id)
+        if not _looks_like_failed_auth(snapshot) and os.environ.get("SANDLOT_FORM_WARM_DISABLED") != "1":
+            try:
+                sandlot_form.enrich_snapshot(snapshot)
+            except Exception as exc:
+                log.exception("sandlot_form.enrich_snapshot failed (continuing)")
+                snapshot.setdefault("errors", []).append(f"mlb_enrichment: {exc}")
         duration_ms = int((time.perf_counter() - started) * 1000)
         errors = [str(e) for e in (snapshot.get("errors") or [])]
         status = "failed" if _looks_like_failed_auth(snapshot) else "success"

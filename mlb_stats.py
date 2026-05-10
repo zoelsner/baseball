@@ -29,6 +29,7 @@ MEDIA_ITEM_LIMIT = 5
 _PLAYER_INDEX_CACHE: dict[int, list[dict[str, Any]]] = {}
 _TEAM_ABBREV_CACHE: dict[int, dict[int, str]] = {}
 _SCHEDULE_CACHE: dict[str, set[str]] = {}
+_PROBABLE_CACHE: dict[tuple[str, str], dict[str, Any]] = {}
 _CACHE_LOCK = threading.Lock()
 
 _TEAM_ABBREV_ALIASES = {
@@ -196,6 +197,90 @@ def games_today_team_abbrs(target_date: _date | None = None) -> set[str]:
             log.warning("MLB schedule fetch failed for %s: %s", key, exc)
         _SCHEDULE_CACHE[key] = teams
         return teams
+
+
+def probable_pitchers_for_dates(
+    start_date: _date,
+    end_date: _date,
+) -> dict[str, Any]:
+    """Probable starters per team between start_date and end_date inclusive.
+
+    MLB only publishes probables a few days out — beyond ~3-5 days the
+    `probablePitcher` field is empty for most games. We surface what's
+    available and the caller decides how to degrade confidence.
+
+    Returns:
+        {
+          "by_date": {date_iso: {team_abbr: {"name", "mlb_id"}}},
+          "by_pitcher_mlb_id": {str(mlb_id): [date_iso, ...]},
+          "fetched_for": [date_iso, ...],
+        }
+    """
+    if end_date < start_date:
+        return {"by_date": {}, "by_pitcher_mlb_id": {}, "fetched_for": []}
+    key = (start_date.isoformat(), end_date.isoformat())
+    cached = _PROBABLE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    with _CACHE_LOCK:
+        cached = _PROBABLE_CACHE.get(key)
+        if cached is not None:
+            return cached
+        by_date: dict[str, dict[str, dict[str, Any]]] = {}
+        by_pitcher: dict[str, list[str]] = {}
+        try:
+            url = f"{BASE_URL}/schedule"
+            resp = requests.get(
+                url,
+                params={
+                    "sportId": 1,
+                    "startDate": key[0],
+                    "endDate": key[1],
+                    "hydrate": "probablePitcher",
+                    "fields": "dates,date,games,teams,away,home,team,id,probablePitcher,fullName",
+                },
+                timeout=DEFAULT_TIMEOUT,
+            )
+            resp.raise_for_status()
+            abbrev_map = _get_team_abbreviations(start_date.year)
+            for d in (resp.json().get("dates") or []):
+                date_iso = d.get("date")
+                if not date_iso:
+                    continue
+                day_bucket = by_date.setdefault(date_iso, {})
+                for g in (d.get("games") or []):
+                    teams = g.get("teams") or {}
+                    for side in ("away", "home"):
+                        side_block = teams.get(side) or {}
+                        team_id = ((side_block.get("team") or {}).get("id"))
+                        probable = side_block.get("probablePitcher") or {}
+                        pitcher_id = probable.get("id")
+                        pitcher_name = probable.get("fullName")
+                        if team_id is None or pitcher_id is None:
+                            continue
+                        try:
+                            abbr = abbrev_map.get(int(team_id))
+                        except (TypeError, ValueError):
+                            abbr = None
+                        if not abbr:
+                            continue
+                        norm_abbr = _normalize_team(abbr) or abbr
+                        day_bucket[norm_abbr] = {"name": pitcher_name, "mlb_id": pitcher_id}
+                        by_pitcher.setdefault(str(pitcher_id), []).append(date_iso)
+            log.info(
+                "MLB probable pitchers %s..%s: %d dates with probables",
+                key[0], key[1], len(by_date),
+            )
+        except Exception as exc:
+            log.warning("MLB probable pitchers fetch failed for %s..%s: %s", key[0], key[1], exc)
+        result = {
+            "by_date": by_date,
+            "by_pitcher_mlb_id": by_pitcher,
+            "fetched_for": [(start_date.fromordinal(start_date.toordinal() + i)).isoformat()
+                            for i in range((end_date - start_date).days + 1)],
+        }
+        _PROBABLE_CACHE[key] = result
+        return result
 
 
 def fetch_game_log(

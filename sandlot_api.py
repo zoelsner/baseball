@@ -21,6 +21,7 @@ import player_service
 import sandlot_db
 import sandlot_skipper
 import sandlot_waivers
+import sandlot_winprob
 from sandlot_refresh import run_refresh
 
 log = logging.getLogger(__name__)
@@ -263,7 +264,20 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
 
     snapshot = snapshot_row.get("data") or {}
     tier = sandlot_skipper.detect_tier(user_text, snapshot)
-    context_block = sandlot_skipper.build_context(tier, snapshot, prompt=user_text)
+    roster_rows = (snapshot.get("roster") or {}).get("rows") or []
+    my_team_id = snapshot.get("team_id") or snapshot_row.get("team_id")
+    my_record = (snapshot.get("standings") or {}).get("my_record")
+    try:
+        win_probability_extra = sandlot_winprob.compute(snapshot)
+    except Exception:
+        log.exception("win_probability compute failed for skipper")
+        win_probability_extra = None
+    skipper_extras = {
+        "lineup_today": _lineup_today(roster_rows),
+        "standings_delta": _standings_delta(my_team_id, my_record),
+        "win_probability": win_probability_extra,
+    }
+    context_block = sandlot_skipper.build_context(tier, snapshot, prompt=user_text, extras=skipper_extras)
     history = sandlot_db.list_chat_messages(session_id)
     messages = sandlot_skipper.build_messages(history, user_text, context_block)
     deterministic_reply = sandlot_skipper.deterministic_reply(user_text, snapshot)
@@ -355,6 +369,11 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     taken_at = row.get("taken_at")
     roster_rows = roster_meta.get("rows") or []
     my_team_id = data.get("team_id") or row.get("team_id")
+    try:
+        win_probability = sandlot_winprob.compute(data)
+    except Exception as exc:
+        log.exception("win_probability compute failed")
+        win_probability = {"error": str(exc), "method": sandlot_winprob.METHOD}
     return {
         "snapshot_id": row.get("id"),
         "taken_at": taken_at,
@@ -372,6 +391,7 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
         "player_index": _player_index(data),
         "lineup_today": _lineup_today(roster_rows),
         "standings_delta": _standings_delta(my_team_id, standings.get("my_record")),
+        "win_probability": win_probability,
         "errors": row.get("errors") or data.get("errors") or [],
     }
 
