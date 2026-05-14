@@ -56,10 +56,27 @@ DEEP_MATCHUP_KEYWORDS = (
     "deep weekly matchup", "thorough matchup",
 )
 
+MATCHUP_KEYWORDS = (
+    "matchup", "match-up", "match up", "against my", "against this",
+    "this week against", "how am i doing", "how's it going",
+    "how is it going", "anything i should be worried",
+    "anything should i be worried", "worried about",
+)
+
+DEPTH_KEYWORDS = (
+    "deep", "deeper", "in-depth", "in depth", "thorough", "detailed",
+    "slot by slot", "slot-by-slot", "analyze", "analysis",
+)
+
 
 def is_deep_matchup_request(prompt: str) -> bool:
     p = (prompt or "").lower()
     return any(kw in p for kw in DEEP_MATCHUP_KEYWORDS)
+
+
+def is_matchup_request(prompt: str) -> bool:
+    p = (prompt or "").lower()
+    return any(kw in p for kw in MATCHUP_KEYWORDS)
 
 SYSTEM_PROMPT = """You are Skipper, a fantasy baseball assistant for a 12-team Fantrax keeper league.
 
@@ -69,7 +86,8 @@ Rules:
 - Answer only from the snapshot. If a field is missing, say exactly what is missing and what nearby snapshot data is available. Do not speculate.
 - Never answer with only "Data", "Data unavailable", or another one-word refusal.
 - Cite players by name. Cite numbers when relevant (FP/G, FPts, age, slot, injury status).
-- For matchup questions, prefer the `matchup` object for score/opponent, then use both rosters to call out concrete pressure points. If exact live score is missing, say that briefly and still give the best roster-based read.
+- For matchup questions, prefer `matchup.projection` and `matchup.projection.drivers` when present. If `data_quality.projection_ready` is false, say data is incomplete and keep the answer score-based.
+- Describe projection confidence with plain bands ("comfortable edge", "slight edge", "toss-up", "uphill"), not precise percentages. Do not invent probability math.
 - No emojis. No throat-clearing intros ("Great question!"). No filler outros.
 - Markdown allowed for short lists or **emphasis**. Avoid headers and tables for chat-length replies. When you use a bulleted list, put each "- " marker on its own line (no inline " - " separators).
 - The user's team rows are flagged with `is_me: true`. Other teams (when present) are tier 3 context.
@@ -146,7 +164,9 @@ def _slim_player(p: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _slim_roster(roster: dict[str, Any] | None) -> dict[str, Any]:
+def _slim_roster(roster: dict[str, Any] | list[dict[str, Any]] | None) -> dict[str, Any]:
+    if isinstance(roster, list):
+        return {"rows": [_slim_player(p) for p in roster if isinstance(p, dict)]}
     if not isinstance(roster, dict):
         return {}
     return {
@@ -162,11 +182,19 @@ def _slim_roster(roster: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _slim_standings(standings: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(standings, dict):
-        return {}
+def _slim_standings(
+    standings: dict[str, Any] | list[dict[str, Any]] | None,
+    my_standing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     keep = ("rank", "team_id", "team_name", "win", "loss", "tie",
             "win_pct", "games_back", "fantasy_points", "streak", "waiver_order")
+    if isinstance(standings, list):
+        return {
+            "my_record": {k: my_standing.get(k) for k in keep} if isinstance(my_standing, dict) else None,
+            "records": [{k: r.get(k) for k in keep} for r in standings if isinstance(r, dict)],
+        }
+    if not isinstance(standings, dict):
+        return {}
     return {
         "my_record": {k: (standings.get("my_record") or {}).get(k) for k in keep}
                      if standings.get("my_record") else None,
@@ -183,7 +211,17 @@ def _slim_matchup(matchup: dict[str, Any] | None) -> dict[str, Any] | None:
         "my_score", "opponent_team_id", "opponent_team_name",
         "opponent_score", "margin",
     )
-    return {k: matchup.get(k) for k in keep}
+    out = {k: matchup.get(k) for k in keep}
+    if isinstance(matchup.get("projection"), dict):
+        out["projection"] = matchup["projection"]
+    return out
+
+
+def _data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
+    existing = snapshot.get("data_quality")
+    if isinstance(existing, dict):
+        return existing
+    return sandlot_data_quality.snapshot_data_quality(snapshot)
 
 
 def build_context(tier: int, snapshot: dict[str, Any], prompt: str = "") -> str:
@@ -191,15 +229,17 @@ def build_context(tier: int, snapshot: dict[str, Any], prompt: str = "") -> str:
     import json
 
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
-    data_quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+    data_quality = _data_quality(snapshot)
     ctx: dict[str, Any] = {
-        "snapshot_taken_at": snapshot.get("timestamp"),
+        "snapshot_id": snapshot.get("snapshot_id"),
+        "snapshot_taken_at": snapshot.get("taken_at") or snapshot.get("timestamp"),
         "team_id": snapshot.get("team_id"),
         "team_name": snapshot.get("team_name"),
         "available_data": _available_data(snapshot),
         "data_quality": data_quality,
         "my_roster": _slim_roster(snapshot.get("roster")),
-        "standings": _slim_standings(snapshot.get("standings")),
+        "roster_meta": snapshot.get("roster_meta") if isinstance(snapshot.get("roster_meta"), dict) else None,
+        "standings": _slim_standings(snapshot.get("standings"), snapshot.get("my_standing")),
     }
     if matchup:
         ctx["matchup"] = _slim_matchup(matchup)
@@ -236,28 +276,16 @@ def _available_data(snapshot: dict[str, Any]) -> dict[str, bool]:
         "matchup": bool(snapshot.get("matchup")),
         "transactions": bool(snapshot.get("transactions")),
         "pending_trades": bool(snapshot.get("pending_trades")),
+        "data_quality": bool(snapshot.get("data_quality")),
+        "player_index": bool(snapshot.get("player_index")),
     }
 
 
 def deterministic_reply(user_msg: str, snapshot: dict[str, Any]) -> str | None:
     """Return a direct non-LLM answer for known high-value product flows."""
     text = (user_msg or "").lower()
-    asks_matchup = any(
-        token in text
-        for token in (
-            "matchup", "match-up", "match up", "against my", "against this",
-            "this week against", "how am i doing", "how's it going",
-            "how is it going", "anything i should be worried",
-            "anything should i be worried", "worried about",
-        )
-    )
-    asks_depth = any(
-        token in text
-        for token in (
-            "deep", "deeper", "in-depth", "in depth", "thorough", "detailed",
-            "slot by slot", "slot-by-slot", "analyze", "analysis",
-        )
-    )
+    asks_matchup = is_matchup_request(text)
+    asks_depth = any(token in text for token in DEPTH_KEYWORDS)
     if asks_matchup and not asks_depth:
         return _matchup_read_reply(snapshot)
     return None
@@ -279,7 +307,7 @@ def is_broken_reply(reply: str | None) -> bool:
 
 def _matchup_read_reply(snapshot: dict[str, Any]) -> str:
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
-    data_quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+    data_quality = _data_quality(snapshot)
     roster = _slim_roster(snapshot.get("roster"))
     my_rows = roster.get("rows") or []
     all_rosters = snapshot.get("all_team_rosters") or {}
@@ -287,30 +315,34 @@ def _matchup_read_reply(snapshot: dict[str, Any]) -> str:
     opponent_rows = opponent.get("rows") if opponent else []
 
     lines: list[str] = []
-    if matchup:
-        opponent_name = matchup.get("opponent_team_name") or "your opponent"
-        my_score = _num(matchup.get("my_score"))
-        opp_score = _num(matchup.get("opponent_score"))
-        if my_score is not None and opp_score is not None:
-            margin = round(my_score - opp_score, 2)
-            if margin > 0:
-                state = f"You're up {margin:g}"
-            elif margin < 0:
-                state = f"You're down {abs(margin):g}"
-            else:
-                state = "You're tied"
-            period = matchup.get("period_name") or f"period {matchup.get('period_number')}"
-            lines.append(f"{state} against {opponent_name}: {my_score:g} to {opp_score:g} in {period}.")
-            if my_score == 0 and opp_score == 0:
-                lines.append("That usually means the period has not started or Fantrax has not posted scoring yet.")
+    score_line = _matchup_score_line(matchup)
+    projection = matchup.get("projection") if isinstance(matchup, dict) and isinstance(matchup.get("projection"), dict) else None
+    if projection and data_quality.get("projection_ready", True):
+        lines.append(_projection_matchup_line(matchup, projection))
+    elif matchup:
+        if score_line:
+            lines.append(score_line)
         else:
+            opponent_name = matchup.get("opponent_team_name") or "your opponent"
             lines.append(f"I found this week's opponent ({opponent_name}), but Fantrax did not return both live scores.")
+        if not data_quality.get("projection_ready", True):
+            lines.append(
+                "Data incomplete — score-based view only: "
+                + sandlot_data_quality.short_reason(data_quality, purpose="projection")
+                + "."
+            )
+        else:
+            lines.append("Projection is unavailable, so this read stays score-based.")
     else:
         lines.append("I do not have the live matchup scoreboard in this snapshot yet, but I can still read roster pressure from your latest Fantrax data.")
 
-    if not data_quality.get("projection_ready"):
+    if projection and data_quality.get("projection_ready", True):
+        lines.append("Biggest driver: " + _projection_driver_text(projection) + ".")
+        lines.append("Move read: " + _projection_move_text(projection) + ".")
+
+    if not projection and not data_quality.get("projection_ready", True) and not matchup:
         lines.append(
-            "Projection data is incomplete: "
+            "Data incomplete — score-based view only: "
             + sandlot_data_quality.short_reason(data_quality, purpose="projection")
             + "."
         )
@@ -320,6 +352,9 @@ def _matchup_read_reply(snapshot: dict[str, Any]) -> str:
         lines.append("Watch: " + "; ".join(concerns[:3]) + ".")
     elif my_rows:
         lines.append("No active injury or sub-1.0 FP/G flags show up in your lineup snapshot.")
+
+    if projection and data_quality.get("projection_ready", True):
+        return " ".join(line for line in lines if line)
 
     if opponent_rows:
         edges = _position_edges(my_rows, opponent_rows)
@@ -338,13 +373,112 @@ def _matchup_read_reply(snapshot: dict[str, Any]) -> str:
     return " ".join(line for line in lines if line)
 
 
+def _matchup_score_line(matchup: dict[str, Any] | None) -> str | None:
+    if not matchup:
+        return None
+    opponent_name = matchup.get("opponent_team_name") or "your opponent"
+    my_score = _num(matchup.get("my_score"))
+    opp_score = _num(matchup.get("opponent_score"))
+    if my_score is None or opp_score is None:
+        return None
+    margin = round(my_score - opp_score, 2)
+    if margin > 0:
+        state = f"You're up {margin:g}"
+    elif margin < 0:
+        state = f"You're down {abs(margin):g}"
+    else:
+        state = "You're tied"
+    period = matchup.get("period_name") or f"period {matchup.get('period_number')}"
+    return f"{state} against {opponent_name}: {my_score:g} to {opp_score:g} in {period}."
+
+
+def _projection_matchup_line(matchup: dict[str, Any], projection: dict[str, Any]) -> str:
+    opponent_name = matchup.get("opponent_team_name") or "your opponent"
+    band = _projection_band(projection)
+    projected_my = _num(projection.get("projected_my"))
+    projected_opp = _num(projection.get("projected_opp"))
+    margin = _num((projection.get("drivers") or {}).get("projected_margin"))
+    if margin is None and projected_my is not None and projected_opp is not None:
+        margin = projected_my - projected_opp
+    if margin is not None and margin > 0:
+        read = f"You're favored with a {band}"
+    elif margin is not None and margin < 0:
+        read = f"You're not favored; this is a {band}"
+    else:
+        read = "This projects as a toss-up"
+    if projected_my is not None and projected_opp is not None:
+        return f"{read} against {opponent_name}: projected {projected_my:g} to {projected_opp:g}."
+    return f"{read} against {opponent_name}."
+
+
+def _projection_band(projection: dict[str, Any]) -> str:
+    probability = _num(projection.get("win_probability"))
+    drivers = projection.get("drivers") if isinstance(projection.get("drivers"), dict) else {}
+    margin = _num(drivers.get("projected_margin"))
+    if probability is not None:
+        if probability >= 0.70:
+            return "comfortable edge"
+        if probability >= 0.55:
+            return "slight edge"
+        if probability > 0.45:
+            return "toss-up"
+        if probability > 0.30:
+            return "slight uphill"
+        return "steep uphill"
+    if margin is not None:
+        if margin >= 15:
+            return "comfortable edge"
+        if margin >= 5:
+            return "slight edge"
+        if margin > -5:
+            return "toss-up"
+        if margin > -15:
+            return "slight uphill"
+    return "steep uphill"
+
+
+def _projection_driver_text(projection: dict[str, Any]) -> str:
+    drivers = projection.get("drivers") if isinstance(projection.get("drivers"), dict) else {}
+    rest_delta = _num(drivers.get("rest_of_period_delta")) or 0
+    game_edge = _num(drivers.get("game_volume_edge")) or 0
+    current_margin = _num(drivers.get("current_margin")) or 0
+    if abs(rest_delta) >= 5:
+        direction = "toward you" if rest_delta > 0 else "toward the opponent"
+        return f"rest-of-period scoring swings {abs(rest_delta):g} points {direction}"
+    if abs(game_edge) >= 2:
+        if game_edge > 0:
+            return f"schedule volume favors you by {abs(game_edge):g} remaining games"
+        return f"schedule volume favors the opponent by {abs(game_edge):g} remaining games"
+    if current_margin > 0:
+        return f"the current {current_margin:g}-point lead is carrying the read"
+    if current_margin < 0:
+        return f"the current {abs(current_margin):g}-point deficit is carrying the read"
+    summary = drivers.get("summary")
+    if summary:
+        return str(summary)
+    return "remaining scoring is close enough that no single driver dominates"
+
+
+def _projection_move_text(projection: dict[str, Any]) -> str:
+    band = _projection_band(projection)
+    drivers = projection.get("drivers") if isinstance(projection.get("drivers"), dict) else {}
+    risk = str(drivers.get("risk_level") or "").lower()
+    if band == "comfortable edge" and risk == "low":
+        return "no forced move; avoid creating downside"
+    if "uphill" in band:
+        return "only chase a move that changes remaining games or upgrades the weakest active slot"
+    if band == "toss-up" or risk in {"medium", "high"}:
+        return "lineup and streamable game volume matter more than a cosmetic swap"
+    return "small active-slot gains matter, but the score does not need a panic move"
+
+
 def _missing_matchup_reply(snapshot: dict[str, Any]) -> str:
     """Backward-compatible wrapper kept for older tests/imports."""
     return _matchup_read_reply(snapshot)
 
 
 def _roster_summary_sentence(snapshot: dict[str, Any]) -> str:
-    standings = _slim_standings(snapshot.get("standings"))
+    standings = _slim_standings(snapshot.get("standings"), snapshot.get("my_standing"))
     mine = standings.get("my_record") or {}
     roster = _slim_roster(snapshot.get("roster"))
     roster_rows = roster.get("rows") or []

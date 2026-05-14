@@ -121,7 +121,7 @@ def _persist_projection_log(snapshot_id: int, snapshot: dict[str, Any]) -> None:
         record = sandlot_matchup.projection_log_payload(snapshot_id, snapshot, data_quality)
         if not record:
             return
-        sandlot_db.upsert_projection_log(**record)
+        sandlot_db.upsert_projection_log(**record, surface="api")
     except Exception:
         log.exception("Projection log write failed for snapshot_id=%s", snapshot_id)
 
