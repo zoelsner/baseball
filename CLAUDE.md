@@ -14,7 +14,7 @@ Anything prefixed `sandlot_` belongs to the web app. `mlb_stats.py` and `player_
 python audit.py                                                 # daily CLI (Selenium-prompts on first run)
 ```
 
-There is **no test suite** — no `tests/`, no `conftest.py`, no pytest in `requirements.txt`. Don't run `pytest`.
+There is **no Python test suite** — no `conftest.py`, no pytest in `requirements.txt`. Don't run `pytest`. End-to-end coverage lives in `tests/playwright/` (Playwright + TypeScript) and runs against the deployed Railway URL by default. See `tests/playwright/README.md`.
 
 ## Required env (`.env`)
 
@@ -31,7 +31,7 @@ There is **no test suite** — no `tests/`, no `conftest.py`, no pytest in `requ
 - **No `import`/`export` anywhere.** Babel's `env,react` presets don't transform module syntax — using it silently breaks the in-browser pipeline. Stick to top-level `function` / `const` declarations.
 - **Inter-file refs go through `window.*`.** Each file ends with `Object.assign(window, { Foo, Bar, ... })`. When you add a shared symbol, add it to that block or later files won't see it. Script load order in `index.html` matters: `atoms.jsx` → `data.jsx` → `data2.jsx` → `v2-pages.jsx`.
 - Files: `atoms.jsx` (tokens, `Sparkline`, `Avatar`, `Icons`), `data.jsx`/`data2.jsx` (mock fallback for when `DATABASE_URL` is unset), `v2-pages.jsx` (every page + the app shell `V2App`).
-- **Three navigation states in `V2App`:** `page` (active tab), `detail` (bottom-sheet via `V2PlayerSheet` — quick preview, opened from roster row tap), `pushed` (full overlay via `V2PlayerProfile` — fetches `/api/player/{id}`, opened from Skipper chat link). They are not the same component; don't conflate them.
+- **Two navigation states in `V2App`:** `page` (active tab from the bottom tab bar) and `detail` (player id → renders `V2PlayerSheet`, the bottom sheet that itself fetches `/api/player/{id}`). The sheet is opened by any roster row tap and dismissed via its `aria-label="Close"` button or backdrop click — Escape is not wired up.
 - **No `localStorage`.** Don't reach for it for new state.
 - **Validating `.jsx` edits**: `node --check` doesn't understand JSX, so the user's post-edit hook errors out (harmless). To actually validate JSX, use Babel:
   ```bash
