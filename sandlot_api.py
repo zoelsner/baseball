@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import player_service
+import sandlot_data_quality
 import sandlot_db
 import sandlot_matchup
 import sandlot_skipper
@@ -379,10 +380,11 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     data = row.get("data") or {}
     roster_meta = data.get("roster") or {}
     standings = data.get("standings") or {}
+    data_quality = sandlot_data_quality.snapshot_data_quality(data)
     matchup_block = data.get("matchup")
     matchup = None
     if isinstance(matchup_block, dict) and matchup_block:
-        matchup = {**matchup_block, "projection": sandlot_matchup.compute_projection(data)}
+        matchup = {**matchup_block, "projection": sandlot_matchup.compute_projection(data, data_quality)}
     taken_at = row.get("taken_at")
     return {
         "snapshot_id": row.get("id"),
@@ -398,6 +400,7 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
         "standings": standings.get("records") or [],
         "my_standing": standings.get("my_record"),
         "matchup": matchup,
+        "data_quality": data_quality,
         "player_index": _player_index(data),
         "errors": row.get("errors") or data.get("errors") or [],
     }
