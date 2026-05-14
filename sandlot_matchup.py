@@ -10,7 +10,7 @@ from typing import Any
 INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH"}
 BENCH_SLOTS = {"BN", "BE", "BENCH", "RES", "RESERVE"}
 UNAVAILABLE_INJURIES = {"OUT", "IL", "IL10", "IL60", "IR"}
-MODEL_VERSION = "matchup_projection_v1"
+MODEL_VERSION = "matchup_projection_v2"
 MIN_MEANINGFUL_POINTS_DELTA = 1.0
 MIN_MEANINGFUL_WIN_PROBABILITY_DELTA = 0.01
 HITTER_POSITIONS = {"C", "1B", "2B", "3B", "SS", "OF", "LF", "CF", "RF"}
@@ -29,6 +29,42 @@ SLOT_COMPATIBILITY = {
     "CI": {"1B", "3B"},
     "P": PITCHER_POSITIONS,
     "OF": {"OF", "LF", "CF", "RF"},
+}
+PITCHER_APPEARANCE_FLAGS = {
+    "confirmed_start",
+    "confirmedStart",
+    "expected_start",
+    "expectedStart",
+    "is_probable_starter",
+    "isProbableStarter",
+    "is_starting_pitcher",
+    "isStartingPitcher",
+    "probable_start",
+    "probableStart",
+    "projected_start",
+    "projectedStart",
+    "relief_appearance",
+    "reliefAppearance",
+    "scheduled_appearance",
+    "scheduledAppearance",
+    "scheduled_start",
+    "scheduledStart",
+    "starting",
+}
+PITCHER_APPEARANCE_FIELDS = {
+    "pitcher",
+    "pitcher_id",
+    "pitcherId",
+    "player",
+    "player_id",
+    "playerId",
+    "probable_pitcher",
+    "probablePitcher",
+    "scheduled_starter",
+    "scheduledStarter",
+    "starter",
+    "starting_pitcher",
+    "startingPitcher",
 }
 
 
@@ -763,23 +799,102 @@ def _games_remaining(row: dict[str, Any], period_end: date) -> int:
     if _is_unavailable(row):
         return 0
 
-    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
-    future_games = raw.get("future_games") or row.get("future_games") or {}
-    if isinstance(future_games, dict):
-        games = future_games.values()
-    elif isinstance(future_games, list):
-        games = future_games
-    else:
-        return 0
-
     count = 0
-    for game in games:
+    is_pitcher = _is_pitcher_row(row)
+    for game in _future_games(row):
         if not isinstance(game, dict):
             continue
         game_date = _parse_date(game.get("date"))
-        if game_date is not None and game_date <= period_end:
-            count += 1
+        if game_date is None or game_date > period_end:
+            continue
+        if is_pitcher and not _has_pitcher_specific_appearance(row, game):
+            continue
+        count += 1
     return count
+
+
+def _future_games(row: dict[str, Any]) -> list[Any]:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    future_games = row.get("future_games") if "future_games" in row else raw.get("future_games")
+    if isinstance(future_games, dict):
+        return list(future_games.values())
+    if isinstance(future_games, list):
+        return future_games
+    return []
+
+
+def _is_pitcher_row(row: dict[str, Any]) -> bool:
+    slot = _slot(row)
+    if slot in PITCHER_POSITIONS:
+        return True
+    tokens = _eligibility_tokens(row)
+    return bool(tokens & PITCHER_POSITIONS) and not bool(tokens & HITTER_POSITIONS)
+
+
+def _has_pitcher_specific_appearance(row: dict[str, Any], game: dict[str, Any]) -> bool:
+    for key in PITCHER_APPEARANCE_FLAGS:
+        if _truthy_appearance_marker(game.get(key)):
+            return True
+
+    ids, names = _player_identity(row)
+    for key in PITCHER_APPEARANCE_FIELDS:
+        if _value_matches_player(game.get(key), ids, names):
+            return True
+    return False
+
+
+def _truthy_appearance_marker(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value > 0
+    if not isinstance(value, str):
+        return False
+    return value.strip().casefold() in {"1", "true", "yes", "y", "start", "starter", "probable", "confirmed"}
+
+
+def _player_identity(row: dict[str, Any]) -> tuple[set[str], set[str]]:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    player = raw.get("player") if isinstance(raw.get("player"), dict) else {}
+    ids = {
+        _text(row.get("id")),
+        _text(row.get("player_id")),
+        _text(raw.get("id")),
+        _text(raw.get("player_id")),
+        _text(player.get("id")),
+        _text(player.get("player_id")),
+        _text(player.get("fantrax_id")),
+    }
+    names = {
+        _text(row.get("name")),
+        _text(raw.get("name")),
+        _text(player.get("name")),
+        _text(player.get("full_name")),
+    }
+    return {value for value in ids if value}, {value.casefold() for value in names if value}
+
+
+def _value_matches_player(value: Any, ids: set[str], names: set[str]) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, dict):
+        candidates = [
+            value.get("id"),
+            value.get("player_id"),
+            value.get("playerId"),
+            value.get("fantrax_id"),
+            value.get("name"),
+            value.get("full_name"),
+            value.get("fullName"),
+        ]
+        return any(_value_matches_player(candidate, ids, names) for candidate in candidates)
+    if isinstance(value, list):
+        return any(_value_matches_player(item, ids, names) for item in value)
+
+    text = str(value).strip()
+    if not text:
+        return False
+    return text in ids or text.casefold() in names
 
 
 def _team_projection(
@@ -838,6 +953,7 @@ def _drivers(
         "rest_of_period_delta": rest_of_period_delta,
         "game_volume_edge": game_volume_edge,
         "risk_level": risk_level,
+        "opportunity_scope": "hitters plus pitcher-specific starts/appearances",
         "summary": _driver_summary(current_margin, projected_margin, rest_of_period_delta, game_volume_edge),
     }
 
