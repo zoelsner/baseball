@@ -16,7 +16,9 @@ from dotenv import load_dotenv
 
 import auth
 import fantrax_data
+import sandlot_data_quality
 import sandlot_db
+import sandlot_matchup
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +64,8 @@ def run_refresh(source: str = "manual") -> RefreshResult:
             duration_ms=duration_ms,
             errors=errors,
         )
+        if status == "success":
+            _persist_projection_log(snapshot_id, snapshot)
         sandlot_db.finish_refresh_run(
             run_id,
             status=status,
@@ -109,6 +113,17 @@ def run_refresh(source: str = "manual") -> RefreshResult:
             )
         log.exception("Sandlot refresh failed")
         return RefreshResult(status="failed", snapshot_id=snapshot_id, duration_ms=duration_ms, errors=[error])
+
+
+def _persist_projection_log(snapshot_id: int, snapshot: dict[str, Any]) -> None:
+    try:
+        data_quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+        record = sandlot_matchup.projection_log_payload(snapshot_id, snapshot, data_quality)
+        if not record:
+            return
+        sandlot_db.upsert_projection_log(**record)
+    except Exception:
+        log.exception("Projection log write failed for snapshot_id=%s", snapshot_id)
 
 
 def _session_from_available_cookies() -> tuple[requests.Session, list[dict[str, Any]] | None, str]:

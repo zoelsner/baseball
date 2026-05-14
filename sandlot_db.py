@@ -181,6 +181,30 @@ def init_schema() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS projection_logs (
+              id BIGSERIAL PRIMARY KEY,
+              snapshot_id BIGINT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+              model_version TEXT NOT NULL,
+              matchup_key TEXT NOT NULL,
+              period_id TEXT,
+              my_team_id TEXT,
+              opponent_team_id TEXT,
+              predicted_my DOUBLE PRECISION NOT NULL,
+              predicted_opp DOUBLE PRECISION NOT NULL,
+              predicted_margin DOUBLE PRECISION NOT NULL,
+              win_probability DOUBLE PRECISION NOT NULL,
+              data_quality JSONB NOT NULL DEFAULT '{}'::jsonb,
+              actual_my DOUBLE PRECISION,
+              actual_opp DOUBLE PRECISION,
+              actual_winner TEXT,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              UNIQUE (snapshot_id, model_version, matchup_key)
+            )
+            """
+        )
 
 
 def create_refresh_run(source: str) -> int:
@@ -563,6 +587,58 @@ def set_ai_brief(
                 generated_at = now()
             """,
             (snapshot_id, brief_type, subject_key, text, model, input_hash),
+        )
+
+
+def upsert_projection_log(
+    *,
+    snapshot_id: int,
+    model_version: str,
+    matchup_key: str,
+    period_id: str | None,
+    my_team_id: str | None,
+    opponent_team_id: str | None,
+    predicted_my: float,
+    predicted_opp: float,
+    predicted_margin: float,
+    win_probability: float,
+    data_quality: dict[str, Any] | None = None,
+) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO projection_logs
+              (
+                snapshot_id, model_version, matchup_key, period_id,
+                my_team_id, opponent_team_id, predicted_my, predicted_opp,
+                predicted_margin, win_probability, data_quality
+              )
+            VALUES
+              (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (snapshot_id, model_version, matchup_key) DO UPDATE
+            SET period_id = EXCLUDED.period_id,
+                my_team_id = EXCLUDED.my_team_id,
+                opponent_team_id = EXCLUDED.opponent_team_id,
+                predicted_my = EXCLUDED.predicted_my,
+                predicted_opp = EXCLUDED.predicted_opp,
+                predicted_margin = EXCLUDED.predicted_margin,
+                win_probability = EXCLUDED.win_probability,
+                data_quality = EXCLUDED.data_quality,
+                updated_at = now()
+            """,
+            (
+                snapshot_id,
+                model_version,
+                matchup_key,
+                period_id,
+                my_team_id,
+                opponent_team_id,
+                predicted_my,
+                predicted_opp,
+                predicted_margin,
+                win_probability,
+                Jsonb(data_quality or {}),
+            ),
         )
 
 
