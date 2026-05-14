@@ -148,7 +148,150 @@ def projection_log_payload(
         "predicted_margin": round(predicted_my - predicted_opp, 1),
         "win_probability": win_probability,
         "data_quality": data_quality or {},
+        "drivers": projection.get("drivers") or {},
     }
+
+
+def actual_result_payload(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
+    if not matchup or not matchup.get("complete"):
+        return None
+    actual_my = _number(matchup.get("my_score"))
+    actual_opp = _number(matchup.get("opponent_score"))
+    if actual_my is None or actual_opp is None:
+        return None
+    return {
+        "matchup_key": _matchup_key(snapshot, matchup),
+        "period_id": _period_id(matchup),
+        "actual_my": actual_my,
+        "actual_opp": actual_opp,
+        "actual_winner": _actual_winner(snapshot, matchup, actual_my, actual_opp),
+    }
+
+
+def calibration_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows or []:
+        if not _has_evaluation_fields(row):
+            continue
+        model_version = str(row.get("model_version") or "unknown")
+        surface = str(row.get("surface") or "unknown")
+        groups.setdefault((model_version, surface), []).append(row)
+
+    return {
+        "minimum_actual_fields": [
+            "actual_my",
+            "actual_opp",
+            "actual_winner",
+            "predicted_my",
+            "predicted_opp",
+            "win_probability",
+            "model_version",
+        ],
+        "sample_size": sum(len(values) for values in groups.values()),
+        "groups": [
+            _calibration_group(model_version, surface, values)
+            for (model_version, surface), values in sorted(groups.items())
+        ],
+    }
+
+
+def _calibration_group(model_version: str, surface: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    score_errors: list[float] = []
+    margin_errors: list[float] = []
+    margin_abs_errors: list[float] = []
+    brier_scores: list[float] = []
+    game_edge_errors: dict[str, list[float]] = {"positive": [], "negative": [], "even": []}
+
+    for row in rows:
+        predicted_my = _number(row.get("predicted_my")) or 0.0
+        predicted_opp = _number(row.get("predicted_opp")) or 0.0
+        predicted_margin = _number(row.get("predicted_margin"))
+        if predicted_margin is None:
+            predicted_margin = predicted_my - predicted_opp
+        actual_my = _number(row.get("actual_my")) or 0.0
+        actual_opp = _number(row.get("actual_opp")) or 0.0
+        actual_margin = actual_my - actual_opp
+        margin_error = predicted_margin - actual_margin
+        probability = _number(row.get("win_probability")) or 0.0
+        outcome = _actual_probability_outcome(actual_my, actual_opp)
+
+        score_errors.append((abs(predicted_my - actual_my) + abs(predicted_opp - actual_opp)) / 2.0)
+        margin_errors.append(margin_error)
+        margin_abs_errors.append(abs(margin_error))
+        brier_scores.append((probability - outcome) ** 2)
+
+        drivers = row.get("drivers") if isinstance(row.get("drivers"), dict) else {}
+        edge = _number(drivers.get("game_volume_edge")) or 0.0
+        if edge > 0:
+            game_edge_errors["positive"].append(margin_error)
+        elif edge < 0:
+            game_edge_errors["negative"].append(margin_error)
+        else:
+            game_edge_errors["even"].append(margin_error)
+
+    metrics = {
+        "score_mae": _mean(score_errors),
+        "margin_mae": _mean(margin_abs_errors),
+        "margin_bias": _mean(margin_errors),
+        "brier_score": _mean(brier_scores),
+        "game_volume_bias": {
+            key: _mean(values)
+            for key, values in game_edge_errors.items()
+            if values
+        },
+    }
+    return {
+        "model_version": model_version,
+        "surface": surface,
+        "count": len(rows),
+        "metrics": metrics,
+        "flags": _calibration_flags(len(rows), metrics),
+    }
+
+
+def _has_evaluation_fields(row: dict[str, Any]) -> bool:
+    required = ("actual_my", "actual_opp", "actual_winner", "predicted_my", "predicted_opp", "win_probability")
+    return all(row.get(key) is not None for key in required)
+
+
+def _actual_winner(snapshot: dict[str, Any], matchup: dict[str, Any], actual_my: float, actual_opp: float) -> str:
+    if actual_my > actual_opp:
+        return _text(matchup.get("my_team_id") or snapshot.get("team_id")) or "me"
+    if actual_opp > actual_my:
+        return _text(matchup.get("opponent_team_id") or matchup.get("opponent_team_name")) or "opponent"
+    return "tie"
+
+
+def _actual_probability_outcome(actual_my: float, actual_opp: float) -> float:
+    if actual_my > actual_opp:
+        return 1.0
+    if actual_opp > actual_my:
+        return 0.0
+    return 0.5
+
+
+def _mean(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return round(sum(values) / len(values), 4)
+
+
+def _calibration_flags(count: int, metrics: dict[str, Any]) -> list[str]:
+    flags: list[str] = []
+    if count < 3:
+        flags.append("insufficient_sample")
+    margin_bias = metrics.get("margin_bias")
+    if isinstance(margin_bias, (int, float)) and abs(margin_bias) >= 5:
+        flags.append("positive_margin_bias" if margin_bias > 0 else "negative_margin_bias")
+    volume_bias = metrics.get("game_volume_bias") if isinstance(metrics.get("game_volume_bias"), dict) else {}
+    positive_edge_bias = volume_bias.get("positive")
+    negative_edge_bias = volume_bias.get("negative")
+    if isinstance(positive_edge_bias, (int, float)) and positive_edge_bias >= 3:
+        flags.append("game_volume_edge_may_be_overrated")
+    if isinstance(negative_edge_bias, (int, float)) and negative_edge_bias <= -3:
+        flags.append("opponent_game_volume_edge_may_be_overrated")
+    return flags
 
 
 def simulate_lineup_move_impact(

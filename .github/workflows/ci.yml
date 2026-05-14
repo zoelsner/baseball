@@ -30,6 +30,7 @@ jobs:
           import sandlot_refresh
           import sandlot_cron
           import sandlot_waivers
+          import sandlot_calibration
           import player_service
           import mlb_stats
           print('all imports OK')
