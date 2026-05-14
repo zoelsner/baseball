@@ -1630,6 +1630,11 @@ function V2TradeGradeCard({ result }) {
             marginTop:6, fontFamily:V2.fontDisplay,
           }}>{grade}</div>
           <div style={{ fontSize:12, color:V2.body, marginTop:8, fontWeight:600 }}>{result.headline || ''}</div>
+          {result.my_weakest_position ? (
+            <div style={{ marginTop:10, display:'inline-flex', alignItems:'center', gap:6, background:V2.warnSoft, color:V2.warn, borderRadius:999, padding:'5px 9px', fontSize:10.5, fontWeight:900, letterSpacing:'0.04em', textTransform:'uppercase' }}>
+              Weakest: {result.my_weakest_position}
+            </div>
+          ) : null}
         </div>
         <div style={{ width:74, height:74, position:'relative', flexShrink:0 }}>
           <svg width="74" height="74" viewBox="0 0 74 74">
@@ -1668,6 +1673,57 @@ function V2TradeGradeCard({ result }) {
           <div style={{ fontSize:10, color:V2.muted, fontFamily:V2.fontMono, letterSpacing:'0.04em' }}>
             {result.cached ? 'CACHED' : 'FRESH'}{result.model ? ` · ${result.model}` : ''}
           </div>
+        </div>
+      ) : null}
+
+      {result.no_counter_reason ? (
+        <div style={{ marginTop:14, background:V2.warnSoft, borderLeft:`2px solid ${V2.warn}`, borderRadius:'4px 12px 12px 4px', padding:'10px 12px', color:V2.body, fontSize:12.5, lineHeight:1.45 }}>
+          {result.no_counter_reason}
+        </div>
+      ) : null}
+
+      {(result.counters || []).length ? (
+        <div style={{ marginTop:14, paddingTop:14, borderTop:`1px solid ${V2.hairline2}`, display:'flex', flexDirection:'column', gap:8 }}>
+          <V2Eyebrow color={V2.accent}>Counters</V2Eyebrow>
+          {(result.counters || []).map(counter => <V2TradeCounterCard key={counter.tier} counter={counter}/>)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function V2TradeCounterCard({ counter }) {
+  const [open, setOpen] = React.useState(false);
+  const tier = String(counter.tier || '').toUpperCase();
+  const band = counter.acceptance_band || counter.counter_strength || 'review';
+  const myDelta = Number(counter.my_delta) || 0;
+  const names = (rows) => (rows || []).map(p => p.name).filter(Boolean).join(', ') || '—';
+  return (
+    <div style={{ border:`1px solid ${V2.hairline2}`, borderRadius:12, overflow:'hidden', background:V2.surface2 }}>
+      <button onClick={()=>setOpen(!open)} style={{
+        width:'100%', border:'none', background:'transparent', padding:'11px 12px',
+        display:'grid', gridTemplateColumns:'1fr auto', gap:10, textAlign:'left', cursor:'pointer', fontFamily:'inherit',
+      }}>
+        <div style={{ minWidth:0 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:7, flexWrap:'wrap' }}>
+            <span style={{ color:V2.accent, fontSize:10.5, fontWeight:900, letterSpacing:'0.08em' }}>{tier}</span>
+            <span style={{ background:V2.surface, color:V2.muted, borderRadius:999, padding:'3px 7px', fontSize:10, fontWeight:800, textTransform:'uppercase' }}>{band}</span>
+          </div>
+          <div style={{ marginTop:6, color:V2.ink, fontSize:12.5, fontWeight:750, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+            Get {names(counter.get)}
+          </div>
+          <div style={{ marginTop:3, color:V2.muted, fontSize:11.2, fontWeight:650, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+            Give {names(counter.give)}
+          </div>
+        </div>
+        <div style={{ textAlign:'right', color:myDelta >= 0 ? V2.ok : V2.warn, fontFamily:V2.fontMono, fontSize:12, fontWeight:900, whiteSpace:'nowrap' }}>
+          {myDelta >= 0 ? '+' : ''}{myDelta.toFixed(1)}
+          <div style={{ color:V2.muted, fontSize:9, marginTop:3 }}>FP/G</div>
+        </div>
+      </button>
+      {open ? (
+        <div style={{ borderTop:`1px solid ${V2.hairline2}`, padding:'10px 12px', color:V2.body, fontSize:12.5, lineHeight:1.5 }}>
+          {counter.rationale || 'No rationale returned for this counter.'}
         </div>
       ) : null}
     </div>
@@ -1725,13 +1781,6 @@ function V2TradeGrader({ model }) {
       ) : null}
 
       {result ? <V2TradeGradeCard result={result}/> : null}
-
-      <div style={{ background:V2.surface2, border:`1px dashed ${V2.hairline}`, borderRadius:14, padding:16, textAlign:'center' }}>
-        <V2Eyebrow>Next</V2Eyebrow>
-        <div style={{ fontSize:13, color:V2.body, marginTop:8, lineHeight:1.55 }}>
-          Counter offers and "discuss with Skipper" land in the next slice.
-        </div>
-      </div>
     </div>
   );
 }
