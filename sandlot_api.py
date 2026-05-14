@@ -417,9 +417,10 @@ def _player_index(data: dict[str, Any]) -> list[dict[str, Any]]:
                 continue
             pid = r.get("id")
             name = r.get("name")
-            if not pid or not name or pid in seen:
+            pid_key = str(pid) if pid else ""
+            if not pid_key or not name or pid_key in seen:
                 continue
-            seen.add(pid)
+            seen.add(pid_key)
             out.append({
                 "id": pid,
                 "name": name,
@@ -432,14 +433,17 @@ def _player_index(data: dict[str, Any]) -> list[dict[str, Any]]:
                 "team_id": team_id,
             })
 
+    my_team_id = data.get("team_id")
     add((data.get("roster") or {}).get("rows"), source="mine",
-        team_id=data.get("team_id"))
+        team_id=my_team_id)
     for tid, team in (data.get("all_team_rosters") or {}).items():
         if not isinstance(team, dict):
             continue
-        if team.get("is_me"):
-            continue
-        add(team.get("rows"), source="league", team_id=tid)
+        team_id = team.get("team_id") or tid
+        is_mine = bool(team.get("is_me")) or (
+            my_team_id is not None and str(team_id) == str(my_team_id)
+        )
+        add(team.get("rows"), source="mine" if is_mine else "league", team_id=team_id)
     add((data.get("free_agents") or {}).get("players"), source="free_agent")
     return out
 
