@@ -46,6 +46,30 @@ def normalized_payload():
                     "summary": "You lead now by 3; You lead projected by 8.3.",
                 },
             },
+            "recommendations": {
+                "recommendations": [
+                    {
+                        "rank": 1,
+                        "action": {
+                            "move_type": "lineup_swap",
+                            "move_shape": "direct_swap",
+                            "chain": [
+                                {
+                                    "player_id": "bench-1",
+                                    "player_name": "Bench Bat",
+                                    "from_slot": "BN",
+                                    "to_slot": "2B",
+                                },
+                            ],
+                        },
+                        "points_delta": 2.0,
+                        "win_probability_delta": 0.02,
+                        "confidence": "medium",
+                        "reason_chips": ["higher FP/G"],
+                    },
+                ],
+                "no_action": None,
+            },
         },
         "player_index": [],
     }
@@ -58,6 +82,7 @@ class SkipperProjectionTests(unittest.TestCase):
         self.assertIn('"snapshot_id": 123', context)
         self.assertIn('"projection_ready": true', context)
         self.assertIn('"projection"', context)
+        self.assertIn('"recommendations"', context)
         self.assertIn('"drivers"', context)
         self.assertIn('"my_roster"', context)
 
@@ -67,6 +92,7 @@ class SkipperProjectionTests(unittest.TestCase):
         self.assertIn("favored with a slight edge", reply)
         self.assertIn("Biggest driver:", reply)
         self.assertIn("Move read:", reply)
+        self.assertIn("Best lineup action:", reply)
         self.assertNotIn("%", reply)
 
     def test_incomplete_projection_falls_back_to_score_based_reply(self):

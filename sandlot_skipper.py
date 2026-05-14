@@ -214,6 +214,8 @@ def _slim_matchup(matchup: dict[str, Any] | None) -> dict[str, Any] | None:
     out = {k: matchup.get(k) for k in keep}
     if isinstance(matchup.get("projection"), dict):
         out["projection"] = matchup["projection"]
+    if isinstance(matchup.get("recommendations"), dict):
+        out["recommendations"] = matchup["recommendations"]
     return out
 
 
@@ -339,6 +341,9 @@ def _matchup_read_reply(snapshot: dict[str, Any]) -> str:
     if projection and data_quality.get("projection_ready", True):
         lines.append("Biggest driver: " + _projection_driver_text(projection) + ".")
         lines.append("Move read: " + _projection_move_text(projection) + ".")
+        recommendation = _recommendation_text(matchup.get("recommendations") if isinstance(matchup, dict) else None)
+        if recommendation:
+            lines.append(recommendation)
 
     if not projection and not data_quality.get("projection_ready", True) and not matchup:
         lines.append(
@@ -470,6 +475,39 @@ def _projection_move_text(projection: dict[str, Any]) -> str:
     if band == "toss-up" or risk in {"medium", "high"}:
         return "lineup and streamable game volume matter more than a cosmetic swap"
     return "small active-slot gains matter, but the score does not need a panic move"
+
+
+def _recommendation_text(recommendations: dict[str, Any] | None) -> str | None:
+    if not isinstance(recommendations, dict):
+        return None
+    top = (recommendations.get("recommendations") or [None])[0]
+    if isinstance(top, dict):
+        action = top.get("action") if isinstance(top.get("action"), dict) else {}
+        chain = action.get("chain") if isinstance(action.get("chain"), list) else []
+        move = _chain_summary(chain)
+        points = _num(top.get("points_delta"))
+        confidence = top.get("confidence")
+        bits = []
+        if points is not None:
+            bits.append(f"+{points:g} projected points")
+        if confidence:
+            bits.append(f"{confidence} confidence")
+        suffix = f" ({', '.join(bits)})" if bits else ""
+        return f"Best lineup action: {move}{suffix}."
+    no_action = recommendations.get("no_action") if isinstance(recommendations.get("no_action"), dict) else None
+    if no_action and no_action.get("reason"):
+        return "Lineup action: " + str(no_action["reason"]).rstrip(".") + "."
+    return None
+
+
+def _chain_summary(chain: list[dict[str, Any]]) -> str:
+    moves = []
+    for step in chain:
+        name = step.get("player_name") or step.get("player_id") or "player"
+        from_slot = step.get("from_slot") or "?"
+        to_slot = step.get("to_slot") or "?"
+        moves.append(f"{name} {from_slot}->{to_slot}")
+    return "; ".join(moves) if moves else "no move detail"
 
 
 def _missing_matchup_reply(snapshot: dict[str, Any]) -> str:

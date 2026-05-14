@@ -11,6 +11,8 @@ INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH"}
 BENCH_SLOTS = {"BN", "BE", "BENCH", "RES", "RESERVE"}
 UNAVAILABLE_INJURIES = {"OUT", "IL", "IL10", "IL60", "IR"}
 MODEL_VERSION = "matchup_projection_v1"
+MIN_MEANINGFUL_POINTS_DELTA = 1.0
+MIN_MEANINGFUL_WIN_PROBABILITY_DELTA = 0.01
 HITTER_POSITIONS = {"C", "1B", "2B", "3B", "SS", "OF", "LF", "CF", "RF"}
 PITCHER_POSITIONS = {"P", "SP", "RP"}
 POSITION_ALIASES = {
@@ -269,6 +271,116 @@ def simulate_lineup_move_impact(
         reason="No legal bench-to-active move improves projected points from the current snapshot.",
         best_rejected_delta=best_rejected_delta,
     )
+
+
+def rank_matchup_improvement_actions(
+    snapshot: dict[str, Any],
+    data_quality: dict[str, Any] | None = None,
+    *,
+    limit: int = 3,
+    min_points_delta: float = MIN_MEANINGFUL_POINTS_DELTA,
+    min_win_probability_delta: float = MIN_MEANINGFUL_WIN_PROBABILITY_DELTA,
+) -> dict[str, Any]:
+    """Rank simulated lineup moves and suppress noise below deterministic thresholds."""
+    simulation = simulate_lineup_move_impact(
+        snapshot,
+        data_quality,
+        limit=max(limit * 4, 10),
+        min_points_delta=0.0,
+    )
+    thresholds = {
+        "points_delta": min_points_delta,
+        "win_probability_delta": min_win_probability_delta,
+    }
+    recommendations: list[dict[str, Any]] = []
+    best_rejected_delta = (simulation.get("no_action") or {}).get("best_rejected_delta")
+
+    for action in simulation.get("actions") or []:
+        points_delta = _number(action.get("points_delta")) or 0.0
+        win_delta = _number(action.get("win_probability_delta")) or 0.0
+        if not _clears_meaningful_threshold(
+            points_delta,
+            win_delta,
+            min_points_delta=min_points_delta,
+            min_win_probability_delta=min_win_probability_delta,
+        ):
+            if best_rejected_delta is None or points_delta > best_rejected_delta:
+                best_rejected_delta = points_delta
+            continue
+        recommendations.append({
+            "rank": len(recommendations) + 1,
+            "action": {
+                "move_type": action.get("move_type"),
+                "move_shape": action.get("move_shape"),
+                "chain": action.get("chain") or [],
+            },
+            "points_delta": action.get("points_delta"),
+            "win_probability_delta": action.get("win_probability_delta"),
+            "new_win_probability": action.get("new_win_probability"),
+            "confidence": _recommendation_confidence(points_delta, win_delta),
+            "risk_label": _recommendation_risk(action.get("new_win_probability")),
+            "reason_chips": action.get("reason_chips") or [],
+        })
+        if len(recommendations) >= max(0, limit):
+            break
+
+    if recommendations:
+        return {
+            "model_version": MODEL_VERSION,
+            "base_projection": simulation.get("base_projection"),
+            "thresholds": thresholds,
+            "recommendations": recommendations,
+            "no_action": None,
+        }
+
+    no_action = simulation.get("no_action") or {}
+    reason = no_action.get("reason")
+    if not reason or not str(reason).startswith("Recommendation data incomplete"):
+        reason = "No lineup move clears the meaningful-gain threshold from this snapshot."
+    return {
+        "model_version": MODEL_VERSION,
+        "base_projection": simulation.get("base_projection"),
+        "thresholds": thresholds,
+        "recommendations": [],
+        "no_action": {
+            "reason": reason,
+            "best_rejected_delta": round(best_rejected_delta, 1) if best_rejected_delta is not None else None,
+            "threshold": min_points_delta,
+            "win_probability_threshold": min_win_probability_delta,
+        },
+    }
+
+
+def _clears_meaningful_threshold(
+    points_delta: float,
+    win_probability_delta: float,
+    *,
+    min_points_delta: float,
+    min_win_probability_delta: float,
+) -> bool:
+    if points_delta <= 0 or win_probability_delta < 0:
+        return False
+    return points_delta >= min_points_delta and win_probability_delta >= min_win_probability_delta
+
+
+def _recommendation_confidence(points_delta: float, win_probability_delta: float) -> str:
+    if win_probability_delta >= 0.05 or points_delta >= 5:
+        return "high"
+    if win_probability_delta >= 0.02 or points_delta >= 2:
+        return "medium"
+    return "light"
+
+
+def _recommendation_risk(new_win_probability: Any) -> str:
+    probability = _number(new_win_probability)
+    if probability is None:
+        return "unknown"
+    edge = abs(probability - 0.5)
+    if edge < 0.08:
+        return "high"
+    if edge < 0.18:
+        return "medium"
+    return "low"
 
 
 def _evaluate_move_chain(
