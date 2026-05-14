@@ -535,6 +535,9 @@ function v2FormatMetric(value, digits=1) {
 
 function v2MatchupInfo(matchup) {
   if (!matchup) return null;
+  const hasScore = matchup.my_score !== undefined || matchup.myScore !== undefined
+    || matchup.opponent_score !== undefined || matchup.oppScore !== undefined;
+  if (!hasScore) return null;
   const my = v2Number(matchup.my_score ?? matchup.myScore);
   const opp = v2Number(matchup.opponent_score ?? matchup.oppScore);
   const margin = matchup.margin !== undefined && matchup.margin !== null
@@ -551,7 +554,41 @@ function v2MatchupInfo(matchup) {
   }
   if (daysLeft === null && matchup.daysLeft !== undefined) daysLeft = v2Number(matchup.daysLeft);
   const leading = margin > 0;
-  return { my, opp, margin, opponent, week, daysLeft, leading };
+  return { my, opp, margin, opponent, week, daysLeft, leading, projection:matchup.projection || null };
+}
+
+function v2ProjectionInfo(projection) {
+  if (!projection || projection.win_probability === null || projection.win_probability === undefined) return null;
+  const probability = Math.max(0, Math.min(1, v2Number(projection.win_probability)));
+  const pct = Math.round(probability * 100);
+  const color = pct >= 60 ? V2.ok : pct >= 45 ? V2.warn : V2.bad;
+  const band = pct >= 70 ? 'STRONG' : pct >= 55 ? 'LEAN' : pct > 45 ? 'TOSS' : pct > 30 ? 'RISK' : 'LONG';
+  return {
+    band,
+    color,
+    dash: (probability * 188.5).toFixed(1),
+    projectedMy: v2Number(projection.projected_my).toFixed(1),
+    projectedOpp: v2Number(projection.projected_opp).toFixed(1),
+    complete: Boolean(projection.complete),
+  };
+}
+
+function V2WinProbabilityRing({ projection }) {
+  const info = v2ProjectionInfo(projection);
+  if (!info) return null;
+  return (
+    <div style={{ width:66, height:66, position:'relative', flexShrink:0 }}>
+      <svg width="66" height="66" viewBox="0 0 74 74">
+        <circle cx="37" cy="37" r="30" fill="none" stroke={V2.hairline} strokeWidth="6"/>
+        <circle cx="37" cy="37" r="30" fill="none" stroke={info.color} strokeWidth="6"
+          strokeDasharray={`${info.dash} 188.5`} transform="rotate(-90 37 37)" strokeLinecap="round"/>
+      </svg>
+      <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center' }}>
+        <div style={{ color:info.color, fontSize:10.5, lineHeight:1, fontWeight:900, fontFamily:V2.fontMono }}>{info.band}</div>
+        <div style={{ marginTop:4, color:V2.muted, fontSize:7.5, lineHeight:1, fontWeight:800, letterSpacing:'0.04em' }}>EDGE</div>
+      </div>
+    </div>
+  );
 }
 
 function v2LowOutputCutoff(starters) {
@@ -637,6 +674,9 @@ function v2RosterHealth(model) {
 function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
   const health = v2RosterHealth(model);
   const matchup = v2MatchupInfo(model.matchup);
+  const projection = matchup?.projection || null;
+  const projectionInfo = v2ProjectionInfo(projection);
+  const showProjection = projectionInfo && !projectionInfo.complete;
   const weekLabel = matchup?.week ? `Week ${matchup.week}` : 'Today';
   const staleCopy = sync.state === 'failed'
     ? (sync.error || 'Last refresh failed.')
@@ -678,15 +718,23 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
               <div style={{ marginTop:8, fontSize:25, lineHeight:1, fontWeight:800, letterSpacing:'-0.045em', fontFamily:V2.fontMono }}>
                 {matchup.my.toFixed(1)} <span style={{ color:'#b8afa0', fontFamily:V2.fontDisplay, fontWeight:700 }}>·</span> <span style={{ color:'#b8afa0' }}>{matchup.opp.toFixed(1)}</span>
               </div>
+              {showProjection ? (
+                <div style={{ marginTop:7, color:projectionInfo.color, fontSize:12.5, fontWeight:800, fontFamily:V2.fontMono, whiteSpace:'nowrap' }}>
+                  Projected {projectionInfo.projectedMy} — {projectionInfo.projectedOpp}
+                </div>
+              ) : null}
               <div style={{ marginTop:8, color:V2.muted, fontSize:13, fontWeight:800, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                 vs {matchup.opponent}{matchup.daysLeft !== null ? ` · ${matchup.daysLeft}d left` : ''}
               </div>
             </div>
-            <div style={{ textAlign:'right', flexShrink:0 }}>
-              <div style={{ color:matchup.margin >= 0 ? V2.accent : V2.bad, fontSize:28, lineHeight:1, fontWeight:800, letterSpacing:'-0.04em', fontFamily:V2.fontDisplay }}>
-                {matchup.margin >= 0 ? '+' : ''}{matchup.margin.toFixed(1)}
+            <div style={{ display:'flex', alignItems:'center', gap:11, flexShrink:0 }}>
+              {showProjection ? <V2WinProbabilityRing projection={projection}/> : null}
+              <div style={{ textAlign:'right', flexShrink:0 }}>
+                <div style={{ color:matchup.margin >= 0 ? V2.accent : V2.bad, fontSize:28, lineHeight:1, fontWeight:800, letterSpacing:'-0.04em', fontFamily:V2.fontDisplay }}>
+                  {matchup.margin >= 0 ? '+' : ''}{matchup.margin.toFixed(1)}
+                </div>
+                <div style={{ marginTop:6, color:V2.muted, fontSize:12, fontWeight:800 }}>margin</div>
               </div>
-              <div style={{ marginTop:6, color:V2.muted, fontSize:12, fontWeight:800 }}>margin</div>
             </div>
           </div>
         ) : (

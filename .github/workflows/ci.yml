@@ -34,6 +34,8 @@ jobs:
           import mlb_stats
           print('all imports OK')
           "
+      - name: Run Python unit tests
+        run: python -m unittest discover -s tests -p "test_*.py"
 
   jsx-parse:
     name: JSX parse (Babel)

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 import player_service
 import sandlot_db
+import sandlot_matchup
 import sandlot_skipper
 import sandlot_trades
 import sandlot_waivers
@@ -378,6 +379,10 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     data = row.get("data") or {}
     roster_meta = data.get("roster") or {}
     standings = data.get("standings") or {}
+    matchup_block = data.get("matchup")
+    matchup = None
+    if isinstance(matchup_block, dict) and matchup_block:
+        matchup = {**matchup_block, "projection": sandlot_matchup.compute_projection(data)}
     taken_at = row.get("taken_at")
     return {
         "snapshot_id": row.get("id"),
@@ -392,7 +397,7 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
         "roster_meta": {k: v for k, v in roster_meta.items() if k != "rows"},
         "standings": standings.get("records") or [],
         "my_standing": standings.get("my_record"),
-        "matchup": data.get("matchup"),
+        "matchup": matchup,
         "player_index": _player_index(data),
         "errors": row.get("errors") or data.get("errors") or [],
     }
