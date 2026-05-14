@@ -573,13 +573,18 @@ function v2ProjectionInfo(projection) {
   const probability = Math.max(0, Math.min(1, v2Number(projection.win_probability)));
   const pct = Math.round(probability * 100);
   const color = pct >= 60 ? V2.ok : pct >= 45 ? V2.warn : V2.bad;
-  const band = pct >= 70 ? 'STRONG' : pct >= 55 ? 'LEAN' : pct > 45 ? 'TOSS' : pct > 30 ? 'RISK' : 'LONG';
+  const band = pct >= 70 ? 'COMFORTABLE' : pct >= 55 ? 'SLIGHT EDGE' : pct > 45 ? 'TOSS-UP' : pct > 30 ? 'UPHILL' : 'STEEP UPHILL';
+  const shortBand = pct >= 70 ? 'EDGE' : pct >= 55 ? 'LEAN' : pct > 45 ? 'TOSS' : pct > 30 ? 'RISK' : 'LONG';
+  const projectedMy = v2Number(projection.projected_my);
+  const projectedOpp = v2Number(projection.projected_opp);
   return {
     band,
+    shortBand,
     color,
     dash: (probability * 188.5).toFixed(1),
-    projectedMy: v2Number(projection.projected_my).toFixed(1),
-    projectedOpp: v2Number(projection.projected_opp).toFixed(1),
+    projectedMy: projectedMy.toFixed(1),
+    projectedOpp: projectedOpp.toFixed(1),
+    projectedMargin: projectedMy - projectedOpp,
     complete: Boolean(projection.complete),
   };
 }
@@ -595,7 +600,7 @@ function V2WinProbabilityRing({ projection }) {
           strokeDasharray={`${info.dash} 188.5`} transform="rotate(-90 37 37)" strokeLinecap="round"/>
       </svg>
       <div style={{ position:'absolute', inset:0, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center' }}>
-        <div style={{ color:info.color, fontSize:10.5, lineHeight:1, fontWeight:900, fontFamily:V2.fontMono }}>{info.band}</div>
+        <div style={{ color:info.color, fontSize:10.5, lineHeight:1, fontWeight:900, fontFamily:V2.fontMono }}>{info.shortBand}</div>
         <div style={{ marginTop:4, color:V2.muted, fontSize:7.5, lineHeight:1, fontWeight:800, letterSpacing:'0.04em' }}>EDGE</div>
       </div>
     </div>
@@ -2623,54 +2628,129 @@ function v2IsDeepMatchupPrompt(text) {
   return V2_DEEP_MATCHUP_RE.test(String(text || ''));
 }
 
-// Donut ring: my-score vs opponent-score for the current weekly matchup.
-// Sized to ~3 lines of bubble text (62px). Color scale tracks the margin —
-// green when comfortably ahead, amber when within ±10, red when trailing.
-function V2MatchupDonut({ matchup }) {
-  if (!matchup) return null;
-  const my  = Number(matchup.my_score) || 0;
-  const opp = Number(matchup.opponent_score) || 0;
-  const total = my + opp;
-  const myPct = total > 0 ? Math.max(0, Math.min(1, my / total)) : 0.5;
-  const margin = my - opp;
-  const fillColor = margin >= 10 ? '#16a34a' : margin <= -10 ? '#dc2626' : '#d97706';
+function v2ProjectionPressure(projection) {
+  const drivers = projection?.drivers || {};
+  const restDelta = v2Number(drivers.rest_of_period_delta);
+  const gameEdge = v2Number(drivers.game_volume_edge);
+  const currentMargin = v2Number(drivers.current_margin);
+  if (Math.abs(restDelta) >= 5) {
+    return restDelta > 0 ? `Late swing toward you by ${Math.abs(restDelta).toFixed(1)}` : `Late swing against you by ${Math.abs(restDelta).toFixed(1)}`;
+  }
+  if (Math.abs(gameEdge) >= 2) {
+    return gameEdge > 0 ? `Schedule edge +${Math.abs(gameEdge).toFixed(0)} games` : `Opponent schedule +${Math.abs(gameEdge).toFixed(0)} games`;
+  }
+  if (Math.abs(currentMargin) > 0) {
+    return currentMargin > 0 ? `Current lead ${currentMargin.toFixed(1)}` : `Current gap ${Math.abs(currentMargin).toFixed(1)}`;
+  }
+  return 'No single driver dominates';
+}
 
-  const size = 62;
-  const stroke = 8;
-  const radius = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const filled = circumference * myPct;
+function v2ProjectionScheduleText(projection) {
+  const edge = v2Number(projection?.drivers?.game_volume_edge);
+  if (edge > 0) return `You +${edge.toFixed(0)} games`;
+  if (edge < 0) return `Opponent +${Math.abs(edge).toFixed(0)} games`;
+  return 'Even volume';
+}
 
-  const myName  = matchup.my_team_name || 'You';
-  const oppName = matchup.opponent_team_name || 'Opponent';
+function v2ProjectionRiskText(projection) {
+  const risk = String(projection?.drivers?.risk_level || '').toLowerCase();
+  if (risk === 'high') return 'High swing risk';
+  if (risk === 'medium') return 'Medium swing risk';
+  if (risk === 'low') return 'Low swing risk';
+  return 'Risk unknown';
+}
 
+function V2MatchupProjectionCard({ matchup, dataQuality }) {
+  const info = v2MatchupInfo(matchup);
+  if (!info) return null;
+  const projection = info.projection || null;
+  const projectionInfo = v2ProjectionInfo(projection);
+  const incomplete = dataQuality?.projection_ready === false;
+  const cardStyle = {
+    marginBottom:9,
+    padding:'10px 11px',
+    background:V2.surface2,
+    border:`1px solid ${V2.hairline}`,
+    borderRadius:12,
+    display:'flex',
+    flexDirection:'column',
+    gap:8,
+  };
+  const metricStyle = {
+    minWidth:0,
+    padding:'7px 8px',
+    border:`1px solid ${V2.hairline}`,
+    borderRadius:10,
+    background:V2.surface,
+  };
+  if (incomplete) {
+    return (
+      <div style={cardStyle}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+          <V2Eyebrow color={V2.warn}>Data incomplete</V2Eyebrow>
+          <span style={{ color:info.margin >= 0 ? V2.accent : V2.bad, fontWeight:900, fontFamily:V2.fontMono, fontSize:12 }}>
+            {info.margin >= 0 ? '+' : ''}{info.margin.toFixed(1)}
+          </span>
+        </div>
+        <div style={{ color:V2.ink, fontSize:14, fontWeight:800, fontFamily:V2.fontDisplay }}>
+          Score-based view only
+        </div>
+        <div style={{ color:V2.muted, fontSize:12, lineHeight:1.35 }}>
+          {v2QualityReason(dataQuality, 'projection')}
+        </div>
+      </div>
+    );
+  }
+  if (!projectionInfo) {
+    return (
+      <div style={cardStyle}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+          <V2Eyebrow color={info.leading ? V2.accent : V2.bad}>{info.leading ? 'Leading' : info.margin < 0 ? 'Trailing' : 'Tied'}</V2Eyebrow>
+          <span style={{ color:info.margin >= 0 ? V2.accent : V2.bad, fontWeight:900, fontFamily:V2.fontMono, fontSize:12 }}>
+            {info.margin >= 0 ? '+' : ''}{info.margin.toFixed(1)}
+          </span>
+        </div>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:12, color:V2.ink, fontWeight:800, fontFamily:V2.fontMono, fontSize:14 }}>
+          <span>You {info.my.toFixed(1)}</span>
+          <span style={{ color:V2.muted }}>{info.opp.toFixed(1)} {info.opponent}</span>
+        </div>
+        <div style={{ color:V2.muted, fontSize:12, lineHeight:1.35 }}>
+          Projection is unavailable, so Skipper is using the current score only.
+        </div>
+      </div>
+    );
+  }
   return (
-    <div style={{
-      display:'flex', alignItems:'center', gap:12, marginBottom:8,
-      padding:'8px 10px', background:V2.surface2, border:`1px solid ${V2.hairline}`, borderRadius:12,
-    }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ flexShrink:0 }}>
-        <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke={V2.hairline} strokeWidth={stroke}/>
-        <circle
-          cx={size/2} cy={size/2} r={radius}
-          fill="none" stroke={fillColor} strokeWidth={stroke}
-          strokeDasharray={`${filled} ${circumference}`}
-          strokeLinecap="round"
-          transform={`rotate(-90 ${size/2} ${size/2})`}
-        />
-      </svg>
-      <div style={{ display:'flex', flexDirection:'column', gap:1, fontSize:12, color:V2.body, minWidth:0, flex:1 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
-          <span style={{ color:V2.ink, fontWeight:700, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{myName}</span>
-          <span style={{ color:V2.ink, fontVariantNumeric:'tabular-nums', fontWeight:700 }}>{my.toFixed(1)}</span>
+    <div style={cardStyle}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+        <V2Eyebrow color={projectionInfo.color}>{projectionInfo.band}</V2Eyebrow>
+        <span style={{ color:V2.muted, fontSize:11, fontWeight:800, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+          vs {info.opponent}
+        </span>
+      </div>
+      <div style={{ display:'flex', justifyContent:'space-between', gap:12, alignItems:'baseline' }}>
+        <div style={{ minWidth:0 }}>
+          <div style={{ color:V2.ink, fontSize:15, fontWeight:900, fontFamily:V2.fontMono, whiteSpace:'nowrap' }}>
+            {projectionInfo.projectedMy} - {projectionInfo.projectedOpp}
+          </div>
+          <div style={{ marginTop:3, color:V2.muted, fontSize:11.5, fontWeight:800 }}>projected final</div>
         </div>
-        <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
-          <span style={{ color:V2.muted, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{oppName}</span>
-          <span style={{ color:V2.muted, fontVariantNumeric:'tabular-nums' }}>{opp.toFixed(1)}</span>
+        <div style={{ color:projectionInfo.color, fontSize:18, lineHeight:1, fontWeight:900, fontFamily:V2.fontDisplay, textAlign:'right' }}>
+          {projectionInfo.projectedMargin >= 0 ? '+' : ''}{projectionInfo.projectedMargin.toFixed(1)}
         </div>
-        <div style={{ fontSize:11, fontWeight:800, color:fillColor, letterSpacing:'0.02em' }}>
-          {margin > 0 ? `+${margin.toFixed(1)} lead` : margin < 0 ? `${margin.toFixed(1)} behind` : 'tied'}
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:7 }}>
+        <div style={metricStyle}>
+          <div style={{ color:V2.muted, fontSize:10.5, fontWeight:800, textTransform:'uppercase' }}>Schedule</div>
+          <div style={{ marginTop:3, color:V2.ink, fontSize:12, fontWeight:800 }}>{v2ProjectionScheduleText(projection)}</div>
         </div>
+        <div style={metricStyle}>
+          <div style={{ color:V2.muted, fontSize:10.5, fontWeight:800, textTransform:'uppercase' }}>Risk</div>
+          <div style={{ marginTop:3, color:V2.ink, fontSize:12, fontWeight:800 }}>{v2ProjectionRiskText(projection)}</div>
+        </div>
+      </div>
+      <div style={{ color:V2.body, fontSize:12.2, lineHeight:1.35, fontWeight:700 }}>
+        {v2ProjectionPressure(projection)}
       </div>
     </div>
   );
@@ -2768,7 +2848,7 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
     setError(null);
     setInput('');
     // Tag the upcoming AI bubble with chart:'matchup' when the prompt asks for
-    // a deep matchup read so V2Bubble can render the donut alongside the text.
+    // a deep matchup read so V2Bubble can render the projection card with it.
     const aiSeed = v2IsDeepMatchupPrompt(t) ? { role:'ai', text:'', chart:'matchup' } : { role:'ai', text:'' };
     setMsgs(m => [...m, { role:'user', text:t }, aiSeed]);
     setStreaming(true);
@@ -2896,7 +2976,7 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
             Ask anything about your roster. Skipper reads the latest snapshot and answers from real data only.
           </div>
         )}
-        {msgs.map((m,i)=> <V2Bubble key={i} m={m} renderText={renderText} matchup={model?.matchup}/>)}
+        {msgs.map((m,i)=> <V2Bubble key={i} m={m} renderText={renderText} matchup={model?.matchup} dataQuality={model?.dataQuality}/>)}
         {streaming && msgs.length > 0 && msgs[msgs.length-1].role === 'ai' && !msgs[msgs.length-1].text && (
           <div style={{ color:V2.muted, fontSize:12, padding:'2px 4px 8px' }}>Thinking…</div>
         )}
@@ -2969,7 +3049,7 @@ function V2SkipperRefreshBrief({ brief, sync }) {
 }
 
 // ── Skipper chat (inlined V2Bubble) ────────────────────────────
-function V2Bubble({ m, renderText, matchup }) {
+function V2Bubble({ m, renderText, matchup, dataQuality }) {
   if (m.role==='user') return (
     <div style={{ display:'flex', justifyContent:'flex-end', marginBottom:8 }}>
       <div style={{ background:V2.accent, color:'#fff', padding:'9px 13px', borderRadius:'14px 14px 4px 14px', fontSize:13.5, maxWidth:'82%', lineHeight:1.4 }}>{m.text}</div>
@@ -2977,11 +3057,11 @@ function V2Bubble({ m, renderText, matchup }) {
   );
   if (v2IsBrokenSkipperReply(m.text)) return null;
   const body = renderText ? renderText(m.text) : m.text;
-  const showDonut = m.chart === 'matchup' && matchup && (matchup.my_score != null || matchup.opponent_score != null);
+  const showProjectionCard = m.chart === 'matchup' && matchup && (matchup.my_score != null || matchup.opponent_score != null);
   return (
     <div style={{ display:'flex', marginBottom:10 }}>
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, color:V2.ink, padding:'10px 13px', borderRadius:'14px 14px 14px 4px', fontSize:13.5, maxWidth:'92%', lineHeight:1.5 }}>
-        {showDonut && <V2MatchupDonut matchup={matchup}/>}
+        {showProjectionCard && <V2MatchupProjectionCard matchup={matchup} dataQuality={dataQuality}/>}
         {body}
       </div>
     </div>

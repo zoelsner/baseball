@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Iterator
 
 import psycopg
@@ -187,6 +187,8 @@ def init_schema() -> None:
               id BIGSERIAL PRIMARY KEY,
               snapshot_id BIGINT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
               model_version TEXT NOT NULL,
+              surface TEXT NOT NULL DEFAULT 'api',
+              shown_date DATE NOT NULL DEFAULT CURRENT_DATE,
               matchup_key TEXT NOT NULL,
               period_id TEXT,
               my_team_id TEXT,
@@ -203,6 +205,32 @@ def init_schema() -> None:
               updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
               UNIQUE (snapshot_id, model_version, matchup_key)
             )
+            """
+        )
+        conn.execute("ALTER TABLE projection_logs ADD COLUMN IF NOT EXISTS surface TEXT")
+        conn.execute("UPDATE projection_logs SET surface = 'api' WHERE surface IS NULL")
+        conn.execute("ALTER TABLE projection_logs ALTER COLUMN surface SET DEFAULT 'api'")
+        conn.execute("ALTER TABLE projection_logs ALTER COLUMN surface SET NOT NULL")
+        conn.execute("ALTER TABLE projection_logs ADD COLUMN IF NOT EXISTS shown_date DATE")
+        conn.execute("UPDATE projection_logs SET shown_date = COALESCE(shown_date, created_at::date, CURRENT_DATE) WHERE shown_date IS NULL")
+        conn.execute("ALTER TABLE projection_logs ALTER COLUMN shown_date SET DEFAULT CURRENT_DATE")
+        conn.execute("ALTER TABLE projection_logs ALTER COLUMN shown_date SET NOT NULL")
+        conn.execute("ALTER TABLE projection_logs DROP CONSTRAINT IF EXISTS projection_logs_snapshot_id_model_version_matchup_key_key")
+        conn.execute(
+            """
+            DELETE FROM projection_logs stale
+            USING projection_logs keep
+            WHERE stale.id < keep.id
+              AND stale.model_version = keep.model_version
+              AND stale.matchup_key = keep.matchup_key
+              AND stale.surface = keep.surface
+              AND stale.shown_date = keep.shown_date
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS projection_logs_surface_day_key
+            ON projection_logs (model_version, matchup_key, surface, shown_date)
             """
         )
 
@@ -603,20 +631,23 @@ def upsert_projection_log(
     predicted_margin: float,
     win_probability: float,
     data_quality: dict[str, Any] | None = None,
+    surface: str = "api",
+    shown_date: date | None = None,
 ) -> None:
     with connect() as conn:
         conn.execute(
             """
             INSERT INTO projection_logs
               (
-                snapshot_id, model_version, matchup_key, period_id,
+                snapshot_id, model_version, surface, shown_date, matchup_key, period_id,
                 my_team_id, opponent_team_id, predicted_my, predicted_opp,
                 predicted_margin, win_probability, data_quality
               )
             VALUES
-              (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (snapshot_id, model_version, matchup_key) DO UPDATE
-            SET period_id = EXCLUDED.period_id,
+              (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (model_version, matchup_key, surface, shown_date) DO UPDATE
+            SET snapshot_id = EXCLUDED.snapshot_id,
+                period_id = EXCLUDED.period_id,
                 my_team_id = EXCLUDED.my_team_id,
                 opponent_team_id = EXCLUDED.opponent_team_id,
                 predicted_my = EXCLUDED.predicted_my,
@@ -629,6 +660,8 @@ def upsert_projection_log(
             (
                 snapshot_id,
                 model_version,
+                surface,
+                shown_date or date.today(),
                 matchup_key,
                 period_id,
                 my_team_id,

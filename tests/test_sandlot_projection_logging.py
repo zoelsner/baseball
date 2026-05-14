@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import sandlot_db
 import sandlot_matchup
 import sandlot_refresh
+from sandlot_api import _log_skipper_projection_surfaces, _snapshot_payload
 
 
 def future_game(day=14):
@@ -78,10 +79,11 @@ class ProjectionLoggingTests(unittest.TestCase):
             )
 
         sql, params = calls[0]
-        self.assertIn("ON CONFLICT (snapshot_id, model_version, matchup_key) DO UPDATE", sql)
+        self.assertIn("ON CONFLICT (model_version, matchup_key, surface, shown_date) DO UPDATE", sql)
         self.assertEqual(params[0], 123)
         self.assertEqual(params[1], sandlot_matchup.MODEL_VERSION)
-        self.assertEqual(params[2], "league:4:me:opp")
+        self.assertEqual(params[2], "api")
+        self.assertEqual(params[4], "league:4:me:opp")
 
     def test_successful_refresh_persists_projection_log(self):
         snapshot = projection_ready_snapshot()
@@ -113,8 +115,24 @@ class ProjectionLoggingTests(unittest.TestCase):
         record = upsert.call_args.kwargs
         self.assertEqual(record["snapshot_id"], 123)
         self.assertEqual(record["model_version"], sandlot_matchup.MODEL_VERSION)
+        self.assertEqual(record["surface"], "api")
         self.assertEqual(record["matchup_key"], "league:4:me:opp")
         self.assertEqual(record["predicted_margin"], 3.0)
+
+    def test_skipper_projection_logging_tags_user_visible_surfaces(self):
+        snapshot = projection_ready_snapshot()
+        row = {"id": 123, "data": snapshot}
+        payload = _snapshot_payload(row)
+        upsert = Mock()
+
+        with patch.object(sandlot_db, "upsert_projection_log", upsert):
+            _log_skipper_projection_surfaces(row, "deep matchup analysis", payload)
+
+        surfaces = sorted(call.kwargs["surface"] for call in upsert.call_args_list)
+        self.assertEqual(surfaces, ["skipper_card", "skipper_chat"])
+        for call in upsert.call_args_list:
+            self.assertEqual(call.kwargs["snapshot_id"], 123)
+            self.assertEqual(call.kwargs["model_version"], sandlot_matchup.MODEL_VERSION)
 
 
 if __name__ == "__main__":

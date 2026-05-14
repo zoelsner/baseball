@@ -289,7 +289,7 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
     if not snapshot_row:
         raise HTTPException(status_code=409, detail="No Fantrax snapshot yet — run a refresh first")
 
-    snapshot = snapshot_row.get("data") or {}
+    snapshot = _snapshot_payload(snapshot_row)
     tier = sandlot_skipper.detect_tier(user_text, snapshot)
     context_block = sandlot_skipper.build_context(tier, snapshot, prompt=user_text)
     history = sandlot_db.list_chat_messages(session_id)
@@ -302,6 +302,7 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
     )
 
     sandlot_db.append_chat_message(session_id, "user", user_text)
+    _log_skipper_projection_surfaces(snapshot_row, user_text, snapshot)
 
     def event_stream():
         if deterministic_reply:
@@ -370,6 +371,39 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
             "X-Accel-Buffering": "no",  # disable proxy buffering for live streams
         },
     )
+
+
+def _log_skipper_projection_surfaces(
+    snapshot_row: dict[str, Any],
+    user_text: str,
+    snapshot_payload: dict[str, Any],
+) -> None:
+    """Log projections shown by Skipper without letting telemetry break chat."""
+    matchup = snapshot_payload.get("matchup") if isinstance(snapshot_payload.get("matchup"), dict) else None
+    projection = matchup.get("projection") if isinstance(matchup, dict) else None
+    data_quality = snapshot_payload.get("data_quality") if isinstance(snapshot_payload.get("data_quality"), dict) else {}
+    if not projection or not data_quality.get("projection_ready", True):
+        return
+    if not sandlot_skipper.is_matchup_request(user_text):
+        return
+
+    surfaces = {"skipper_chat"}
+    if sandlot_skipper.is_deep_matchup_request(user_text):
+        surfaces.add("skipper_card")
+
+    raw_snapshot = snapshot_row.get("data") or {}
+    try:
+        record = sandlot_matchup.projection_log_payload(
+            int(snapshot_row.get("id")),
+            raw_snapshot,
+            data_quality,
+        )
+        if not record:
+            return
+        for surface in sorted(surfaces):
+            sandlot_db.upsert_projection_log(**record, surface=surface)
+    except Exception:
+        log.exception("Skipper projection log write failed for snapshot_id=%s", snapshot_row.get("id"))
 
 
 def _sse(payload: dict[str, Any]) -> str:
