@@ -12,6 +12,8 @@ projected_final = current_score + sum(active_player_fp_per_game * remaining_game
 
 It runs that formula for your active roster and the opponent's active roster. Bench, IL, reserve, and unavailable players are excluded from the active projection. Remaining games come from the snapshot's future-game data and only count games through the matchup period end.
 
+For `matchup_projection_v2`, generic future-game data is only counted as a projected appearance for hitter rows. Pitcher rows are excluded from future-game counting unless the game entry has pitcher-specific start or appearance evidence. Team schedule context is not enough to project an SP/RP/P row, because it would treat every remaining team game as a guaranteed pitcher appearance.
+
 The projected margin is:
 
 ```text
@@ -24,7 +26,7 @@ The rest-of-period swing is:
 projected_margin - current_margin
 ```
 
-Those values drive the plain-language explanations: current margin, projected margin, schedule/game-volume edge, and risk level.
+Those values drive the plain-language explanations: current margin, projected margin, schedule/game-volume edge, opportunity scope, and risk level.
 
 ## Probability Approximation
 
@@ -55,7 +57,8 @@ Actual ML would start after enough logged projections and outcomes exist to prov
 
 - FP/G is a reasonable short-term baseline for each player.
 - Active roster slots define who contributes to the matchup projection.
-- Future-game data is available and correctly attached to player rows.
+- Future-game data is available and correctly attached to hitter rows.
+- Pitcher future games require pitcher-specific start or appearance data before they contribute to the projection.
 - Injury/out/IL flags are enough to suppress unavailable players.
 - Remaining points can be treated as a rough variance term for probability.
 - Multi-position eligibility in the snapshot is enough to prove legal lineup swaps.
@@ -63,7 +66,7 @@ Actual ML would start after enough logged projections and outcomes exist to prov
 
 ## Known Weaknesses
 
-- Pitcher scoring is volatile, especially starts, relief appearances, and negative outings.
+- Pitcher scoring is conservative: generic team future games do not project pitcher points, so pitcher contribution is understated until probable-start or appearance data is available.
 - Negative fantasy points are handled in the mean but do not add negative variance.
 - Recent form is not modeled beyond whatever is already reflected in FP/G.
 - Lineup uncertainty, rest days, rainouts, probables, and role changes are only as good as the snapshot.

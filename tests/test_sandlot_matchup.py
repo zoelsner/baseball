@@ -4,8 +4,8 @@ import sandlot_matchup
 from sandlot_api import _snapshot_payload
 
 
-def future_game(day):
-    return {"date": f"2026-05-{day:02d}"}
+def future_game(day, **extra):
+    return {"date": f"2026-05-{day:02d}", **extra}
 
 
 class MatchupProjectionTests(unittest.TestCase):
@@ -69,6 +69,96 @@ class MatchupProjectionTests(unittest.TestCase):
         self.assertEqual(projection["drivers"]["risk_level"], "high")
         self.assertIn("Rest-of-period swing is -2", projection["drivers"]["summary"])
         self.assertFalse(projection["complete"])
+
+    def test_does_not_project_pitcher_team_games_as_appearances(self):
+        snapshot = {
+            "matchup": {
+                "my_score": 0,
+                "opponent_score": 0,
+                "opponent_team_id": "opp",
+                "end": "2026-05-20",
+                "complete": False,
+            },
+            "roster": {
+                "rows": [
+                    {
+                        "id": "mine-hitter",
+                        "slot": "2B",
+                        "positions": "2B",
+                        "fppg": 2.0,
+                        "future_games": [future_game(14), future_game(15)],
+                    },
+                    {
+                        "id": "mine-sp",
+                        "slot": "SP",
+                        "positions": "SP",
+                        "fppg": 12.0,
+                        "future_games": [future_game(14), future_game(15)],
+                    },
+                ],
+            },
+            "all_team_rosters": {
+                "opp": {
+                    "rows": [
+                        {
+                            "id": "opp-hitter",
+                            "slot": "SS",
+                            "positions": "SS",
+                            "fppg": 1.0,
+                            "future_games": [future_game(14)],
+                        },
+                        {
+                            "id": "opp-rp",
+                            "slot": "RP",
+                            "positions": "RP",
+                            "fppg": 8.0,
+                            "future_games": [future_game(14), future_game(15), future_game(16)],
+                        },
+                    ],
+                },
+            },
+        }
+
+        projection = sandlot_matchup.compute_projection(snapshot)
+
+        self.assertEqual(projection["projected_my"], 4.0)
+        self.assertEqual(projection["projected_opp"], 1.0)
+        self.assertEqual(projection["my_remaining_games"], 2)
+        self.assertEqual(projection["opp_remaining_games"], 1)
+        self.assertEqual(projection["drivers"]["game_volume_edge"], 1)
+
+    def test_counts_pitcher_game_only_with_specific_appearance_marker(self):
+        snapshot = {
+            "matchup": {
+                "my_score": 0,
+                "opponent_score": 0,
+                "opponent_team_id": "opp",
+                "end": "2026-05-20",
+                "complete": False,
+            },
+            "roster": {
+                "rows": [
+                    {
+                        "id": "mine-sp",
+                        "slot": "SP",
+                        "positions": "SP",
+                        "fppg": 10.0,
+                        "future_games": [
+                            future_game(14, probable_start=True),
+                            future_game(15),
+                        ],
+                    },
+                ],
+            },
+            "all_team_rosters": {"opp": {"rows": []}},
+        }
+
+        projection = sandlot_matchup.compute_projection(snapshot)
+
+        self.assertEqual(projection["projected_my"], 10.0)
+        self.assertEqual(projection["projected_opp"], 0.0)
+        self.assertEqual(projection["my_remaining_games"], 1)
+        self.assertEqual(projection["opp_remaining_games"], 0)
 
     def test_returns_completed_projection_without_future_game_requirements(self):
         projection = sandlot_matchup.compute_projection({
