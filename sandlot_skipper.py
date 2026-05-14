@@ -20,6 +20,8 @@ from typing import Any, Iterator
 
 from openai import OpenAI
 
+import sandlot_data_quality
+
 log = logging.getLogger(__name__)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -189,11 +191,13 @@ def build_context(tier: int, snapshot: dict[str, Any], prompt: str = "") -> str:
     import json
 
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
+    data_quality = sandlot_data_quality.snapshot_data_quality(snapshot)
     ctx: dict[str, Any] = {
         "snapshot_taken_at": snapshot.get("timestamp"),
         "team_id": snapshot.get("team_id"),
         "team_name": snapshot.get("team_name"),
         "available_data": _available_data(snapshot),
+        "data_quality": data_quality,
         "my_roster": _slim_roster(snapshot.get("roster")),
         "standings": _slim_standings(snapshot.get("standings")),
     }
@@ -275,6 +279,7 @@ def is_broken_reply(reply: str | None) -> bool:
 
 def _matchup_read_reply(snapshot: dict[str, Any]) -> str:
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
+    data_quality = sandlot_data_quality.snapshot_data_quality(snapshot)
     roster = _slim_roster(snapshot.get("roster"))
     my_rows = roster.get("rows") or []
     all_rosters = snapshot.get("all_team_rosters") or {}
@@ -302,6 +307,13 @@ def _matchup_read_reply(snapshot: dict[str, Any]) -> str:
             lines.append(f"I found this week's opponent ({opponent_name}), but Fantrax did not return both live scores.")
     else:
         lines.append("I do not have the live matchup scoreboard in this snapshot yet, but I can still read roster pressure from your latest Fantrax data.")
+
+    if not data_quality.get("projection_ready"):
+        lines.append(
+            "Projection data is incomplete: "
+            + sandlot_data_quality.short_reason(data_quality, purpose="projection")
+            + "."
+        )
 
     concerns = _matchup_concerns(my_rows)
     if concerns:

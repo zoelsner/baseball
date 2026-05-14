@@ -11,8 +11,14 @@ INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH"}
 UNAVAILABLE_INJURIES = {"OUT", "IL", "IL10", "IL60", "IR"}
 
 
-def compute_projection(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+def compute_projection(
+    snapshot: dict[str, Any],
+    data_quality: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Project the current matchup final score from existing snapshot data."""
+    if isinstance(data_quality, dict) and not data_quality.get("projection_ready"):
+        return None
+
     matchup = snapshot.get("matchup")
     if not isinstance(matchup, dict) or not matchup:
         return None

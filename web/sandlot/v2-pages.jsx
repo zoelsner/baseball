@@ -82,6 +82,7 @@ function v2EmptyModel() {
     takenAt: null,
     playerIndex: [],
     matchup: null,
+    dataQuality: null,
   };
 }
 
@@ -146,6 +147,7 @@ function v2NormalizeSnapshot(payload) {
     takenAt: payload?.taken_at || null,
     playerIndex: payload?.player_index || [],
     matchup: payload?.matchup || null,
+    dataQuality: payload?.data_quality || null,
   };
 }
 
@@ -163,6 +165,15 @@ function v2SyncLabel(freshness) {
   const hours = Math.floor(mins / 60);
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+function v2QualityReason(dataQuality, purpose='projection') {
+  if (!dataQuality) return 'Data quality is unavailable';
+  const key = purpose === 'recommendation' ? 'recommendation_reasons' : 'projection_reasons';
+  const reasons = dataQuality[key] || dataQuality.reasons || [];
+  if (!reasons.length) return 'Required snapshot data is available';
+  const first = String(reasons[0]).replace(/\.$/, '');
+  return reasons.length === 1 ? first : `${first}, plus ${reasons.length - 1} more`;
 }
 
 // ── Reusable controls ──────────────────────────────────────────
@@ -674,9 +685,12 @@ function v2RosterHealth(model) {
 function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
   const health = v2RosterHealth(model);
   const matchup = v2MatchupInfo(model.matchup);
+  const dataQuality = model.dataQuality || null;
   const projection = matchup?.projection || null;
   const projectionInfo = v2ProjectionInfo(projection);
   const showProjection = projectionInfo && !projectionInfo.complete;
+  const showProjectionFallback = matchup && !showProjection && dataQuality?.projection_ready === false;
+  const showRecommendationFallback = model.source === 'api' && dataQuality?.recommendations_ready === false;
   const weekLabel = matchup?.week ? `Week ${matchup.week}` : 'Today';
   const staleCopy = sync.state === 'failed'
     ? (sync.error || 'Last refresh failed.')
@@ -723,6 +737,11 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
                   Projected {projectionInfo.projectedMy} — {projectionInfo.projectedOpp}
                 </div>
               ) : null}
+              {showProjectionFallback ? (
+                <div style={{ marginTop:7, color:V2.warn, fontSize:12, fontWeight:800, lineHeight:1.35 }}>
+                  Projection paused: {v2QualityReason(dataQuality, 'projection')}.
+                </div>
+              ) : null}
               <div style={{ marginTop:8, color:V2.muted, fontSize:13, fontWeight:800, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                 vs {matchup.opponent}{matchup.daysLeft !== null ? ` · ${matchup.daysLeft}d left` : ''}
               </div>
@@ -750,6 +769,12 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
           </div>
         )}
       </div>
+
+      {showRecommendationFallback ? (
+        <V2Caution eyebrow="Advice paused" tone="warn">
+          Recommendation data is incomplete: {v2QualityReason(dataQuality, 'recommendation')}.
+        </V2Caution>
+      ) : null}
 
       <V2HealthSummary health={health}/>
 

@@ -15,6 +15,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+import sandlot_data_quality
 import sandlot_db
 import sandlot_skipper
 
@@ -86,6 +87,7 @@ def payload_for_snapshot(
     roster_rows = (data.get("roster") or {}).get("rows") or []
     fa_players = (data.get("free_agents") or {}).get("players") or []
     freshness = _freshness(taken_at)
+    data_quality = sandlot_data_quality.snapshot_data_quality(data)
 
     message = None
     diagnostics: dict[str, Any] = {
@@ -95,7 +97,14 @@ def payload_for_snapshot(
         "protected_move_out_count": 0,
         "protected_move_outs": [],
     }
-    if not fa_players:
+    if not data_quality.get("recommendations_ready"):
+        cards: list[dict[str, Any]] = []
+        message = (
+            "Waiver recommendations paused: "
+            + sandlot_data_quality.short_reason(data_quality, purpose="recommendations")
+            + "."
+        )
+    elif not fa_players:
         cards: list[dict[str, Any]] = []
         message = "Free-agent pool is missing from the latest Fantrax snapshot."
     else:
@@ -116,6 +125,7 @@ def payload_for_snapshot(
                 "freshness": freshness,
                 "cards": cards,
                 "diagnostics": diagnostics,
+                "data_quality": data_quality,
             },
         )
     else:
@@ -129,6 +139,7 @@ def payload_for_snapshot(
         "brief": brief,
         "message": message,
         "diagnostics": diagnostics,
+        "data_quality": data_quality,
     }
 
 
@@ -845,6 +856,7 @@ def _refresh_prompt_context(snapshot_row: dict[str, Any], payload: dict[str, Any
         "taken_at": snapshot_row.get("taken_at"),
         "team_name": data.get("team_name"),
         "freshness": payload.get("freshness"),
+        "data_quality": payload.get("data_quality"),
         "weak_positions": (payload.get("diagnostics") or {}).get("weak_positions"),
         "top_waiver_swaps": [
             {
