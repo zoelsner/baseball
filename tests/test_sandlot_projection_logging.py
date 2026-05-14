@@ -84,6 +84,7 @@ class ProjectionLoggingTests(unittest.TestCase):
         self.assertEqual(params[1], sandlot_matchup.MODEL_VERSION)
         self.assertEqual(params[2], "api")
         self.assertEqual(params[4], "league:4:me:opp")
+        self.assertEqual(params[-1].obj, {})
 
     def test_successful_refresh_persists_projection_log(self):
         snapshot = projection_ready_snapshot()
@@ -118,6 +119,43 @@ class ProjectionLoggingTests(unittest.TestCase):
         self.assertEqual(record["surface"], "api")
         self.assertEqual(record["matchup_key"], "league:4:me:opp")
         self.assertEqual(record["predicted_margin"], 3.0)
+        self.assertIn("drivers", record)
+
+    def test_completed_refresh_fills_actuals_for_prior_logs(self):
+        snapshot = projection_ready_snapshot()
+        snapshot["matchup"]["complete"] = True
+        update_actuals = Mock()
+
+        with patch.dict(
+            sandlot_refresh.os.environ,
+            {"FANTRAX_LEAGUE_ID": "league", "FANTRAX_TEAM_ID": "me"},
+            clear=False,
+        ), patch.object(sandlot_refresh.sandlot_db, "init_schema"), patch.object(
+            sandlot_refresh.sandlot_db, "create_refresh_run", return_value=7
+        ), patch.object(
+            sandlot_refresh, "_session_from_available_cookies", return_value=(object(), None, "test")
+        ), patch.object(
+            sandlot_refresh.fantrax_data, "collect_all", return_value=snapshot
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "insert_snapshot", return_value=123
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "finish_refresh_run"
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "prune_successful_snapshots"
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "upsert_projection_log"
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "update_projection_actuals", update_actuals
+        ):
+            result = sandlot_refresh.run_refresh(source="manual")
+
+        self.assertTrue(result.ok)
+        update_actuals.assert_called_once()
+        actual = update_actuals.call_args.kwargs
+        self.assertEqual(actual["matchup_key"], "league:4:me:opp")
+        self.assertEqual(actual["actual_my"], 10.0)
+        self.assertEqual(actual["actual_opp"], 8.0)
+        self.assertEqual(actual["actual_winner"], "me")
 
     def test_skipper_projection_logging_tags_user_visible_surfaces(self):
         snapshot = projection_ready_snapshot()
@@ -133,6 +171,36 @@ class ProjectionLoggingTests(unittest.TestCase):
         for call in upsert.call_args_list:
             self.assertEqual(call.kwargs["snapshot_id"], 123)
             self.assertEqual(call.kwargs["model_version"], sandlot_matchup.MODEL_VERSION)
+
+    def test_update_projection_actuals_matches_existing_log_rows(self):
+        calls = []
+
+        class FakeResult:
+            def fetchall(self):
+                return [{"id": 1}, {"id": 2}]
+
+        class FakeConn:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                return FakeResult()
+
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            count = sandlot_db.update_projection_actuals(
+                matchup_key="league:4:me:opp",
+                period_id="4",
+                actual_my=12.0,
+                actual_opp=10.0,
+                actual_winner="me",
+            )
+
+        self.assertEqual(count, 2)
+        sql, params = calls[0]
+        self.assertIn("UPDATE projection_logs", sql)
+        self.assertEqual(params[3], "league:4:me:opp")
 
 
 if __name__ == "__main__":

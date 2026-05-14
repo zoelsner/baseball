@@ -198,6 +198,7 @@ def init_schema() -> None:
               predicted_margin DOUBLE PRECISION NOT NULL,
               win_probability DOUBLE PRECISION NOT NULL,
               data_quality JSONB NOT NULL DEFAULT '{}'::jsonb,
+              drivers JSONB NOT NULL DEFAULT '{}'::jsonb,
               actual_my DOUBLE PRECISION,
               actual_opp DOUBLE PRECISION,
               actual_winner TEXT,
@@ -215,6 +216,7 @@ def init_schema() -> None:
         conn.execute("UPDATE projection_logs SET shown_date = COALESCE(shown_date, created_at::date, CURRENT_DATE) WHERE shown_date IS NULL")
         conn.execute("ALTER TABLE projection_logs ALTER COLUMN shown_date SET DEFAULT CURRENT_DATE")
         conn.execute("ALTER TABLE projection_logs ALTER COLUMN shown_date SET NOT NULL")
+        conn.execute("ALTER TABLE projection_logs ADD COLUMN IF NOT EXISTS drivers JSONB NOT NULL DEFAULT '{}'::jsonb")
         conn.execute("ALTER TABLE projection_logs DROP CONSTRAINT IF EXISTS projection_logs_snapshot_id_model_version_matchup_key_key")
         conn.execute(
             """
@@ -631,6 +633,7 @@ def upsert_projection_log(
     predicted_margin: float,
     win_probability: float,
     data_quality: dict[str, Any] | None = None,
+    drivers: dict[str, Any] | None = None,
     surface: str = "api",
     shown_date: date | None = None,
 ) -> None:
@@ -641,10 +644,10 @@ def upsert_projection_log(
               (
                 snapshot_id, model_version, surface, shown_date, matchup_key, period_id,
                 my_team_id, opponent_team_id, predicted_my, predicted_opp,
-                predicted_margin, win_probability, data_quality
+                predicted_margin, win_probability, data_quality, drivers
               )
             VALUES
-              (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+              (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (model_version, matchup_key, surface, shown_date) DO UPDATE
             SET snapshot_id = EXCLUDED.snapshot_id,
                 period_id = EXCLUDED.period_id,
@@ -655,6 +658,7 @@ def upsert_projection_log(
                 predicted_margin = EXCLUDED.predicted_margin,
                 win_probability = EXCLUDED.win_probability,
                 data_quality = EXCLUDED.data_quality,
+                drivers = EXCLUDED.drivers,
                 updated_at = now()
             """,
             (
@@ -671,8 +675,56 @@ def upsert_projection_log(
                 predicted_margin,
                 win_probability,
                 Jsonb(data_quality or {}),
+                Jsonb(drivers or {}),
             ),
         )
+
+
+def update_projection_actuals(
+    *,
+    matchup_key: str,
+    period_id: str | None,
+    actual_my: float,
+    actual_opp: float,
+    actual_winner: str,
+) -> int:
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            UPDATE projection_logs
+            SET actual_my = %s,
+                actual_opp = %s,
+                actual_winner = %s,
+                updated_at = now()
+            WHERE matchup_key = %s
+              AND (%s IS NULL OR period_id = %s)
+            RETURNING id
+            """,
+            (actual_my, actual_opp, actual_winner, matchup_key, period_id, period_id),
+        ).fetchall()
+    return len(rows)
+
+
+def list_projection_logs_for_evaluation(limit: int | None = None) -> list[dict[str, Any]]:
+    sql = """
+        SELECT
+          id, snapshot_id, model_version, surface, shown_date, matchup_key, period_id,
+          my_team_id, opponent_team_id, predicted_my, predicted_opp,
+          predicted_margin, win_probability, data_quality, drivers,
+          actual_my, actual_opp, actual_winner, created_at, updated_at
+        FROM projection_logs
+        WHERE actual_my IS NOT NULL
+          AND actual_opp IS NOT NULL
+          AND actual_winner IS NOT NULL
+        ORDER BY updated_at DESC, id DESC
+    """
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT %s"
+        params = (limit,)
+    with connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
 
 
 def prune_successful_snapshots(keep: int = 30) -> int:
