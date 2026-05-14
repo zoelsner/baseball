@@ -1,0 +1,121 @@
+import unittest
+from contextlib import contextmanager
+from unittest.mock import Mock, patch
+
+import sandlot_db
+import sandlot_matchup
+import sandlot_refresh
+
+
+def future_game(day=14):
+    return {"date": f"2026-05-{day:02d}"}
+
+
+def projection_ready_snapshot():
+    return {
+        "league_id": "league",
+        "team_id": "me",
+        "team_name": "My Team",
+        "matchup": {
+            "my_score": 10,
+            "opponent_score": 8,
+            "opponent_team_id": "opp",
+            "period_number": 4,
+            "end": "2026-05-20",
+        },
+        "roster": {
+            "rows": [
+                {
+                    "id": "mine-1",
+                    "slot": "2B",
+                    "positions": "2B",
+                    "fppg": 2.0,
+                    "future_games": [future_game()],
+                },
+            ],
+        },
+        "all_team_rosters": {
+            "opp": {
+                "rows": [
+                    {
+                        "id": "opp-1",
+                        "slot": "SS",
+                        "positions": "SS",
+                        "fppg": 1.0,
+                        "future_games": [future_game()],
+                    },
+                ],
+            },
+        },
+    }
+
+
+class ProjectionLoggingTests(unittest.TestCase):
+    def test_upsert_projection_log_uses_idempotent_conflict_key(self):
+        calls = []
+
+        class FakeConn:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            sandlot_db.upsert_projection_log(
+                snapshot_id=123,
+                model_version=sandlot_matchup.MODEL_VERSION,
+                matchup_key="league:4:me:opp",
+                period_id="4",
+                my_team_id="me",
+                opponent_team_id="opp",
+                predicted_my=12.0,
+                predicted_opp=9.0,
+                predicted_margin=3.0,
+                win_probability=0.75,
+                data_quality={"projection_ready": True},
+            )
+
+        sql, params = calls[0]
+        self.assertIn("ON CONFLICT (snapshot_id, model_version, matchup_key) DO UPDATE", sql)
+        self.assertEqual(params[0], 123)
+        self.assertEqual(params[1], sandlot_matchup.MODEL_VERSION)
+        self.assertEqual(params[2], "league:4:me:opp")
+
+    def test_successful_refresh_persists_projection_log(self):
+        snapshot = projection_ready_snapshot()
+        upsert = Mock()
+
+        with patch.dict(
+            sandlot_refresh.os.environ,
+            {"FANTRAX_LEAGUE_ID": "league", "FANTRAX_TEAM_ID": "me"},
+            clear=False,
+        ), patch.object(sandlot_refresh.sandlot_db, "init_schema"), patch.object(
+            sandlot_refresh.sandlot_db, "create_refresh_run", return_value=7
+        ), patch.object(
+            sandlot_refresh, "_session_from_available_cookies", return_value=(object(), None, "test")
+        ), patch.object(
+            sandlot_refresh.fantrax_data, "collect_all", return_value=snapshot
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "insert_snapshot", return_value=123
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "finish_refresh_run"
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "prune_successful_snapshots"
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "upsert_projection_log", upsert
+        ):
+            result = sandlot_refresh.run_refresh(source="manual")
+
+        self.assertTrue(result.ok)
+        upsert.assert_called_once()
+        record = upsert.call_args.kwargs
+        self.assertEqual(record["snapshot_id"], 123)
+        self.assertEqual(record["model_version"], sandlot_matchup.MODEL_VERSION)
+        self.assertEqual(record["matchup_key"], "league:4:me:opp")
+        self.assertEqual(record["predicted_margin"], 3.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -56,11 +56,18 @@ class MatchupProjectionTests(unittest.TestCase):
 
         projection = sandlot_matchup.compute_projection(snapshot)
 
+        self.assertEqual(projection["model_version"], sandlot_matchup.MODEL_VERSION)
         self.assertEqual(projection["projected_my"], 11.0)
         self.assertEqual(projection["projected_opp"], 11.0)
         self.assertEqual(projection["my_remaining_games"], 2)
         self.assertEqual(projection["opp_remaining_games"], 2)
         self.assertEqual(projection["win_probability"], 0.5)
+        self.assertEqual(projection["drivers"]["current_margin"], 2.0)
+        self.assertEqual(projection["drivers"]["projected_margin"], 0.0)
+        self.assertEqual(projection["drivers"]["rest_of_period_delta"], -2.0)
+        self.assertEqual(projection["drivers"]["game_volume_edge"], 0)
+        self.assertEqual(projection["drivers"]["risk_level"], "high")
+        self.assertIn("Rest-of-period swing is -2", projection["drivers"]["summary"])
         self.assertFalse(projection["complete"])
 
     def test_returns_completed_projection_without_future_game_requirements(self):
@@ -72,11 +79,15 @@ class MatchupProjectionTests(unittest.TestCase):
             },
         })
 
+        self.assertEqual(projection["model_version"], sandlot_matchup.MODEL_VERSION)
         self.assertEqual(projection["projected_my"], 12.0)
         self.assertEqual(projection["projected_opp"], 20.0)
         self.assertEqual(projection["my_remaining_games"], 0)
         self.assertEqual(projection["opp_remaining_games"], 0)
         self.assertEqual(projection["win_probability"], 0.0)
+        self.assertEqual(projection["drivers"]["current_margin"], -8.0)
+        self.assertEqual(projection["drivers"]["projected_margin"], -8.0)
+        self.assertEqual(projection["drivers"]["rest_of_period_delta"], 0.0)
         self.assertTrue(projection["complete"])
 
     def test_returns_none_when_opponent_roster_is_missing(self):
@@ -160,6 +171,55 @@ class MatchupProjectionTests(unittest.TestCase):
 
         self.assertEqual(payload["matchup"]["projection"]["projected_my"], 3.0)
         self.assertEqual(payload["matchup"]["projection"]["projected_opp"], 2.0)
+        self.assertEqual(payload["matchup"]["projection"]["model_version"], sandlot_matchup.MODEL_VERSION)
+
+    def test_projection_log_payload_matches_projection_output(self):
+        snapshot = {
+            "league_id": "league",
+            "team_id": "me",
+            "matchup": {
+                "my_score": 1,
+                "opponent_score": 1,
+                "opponent_team_id": "opp",
+                "period_number": 4,
+                "end": "2026-05-20",
+            },
+            "roster": {
+                "rows": [
+                    {
+                        "id": "mine-1",
+                        "slot": "2B",
+                        "fppg": 2.0,
+                        "future_games": [future_game(14)],
+                    },
+                ],
+            },
+            "all_team_rosters": {
+                "opp": {
+                    "rows": [
+                        {
+                            "id": "opp-1",
+                            "slot": "SS",
+                            "fppg": 1.0,
+                            "future_games": [future_game(14)],
+                        },
+                    ],
+                },
+            },
+        }
+
+        record = sandlot_matchup.projection_log_payload(123, snapshot)
+
+        self.assertEqual(record["snapshot_id"], 123)
+        self.assertEqual(record["model_version"], sandlot_matchup.MODEL_VERSION)
+        self.assertEqual(record["matchup_key"], "league:4:me:opp")
+        self.assertEqual(record["period_id"], "4")
+        self.assertEqual(record["my_team_id"], "me")
+        self.assertEqual(record["opponent_team_id"], "opp")
+        self.assertEqual(record["predicted_my"], 3.0)
+        self.assertEqual(record["predicted_opp"], 2.0)
+        self.assertEqual(record["predicted_margin"], 1.0)
+        self.assertGreater(record["win_probability"], 0.5)
 
 
 if __name__ == "__main__":
