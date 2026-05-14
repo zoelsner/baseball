@@ -8,8 +8,26 @@ from typing import Any
 
 
 INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH"}
+BENCH_SLOTS = {"BN", "BE", "BENCH", "RES", "RESERVE"}
 UNAVAILABLE_INJURIES = {"OUT", "IL", "IL10", "IL60", "IR"}
 MODEL_VERSION = "matchup_projection_v1"
+HITTER_POSITIONS = {"C", "1B", "2B", "3B", "SS", "OF", "LF", "CF", "RF"}
+PITCHER_POSITIONS = {"P", "SP", "RP"}
+POSITION_ALIASES = {
+    "LF": "OF",
+    "CF": "OF",
+    "RF": "OF",
+    "STARTING": "SP",
+    "RELIEF": "RP",
+}
+GENERIC_POSITIONS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "HIT", "PIT", "ALL"}
+SLOT_COMPATIBILITY = {
+    "UTIL": HITTER_POSITIONS,
+    "MI": {"2B", "SS"},
+    "CI": {"1B", "3B"},
+    "P": PITCHER_POSITIONS,
+    "OF": {"OF", "LF", "CF", "RF"},
+}
 
 
 def compute_projection(
@@ -128,6 +146,353 @@ def projection_log_payload(
         "predicted_margin": round(predicted_my - predicted_opp, 1),
         "win_probability": win_probability,
         "data_quality": data_quality or {},
+    }
+
+
+def simulate_lineup_move_impact(
+    snapshot: dict[str, Any],
+    data_quality: dict[str, Any] | None = None,
+    *,
+    limit: int = 5,
+    min_points_delta: float = 0.0,
+) -> dict[str, Any]:
+    """Compare legal bench-to-active lineup moves against the base projection."""
+    data_quality = _recommendation_quality(snapshot, data_quality)
+    if isinstance(data_quality, dict) and not data_quality.get("recommendations_ready", True):
+        return _no_action_result(
+            base_projection=compute_projection(snapshot, data_quality),
+            reason="Recommendation data incomplete: " + _quality_reason(data_quality),
+        )
+
+    base_projection = compute_projection(snapshot, data_quality)
+    if not base_projection:
+        return _no_action_result(
+            base_projection=None,
+            reason="No matchup projection is available for lineup move simulation.",
+        )
+
+    matchup = snapshot.get("matchup")
+    roster = snapshot.get("roster") if isinstance(snapshot.get("roster"), dict) else {}
+    rows = roster.get("rows") if isinstance(roster, dict) else None
+    if not isinstance(matchup, dict) or not isinstance(rows, list):
+        return _no_action_result(
+            base_projection=base_projection,
+            reason="Roster or matchup data is missing from the snapshot.",
+        )
+
+    active_rows = [_indexed_row(row) for row in rows if _is_active_lineup_row(row)]
+    bench_rows = [_indexed_row(row) for row in rows if _is_bench_row(row)]
+    active_rows = [row for row in active_rows if row]
+    bench_rows = [row for row in bench_rows if row]
+    if not active_rows or not bench_rows:
+        return _no_action_result(
+            base_projection=base_projection,
+            reason="No active-and-bench roster combination is available to simulate.",
+        )
+
+    actions: list[dict[str, Any]] = []
+    best_rejected_delta: float | None = None
+    seen: set[tuple[tuple[str, str, str], ...]] = set()
+
+    for bench in bench_rows:
+        bench_slot = _slot(bench) or "BN"
+        for active in active_rows:
+            target_slot = _slot(active)
+            if not target_slot or not _can_play_slot(bench, target_slot):
+                continue
+            chain = [
+                _move_step(bench, bench_slot, target_slot),
+                _move_step(active, target_slot, bench_slot),
+            ]
+            action, best_rejected_delta = _evaluate_move_chain(
+                snapshot=snapshot,
+                data_quality=data_quality,
+                base_projection=base_projection,
+                rows=rows,
+                chain=chain,
+                move_shape="direct_swap",
+                min_points_delta=min_points_delta,
+                best_rejected_delta=best_rejected_delta,
+            )
+            if action:
+                key = _chain_key(action["chain"])
+                if key not in seen:
+                    seen.add(key)
+                    actions.append(action)
+
+    for bench in bench_rows:
+        bench_slot = _slot(bench) or "BN"
+        for target in active_rows:
+            target_slot = _slot(target)
+            if not target_slot or not _can_play_slot(bench, target_slot):
+                continue
+            for bridge in active_rows:
+                bridge_slot = _slot(bridge)
+                if not bridge_slot or _player_id(bridge) == _player_id(target):
+                    continue
+                if bridge_slot == target_slot:
+                    continue
+                if not _can_play_slot(target, bridge_slot):
+                    continue
+                chain = [
+                    _move_step(target, target_slot, bridge_slot),
+                    _move_step(bench, bench_slot, target_slot),
+                    _move_step(bridge, bridge_slot, bench_slot),
+                ]
+                action, best_rejected_delta = _evaluate_move_chain(
+                    snapshot=snapshot,
+                    data_quality=data_quality,
+                    base_projection=base_projection,
+                    rows=rows,
+                    chain=chain,
+                    move_shape="freeing_up_swap",
+                    min_points_delta=min_points_delta,
+                    best_rejected_delta=best_rejected_delta,
+                )
+                if action:
+                    key = _chain_key(action["chain"])
+                    if key not in seen:
+                        seen.add(key)
+                        actions.append(action)
+
+    actions.sort(key=lambda action: (action["points_delta"], action["win_probability_delta"]), reverse=True)
+    actions = actions[: max(0, limit)]
+    if actions:
+        return {
+            "model_version": MODEL_VERSION,
+            "base_projection": base_projection,
+            "actions": actions,
+            "no_action": None,
+        }
+    return _no_action_result(
+        base_projection=base_projection,
+        reason="No legal bench-to-active move improves projected points from the current snapshot.",
+        best_rejected_delta=best_rejected_delta,
+    )
+
+
+def _evaluate_move_chain(
+    *,
+    snapshot: dict[str, Any],
+    data_quality: dict[str, Any] | None,
+    base_projection: dict[str, Any],
+    rows: list[dict[str, Any]],
+    chain: list[dict[str, Any]],
+    move_shape: str,
+    min_points_delta: float,
+    best_rejected_delta: float | None,
+) -> tuple[dict[str, Any] | None, float | None]:
+    moved_rows = _apply_chain(rows, chain)
+    moved_snapshot = _with_roster_rows(snapshot, moved_rows)
+    moved_projection = compute_projection(moved_snapshot, data_quality)
+    if not moved_projection:
+        return None, best_rejected_delta
+
+    base_points = _number(base_projection.get("projected_my"))
+    moved_points = _number(moved_projection.get("projected_my"))
+    base_win = _number(base_projection.get("win_probability"))
+    moved_win = _number(moved_projection.get("win_probability"))
+    if base_points is None or moved_points is None or base_win is None or moved_win is None:
+        return None, best_rejected_delta
+
+    points_delta = round(moved_points - base_points, 1)
+    win_probability_delta = round(moved_win - base_win, 4)
+    if best_rejected_delta is None or points_delta > best_rejected_delta:
+        best_rejected_delta = points_delta
+    if points_delta <= min_points_delta or win_probability_delta < 0:
+        return None, best_rejected_delta
+
+    return {
+        "move_type": "lineup_swap",
+        "move_shape": move_shape,
+        "chain": chain,
+        "points_delta": points_delta,
+        "win_probability_delta": win_probability_delta,
+        "new_win_probability": round(moved_win, 4),
+        "new_projected_my": moved_projection.get("projected_my"),
+        "new_projected_opp": moved_projection.get("projected_opp"),
+        "reason_chips": _reason_chips(chain, rows, snapshot, move_shape),
+    }, best_rejected_delta
+
+
+def _apply_chain(rows: list[dict[str, Any]], chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = [dict(row) for row in rows]
+    by_id = {_player_id(row): row for row in out if _player_id(row)}
+    for step in chain:
+        row = by_id.get(str(step.get("player_id") or ""))
+        if row is not None:
+            row["slot"] = step.get("to_slot")
+    return out
+
+
+def _with_roster_rows(snapshot: dict[str, Any], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    roster = snapshot.get("roster") if isinstance(snapshot.get("roster"), dict) else {}
+    return {
+        **snapshot,
+        "roster": {
+            **roster,
+            "rows": rows,
+        },
+    }
+
+
+def _move_step(row: dict[str, Any], from_slot: str, to_slot: str) -> dict[str, Any]:
+    return {
+        "player_id": _player_id(row),
+        "player_name": row.get("name"),
+        "from_slot": from_slot,
+        "to_slot": to_slot,
+    }
+
+
+def _reason_chips(
+    chain: list[dict[str, Any]],
+    before_rows: list[dict[str, Any]],
+    snapshot: dict[str, Any],
+    move_shape: str,
+) -> list[str]:
+    before_by_id = {_player_id(row): row for row in before_rows if _player_id(row)}
+    promoted = next((step for step in chain if _is_bench_slot(step.get("from_slot")) and not _is_bench_slot(step.get("to_slot"))), None)
+    demoted = next((step for step in chain if not _is_bench_slot(step.get("from_slot")) and _is_bench_slot(step.get("to_slot"))), None)
+    chips: list[str] = []
+    if promoted and demoted:
+        promoted_before = before_by_id.get(str(promoted.get("player_id")))
+        demoted_before = before_by_id.get(str(demoted.get("player_id")))
+        matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
+        period_end = _parse_date(matchup.get("end"))
+        if period_end and promoted_before and demoted_before:
+            promoted_games = _games_remaining(promoted_before, period_end)
+            demoted_games = _games_remaining(demoted_before, period_end)
+            if promoted_games > demoted_games:
+                chips.append("more remaining games")
+        if promoted_before and demoted_before and _row_fppg(promoted_before) > _row_fppg(demoted_before):
+            chips.append("higher FP/G")
+    if move_shape == "freeing_up_swap":
+        first = chain[0]
+        chips.append(f"legal {first.get('from_slot')}/{first.get('to_slot')} chain")
+    elif promoted:
+        chips.append(f"legal {promoted.get('to_slot')} swap")
+    return chips or ["legal lineup move"]
+
+
+def _indexed_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(row, dict) or not _player_id(row):
+        return None
+    return row
+
+
+def _is_active_lineup_row(row: dict[str, Any]) -> bool:
+    slot = _slot(row)
+    return isinstance(row, dict) and bool(slot) and slot not in INACTIVE_SLOTS and not _is_unavailable(row)
+
+
+def _is_bench_row(row: dict[str, Any]) -> bool:
+    return isinstance(row, dict) and _is_bench_slot(_slot(row)) and not _is_unavailable(row)
+
+
+def _is_bench_slot(value: Any) -> bool:
+    return str(value or "").strip().upper() in BENCH_SLOTS
+
+
+def _slot(row: dict[str, Any] | None) -> str | None:
+    if not isinstance(row, dict):
+        return None
+    value = str(row.get("slot") or "").strip().upper()
+    return value or None
+
+
+def _player_id(row: dict[str, Any]) -> str | None:
+    value = row.get("id") or row.get("player_id")
+    return str(value) if value not in (None, "") else None
+
+
+def _can_play_slot(row: dict[str, Any], slot: str) -> bool:
+    if not slot or _is_bench_slot(slot):
+        return True
+    tokens = _eligibility_tokens(row)
+    if not tokens:
+        return False
+    slot = POSITION_ALIASES.get(str(slot).strip().upper(), str(slot).strip().upper())
+    if slot in tokens:
+        return True
+    allowed = SLOT_COMPATIBILITY.get(slot)
+    return bool(allowed and tokens & {POSITION_ALIASES.get(token, token) for token in allowed})
+
+
+def _eligibility_tokens(row: dict[str, Any]) -> set[str]:
+    values: list[Any] = []
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    player = raw.get("player") if isinstance(raw.get("player"), dict) else {}
+    for source in (row, player, raw):
+        if not isinstance(source, dict):
+            continue
+        for key in ("all_positions", "positions", "multi_positions", "pos"):
+            value = source.get(key)
+            if value:
+                values.append(value)
+
+    tokens: set[str] = set()
+    for value in values:
+        if isinstance(value, list):
+            parts = value
+        else:
+            parts = str(value).replace("/", ",").replace(" ", ",").split(",")
+        for raw_value in parts:
+            token = POSITION_ALIASES.get(str(raw_value or "").strip().upper(), str(raw_value or "").strip().upper())
+            if token and token not in GENERIC_POSITIONS:
+                tokens.add(token)
+    return tokens
+
+
+def _chain_key(chain: list[dict[str, Any]]) -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        (
+            str(step.get("player_id") or ""),
+            str(step.get("from_slot") or ""),
+            str(step.get("to_slot") or ""),
+        )
+        for step in chain
+    )
+
+
+def _recommendation_quality(
+    snapshot: dict[str, Any],
+    data_quality: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if data_quality is not None:
+        return data_quality
+    try:
+        import sandlot_data_quality
+
+        return sandlot_data_quality.snapshot_data_quality(snapshot)
+    except Exception:
+        return None
+
+
+def _quality_reason(data_quality: dict[str, Any]) -> str:
+    try:
+        import sandlot_data_quality
+
+        return sandlot_data_quality.short_reason(data_quality, purpose="recommendation")
+    except Exception:
+        reasons = data_quality.get("recommendation_reasons") or data_quality.get("reasons") or []
+        return str(reasons[0]) if reasons else "Required snapshot data is incomplete"
+
+
+def _no_action_result(
+    *,
+    base_projection: dict[str, Any] | None,
+    reason: str,
+    best_rejected_delta: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "model_version": MODEL_VERSION,
+        "base_projection": base_projection,
+        "actions": [],
+        "no_action": {
+            "reason": reason,
+            "best_rejected_delta": round(best_rejected_delta, 1) if best_rejected_delta is not None else None,
+        },
     }
 
 
