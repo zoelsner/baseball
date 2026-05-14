@@ -418,7 +418,11 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     matchup_block = data.get("matchup")
     matchup = None
     if isinstance(matchup_block, dict) and matchup_block:
-        matchup = {**matchup_block, "projection": sandlot_matchup.compute_projection(data, data_quality)}
+        matchup = {
+            **matchup_block,
+            "projection": sandlot_matchup.compute_projection(data, data_quality),
+            "recommendations": sandlot_matchup.rank_matchup_improvement_actions(data, data_quality),
+        }
     taken_at = row.get("taken_at")
     return {
         "snapshot_id": row.get("id"),

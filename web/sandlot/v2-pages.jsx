@@ -607,6 +607,72 @@ function V2WinProbabilityRing({ projection }) {
   );
 }
 
+function v2MoveChainText(chain) {
+  if (!Array.isArray(chain) || !chain.length) return 'No move detail';
+  return chain.map(step => {
+    const name = step.player_name || step.player_id || 'Player';
+    return `${name} ${step.from_slot || '?'} -> ${step.to_slot || '?'}`;
+  }).join('; ');
+}
+
+function V2MatchupRecommendationCard({ recommendations }) {
+  if (!recommendations) return null;
+  const top = recommendations.recommendations?.[0] || null;
+  const noAction = recommendations.no_action || null;
+  const chipStyle = {
+    display:'inline-flex',
+    alignItems:'center',
+    padding:'4px 7px',
+    borderRadius:999,
+    background:V2.surface2,
+    color:V2.muted,
+    fontSize:11,
+    fontWeight:800,
+    whiteSpace:'nowrap',
+  };
+  if (top) {
+    const points = v2Number(top.points_delta);
+    const confidence = top.confidence || 'medium';
+    const chain = top.action?.chain || [];
+    return (
+      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:'14px 15px', display:'flex', flexDirection:'column', gap:9 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+          <V2Eyebrow color={V2.accent}>Best lineup action</V2Eyebrow>
+          <span style={{ color:V2.accent, fontWeight:900, fontFamily:V2.fontMono, fontSize:12 }}>
+            +{points.toFixed(1)}
+          </span>
+        </div>
+        <div style={{ color:V2.ink, fontSize:14, lineHeight:1.35, fontWeight:800 }}>
+          {v2MoveChainText(chain)}
+        </div>
+        <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
+          <span style={chipStyle}>{confidence} confidence</span>
+          {(top.reason_chips || []).slice(0,3).map(chip => <span key={chip} style={chipStyle}>{chip}</span>)}
+        </div>
+      </div>
+    );
+  }
+  if (noAction) {
+    const bestRejected = v2Number(noAction.best_rejected_delta);
+    return (
+      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:'14px 15px', display:'flex', flexDirection:'column', gap:8 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+          <V2Eyebrow color={V2.muted}>Stable lineup</V2Eyebrow>
+          {noAction.best_rejected_delta !== null && noAction.best_rejected_delta !== undefined ? (
+            <span style={{ color:V2.muted, fontWeight:900, fontFamily:V2.fontMono, fontSize:12 }}>
+              best {bestRejected >= 0 ? '+' : ''}{bestRejected.toFixed(1)}
+            </span>
+          ) : null}
+        </div>
+        <div style={{ color:V2.body, fontSize:13, lineHeight:1.4, fontWeight:700 }}>
+          {noAction.reason || 'No compelling lineup move from this snapshot.'}
+        </div>
+      </div>
+    );
+  }
+  return null;
+}
+
 function v2LowOutputCutoff(starters) {
   const values = starters.map(v2PlayerMetric).filter(n => n > 0).sort((a,b)=>a-b);
   if (!values.length) return 0;
@@ -693,9 +759,10 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
   const dataQuality = model.dataQuality || null;
   const projection = matchup?.projection || null;
   const projectionInfo = v2ProjectionInfo(projection);
+  const matchupRecommendations = model.matchup?.recommendations || null;
   const showProjection = projectionInfo && !projectionInfo.complete;
   const showProjectionFallback = matchup && !showProjection && dataQuality?.projection_ready === false;
-  const showRecommendationFallback = model.source === 'api' && dataQuality?.recommendations_ready === false;
+  const showRecommendationFallback = model.source === 'api' && dataQuality?.recommendations_ready === false && !matchupRecommendations;
   const weekLabel = matchup?.week ? `Week ${matchup.week}` : 'Today';
   const staleCopy = sync.state === 'failed'
     ? (sync.error || 'Last refresh failed.')
@@ -774,6 +841,8 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
           </div>
         )}
       </div>
+
+      <V2MatchupRecommendationCard recommendations={matchupRecommendations}/>
 
       {showRecommendationFallback ? (
         <V2Caution eyebrow="Advice paused" tone="warn">
