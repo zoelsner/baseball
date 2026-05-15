@@ -1,0 +1,60 @@
+name: Sandlot Refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs hourly, then gates on America/New_York 7:00-23:59 inside the job so
+    # daylight saving time does not shift the waking-hours window.
+    - cron: "0 * * * *"
+
+concurrency:
+  group: sandlot-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Hourly Fantrax refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SANDLOT_URL: ${{ secrets.SANDLOT_URL || 'https://web-production-90664.up.railway.app' }}
+      SANDLOT_REFRESH_TOKEN: ${{ secrets.SANDLOT_REFRESH_TOKEN }}
+    steps:
+      - name: Check waking-hours window
+        id: window
+        run: |
+          python -c "from datetime import datetime; from zoneinfo import ZoneInfo; now=datetime.now(ZoneInfo('America/New_York')); print(f'active={str(7 <= now.hour <= 23).lower()}'); print(f'local_time={now.isoformat()}')" >> "$GITHUB_OUTPUT"
+
+      - name: Skip outside active window
+        if: steps.window.outputs.active != 'true'
+        run: echo "Skipping refresh outside 7am-11pm Eastern. Local time: ${{ steps.window.outputs.local_time }}"
+
+      - name: Refresh Fantrax snapshot
+        if: steps.window.outputs.active == 'true'
+        run: |
+          if [ -n "$SANDLOT_REFRESH_TOKEN" ]; then
+            curl -fsS -X POST "$SANDLOT_URL/api/refresh" -H "x-refresh-token: $SANDLOT_REFRESH_TOKEN" > /tmp/sandlot-refresh.json
+          else
+            curl -fsS -X POST "$SANDLOT_URL/api/refresh" > /tmp/sandlot-refresh.json
+          fi
+          python - <<'PY'
+          import json
+
+          with open("/tmp/sandlot-refresh.json", "r", encoding="utf-8") as handle:
+              payload = json.load(handle)
+
+          snapshot = payload.get("snapshot") or {}
+          matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
+          projection = matchup.get("projection") if isinstance(matchup.get("projection"), dict) else {}
+          summary = {
+              "status": payload.get("status"),
+              "snapshot_id": payload.get("snapshot_id") or snapshot.get("snapshot_id"),
+              "duration_ms": payload.get("duration_ms"),
+              "taken_at": snapshot.get("taken_at"),
+              "freshness": snapshot.get("freshness"),
+              "projection_model": projection.get("model_version"),
+              "projected_my": projection.get("projected_my"),
+              "projected_opp": projection.get("projected_opp"),
+          }
+          print(json.dumps(summary, indent=2, default=str))
+          PY

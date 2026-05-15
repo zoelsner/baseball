@@ -10,7 +10,7 @@ from typing import Any
 INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH"}
 BENCH_SLOTS = {"BN", "BE", "BENCH", "RES", "RESERVE"}
 UNAVAILABLE_INJURIES = {"OUT", "IL", "IL10", "IL60", "IR"}
-MODEL_VERSION = "matchup_projection_v2"
+MODEL_VERSION = "matchup_projection_v3"
 MIN_MEANINGFUL_POINTS_DELTA = 1.0
 MIN_MEANINGFUL_WIN_PROBABILITY_DELTA = 0.01
 HITTER_POSITIONS = {"C", "1B", "2B", "3B", "SS", "OF", "LF", "CF", "RF"}
@@ -49,15 +49,11 @@ PITCHER_APPEARANCE_FLAGS = {
     "scheduledAppearance",
     "scheduled_start",
     "scheduledStart",
-    "starting",
 }
 PITCHER_APPEARANCE_FIELDS = {
     "pitcher",
     "pitcher_id",
     "pitcherId",
-    "player",
-    "player_id",
-    "playerId",
     "probable_pitcher",
     "probablePitcher",
     "scheduled_starter",
