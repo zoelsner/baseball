@@ -79,11 +79,9 @@ runs `python sandlot_cron.py` on the desired schedule.
 
 The production freshness floor is also enforced in code by
 `.github/workflows/sandlot-refresh.yml`. That workflow runs hourly, gates on
-America/New_York 7am-11pm, and posts to `/api/refresh`. It uses
-`SANDLOT_URL` and `SANDLOT_REFRESH_TOKEN` repository secrets when present,
-falling back to the known Railway URL and no token. This keeps the latest
-snapshot at most about one hour old during waking hours even if the Railway
-cron schedule is misconfigured or missed.
+America/New_York 7am-11pm, and posts to the production `/api/refresh` endpoint.
+This keeps the latest snapshot at most about one hour old during waking hours
+even if the Railway cron schedule is misconfigured or missed.
 
 ## API
 
