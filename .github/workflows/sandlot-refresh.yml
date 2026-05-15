@@ -1,7 +1,7 @@
 name: Sandlot Refresh
 
-on:
-  workflow_dispatch:
+"on":
+  workflow_dispatch: {}
   schedule:
     # Runs hourly, then gates on America/New_York 7:00-23:59 inside the job so
     # daylight saving time does not shift the waking-hours window.
