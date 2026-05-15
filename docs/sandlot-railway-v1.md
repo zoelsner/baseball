@@ -3,7 +3,8 @@
 V1 runs all-in on Railway:
 
 - `web`: FastAPI app serving `/api/*` plus `web/sandlot/index.html`
-- `cron`: one-shot daily scraper using the same refresh runner as the API
+- `cron`: one-shot scraper using the same refresh runner as the API
+- GitHub Actions scheduled refresh: hourly during 7am-11pm Eastern, calling the same `/api/refresh` endpoint
 - Postgres: source of truth for raw Fantrax snapshots, stored cookies, chat history, player stat/media caches, and cached player-card takes
 
 ## Required Variables
@@ -74,7 +75,15 @@ cron: python sandlot_cron.py
 ```
 
 For Railway, create one web service from the repo and one cron service that
-runs `python sandlot_cron.py` on the desired daily schedule.
+runs `python sandlot_cron.py` on the desired schedule.
+
+The production freshness floor is also enforced in code by
+`.github/workflows/sandlot-refresh.yml`. That workflow runs hourly, gates on
+America/New_York 7am-11pm, and posts to `/api/refresh`. It uses
+`SANDLOT_URL` and `SANDLOT_REFRESH_TOKEN` repository secrets when present,
+falling back to the known Railway URL and no token. This keeps the latest
+snapshot at most about one hour old during waking hours even if the Railway
+cron schedule is misconfigured or missed.
 
 ## API
 

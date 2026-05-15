@@ -258,6 +258,7 @@ function V2Eyebrow({ children, color }) {
 // Shared by initial-load auto-retry and the manual refresh button.
 function v2RefreshErrorMessage(payload, status) {
   const detail = payload?.detail ?? payload ?? {};
+  if (status === 401) return 'Refresh token missing or invalid. Set localStorage.sandlot_refresh_token and try again.';
   if (typeof detail === 'string') return detail;
   if (Array.isArray(detail?.errors) && detail.errors.length) return detail.errors.join('; ');
   if (detail?.error) return detail.error;
@@ -265,8 +266,16 @@ function v2RefreshErrorMessage(payload, status) {
   return `Refresh failed (${status})`;
 }
 
+function v2RefreshHeaders() {
+  let token = '';
+  try { token = window.localStorage.getItem('sandlot_refresh_token') || ''; } catch {}
+  token = token.trim();
+  return token ? { 'x-refresh-token': token } : undefined;
+}
+
 async function v2FetchRefresh() {
-  const res = await fetch('/api/refresh', { method:'POST' });
+  const headers = v2RefreshHeaders();
+  const res = await fetch('/api/refresh', headers ? { method:'POST', headers } : { method:'POST' });
   const payload = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = payload?.detail || {};

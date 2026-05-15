@@ -12,7 +12,7 @@ projected_final = current_score + sum(active_player_fp_per_game * remaining_game
 
 It runs that formula for your active roster and the opponent's active roster. Bench, IL, reserve, and unavailable players are excluded from the active projection. Remaining games come from the snapshot's future-game data and only count games through the matchup period end.
 
-For `matchup_projection_v2`, generic future-game data is only counted as a projected appearance for hitter rows. Pitcher rows are excluded from future-game counting unless the game entry has pitcher-specific start or appearance evidence. Team schedule context is not enough to project an SP/RP/P row, because it would treat every remaining team game as a guaranteed pitcher appearance.
+For `matchup_projection_v3`, generic future-game data is only counted as a projected appearance for hitter rows. Pitcher rows are excluded from future-game counting unless the game entry has pitcher-specific start or appearance evidence. Team schedule context is not enough to project an SP/RP/P row, because it would treat every remaining team game as a guaranteed pitcher appearance. A generic `player` payload on the future-game row is not start evidence; Fantrax attaches that to normal player schedule rows.
 
 The projected margin is:
 
