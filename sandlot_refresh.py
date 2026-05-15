@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ import sandlot_db
 import sandlot_matchup
 
 log = logging.getLogger(__name__)
+REFRESH_LOCK_ID = 2026051501
 
 
 @dataclass
@@ -41,8 +43,15 @@ def run_refresh(source: str = "manual") -> RefreshResult:
     load_dotenv()
     sandlot_db.init_schema()
 
-    run_id = sandlot_db.create_refresh_run(source)
     started = time.perf_counter()
+    with _refresh_lock() as locked:
+        if not locked:
+            return _skipped_refresh(source, started, "Refresh already in progress")
+        return _run_refresh_unlocked(source, started)
+
+
+def _run_refresh_unlocked(source: str, started: float) -> RefreshResult:
+    run_id = sandlot_db.create_refresh_run(source)
     snapshot_id: int | None = None
 
     try:
@@ -113,6 +122,39 @@ def run_refresh(source: str = "manual") -> RefreshResult:
             )
         log.exception("Sandlot refresh failed")
         return RefreshResult(status="failed", snapshot_id=snapshot_id, duration_ms=duration_ms, errors=[error])
+
+
+@contextmanager
+def _refresh_lock():
+    with sandlot_db.connect() as conn:
+        row = conn.execute(
+            "SELECT pg_try_advisory_lock(%s) AS locked",
+            (REFRESH_LOCK_ID,),
+        ).fetchone()
+        locked = bool(row and row.get("locked"))
+        if not locked:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (REFRESH_LOCK_ID,))
+
+
+def _skipped_refresh(source: str, started: float, reason: str) -> RefreshResult:
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    try:
+        run_id = sandlot_db.create_refresh_run(source)
+        sandlot_db.finish_refresh_run(
+            run_id,
+            status="skipped",
+            snapshot_id=None,
+            duration_ms=duration_ms,
+            error=reason,
+        )
+    except Exception:
+        log.exception("Failed to record skipped refresh")
+    return RefreshResult(status="skipped", snapshot_id=None, duration_ms=duration_ms, errors=[reason])
 
 
 def _persist_projection_log(snapshot_id: int, snapshot: dict[str, Any]) -> None:

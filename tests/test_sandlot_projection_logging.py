@@ -1,7 +1,10 @@
 import unittest
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
+import fastapi
+import sandlot_api
 import sandlot_db
 import sandlot_matchup
 import sandlot_refresh
@@ -10,6 +13,11 @@ from sandlot_api import _log_skipper_projection_surfaces, _snapshot_payload
 
 def future_game(day=14):
     return {"date": f"2026-05-{day:02d}"}
+
+
+@contextmanager
+def fake_refresh_lock(locked=True):
+    yield locked
 
 
 def projection_ready_snapshot():
@@ -95,6 +103,8 @@ class ProjectionLoggingTests(unittest.TestCase):
             {"FANTRAX_LEAGUE_ID": "league", "FANTRAX_TEAM_ID": "me"},
             clear=False,
         ), patch.object(sandlot_refresh.sandlot_db, "init_schema"), patch.object(
+            sandlot_refresh, "_refresh_lock", return_value=fake_refresh_lock(True)
+        ), patch.object(
             sandlot_refresh.sandlot_db, "create_refresh_run", return_value=7
         ), patch.object(
             sandlot_refresh, "_session_from_available_cookies", return_value=(object(), None, "test")
@@ -131,6 +141,8 @@ class ProjectionLoggingTests(unittest.TestCase):
             {"FANTRAX_LEAGUE_ID": "league", "FANTRAX_TEAM_ID": "me"},
             clear=False,
         ), patch.object(sandlot_refresh.sandlot_db, "init_schema"), patch.object(
+            sandlot_refresh, "_refresh_lock", return_value=fake_refresh_lock(True)
+        ), patch.object(
             sandlot_refresh.sandlot_db, "create_refresh_run", return_value=7
         ), patch.object(
             sandlot_refresh, "_session_from_available_cookies", return_value=(object(), None, "test")
@@ -156,6 +168,68 @@ class ProjectionLoggingTests(unittest.TestCase):
         self.assertEqual(actual["actual_my"], 10.0)
         self.assertEqual(actual["actual_opp"], 8.0)
         self.assertEqual(actual["actual_winner"], "me")
+
+    def test_refresh_skips_when_lock_is_held(self):
+        with patch.object(sandlot_refresh.sandlot_db, "init_schema"), patch.object(
+            sandlot_refresh, "_refresh_lock", return_value=fake_refresh_lock(False)
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "create_refresh_run", return_value=7
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "finish_refresh_run"
+        ) as finish:
+            result = sandlot_refresh.run_refresh(source="manual")
+
+        self.assertEqual(result.status, "skipped")
+        self.assertFalse(result.ok)
+        self.assertIn("already in progress", result.errors[0])
+        finish.assert_called_once()
+        self.assertEqual(finish.call_args.kwargs["status"], "skipped")
+        self.assertIsNone(finish.call_args.kwargs["snapshot_id"])
+
+    def test_refresh_api_returns_latest_snapshot_when_refresh_is_already_running(self):
+        result = sandlot_refresh.RefreshResult(
+            status="skipped",
+            snapshot_id=None,
+            duration_ms=5,
+            errors=["Refresh already in progress"],
+        )
+        row = {
+            "id": 123,
+            "taken_at": datetime.now(timezone.utc),
+            "source": "manual",
+            "status": "success",
+            "data": projection_ready_snapshot(),
+        }
+
+        with patch.object(sandlot_api, "_require_refresh_token"), patch.object(
+            sandlot_api, "run_refresh", return_value=result
+        ), patch.object(
+            sandlot_api.sandlot_db, "latest_successful_snapshot", return_value=row
+        ):
+            payload = sandlot_api.refresh(None, None)
+
+        self.assertEqual(payload["status"], "skipped")
+        self.assertEqual(payload["snapshot_id"], 123)
+        self.assertEqual(payload["snapshot"]["snapshot_id"], 123)
+        self.assertIn("already running", payload["fallback_reason"])
+
+    def test_refresh_api_raises_when_skipped_without_fallback_snapshot(self):
+        result = sandlot_refresh.RefreshResult(
+            status="skipped",
+            snapshot_id=None,
+            duration_ms=5,
+            errors=["Refresh already in progress"],
+        )
+
+        with patch.object(sandlot_api, "_require_refresh_token"), patch.object(
+            sandlot_api, "run_refresh", return_value=result
+        ), patch.object(
+            sandlot_api.sandlot_db, "latest_successful_snapshot", return_value=None
+        ), self.assertRaises(fastapi.HTTPException) as raised:
+            sandlot_api.refresh(None, None)
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertFalse(raised.exception.detail["fallback"])
 
     def test_skipper_projection_logging_tags_user_visible_surfaces(self):
         snapshot = projection_ready_snapshot()

@@ -39,6 +39,9 @@ const V2_SKIPPER_MODELS = [
   { id:'deepseek/deepseek-v4-pro', label:'DeepSeek V4 Pro', short:'DS Pro' },
 ];
 const V2_SKIPPER_DEFAULT_MODEL = 'moonshotai/kimi-k2';
+const V2_AUTO_REFRESH_MAX_AGE_MINUTES = 60;
+const V2_AUTO_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
+const V2_AUTO_REFRESH_LAST_ATTEMPT_KEY = 'sandlot_last_auto_refresh_at';
 
 function v2StoredValue(key, fallback) {
   try {
@@ -288,6 +291,44 @@ async function v2FetchRefresh() {
   return v2NormalizeSnapshot(payload.snapshot);
 }
 
+function v2EasternHour() {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date());
+    const hour = Number(parts.find(part => part.type === 'hour')?.value);
+    if (Number.isFinite(hour)) return hour;
+  } catch {}
+  return new Date().getHours();
+}
+
+function v2IsActiveRefreshWindow() {
+  const hour = v2EasternHour();
+  return hour >= 7 && hour <= 23;
+}
+
+function v2LastAutoRefreshAttempt() {
+  try {
+    const value = Number(window.localStorage.getItem(V2_AUTO_REFRESH_LAST_ATTEMPT_KEY) || 0);
+    return Number.isFinite(value) ? value : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function v2MarkAutoRefreshAttempt() {
+  try { window.localStorage.setItem(V2_AUTO_REFRESH_LAST_ATTEMPT_KEY, String(Date.now())); } catch {}
+}
+
+function v2ShouldAutoRefreshSnapshot(snapshot) {
+  const age = Number(snapshot?.sync?.ageMinutes);
+  if (!Number.isFinite(age) || age < V2_AUTO_REFRESH_MAX_AGE_MINUTES) return false;
+  if (!v2IsActiveRefreshWindow()) return false;
+  return Date.now() - v2LastAutoRefreshAttempt() >= V2_AUTO_REFRESH_COOLDOWN_MS;
+}
+
 // ── App shell ──────────────────────────────────────────────────
 function V2App({ initial }) {
   const [page, setPageRaw] = React.useState(initial?.page || 'today');
@@ -325,6 +366,32 @@ function V2App({ initial }) {
     const firstPullEmpty = snapshot && snapshot.roster.length === 0;
     if (snapshot && !firstPullEmpty) {
       setModel(snapshot);
+      if (v2ShouldAutoRefreshSnapshot(snapshot)) {
+        const staleLabel = snapshot.sync?.label || 'stale';
+        v2MarkAutoRefreshAttempt();
+        setSyncState({
+          ...snapshot.sync,
+          state: 'refreshing',
+          label: 'syncing',
+          error: null,
+          notice: `Snapshot ${staleLabel} old; refreshing Fantrax data...`,
+        });
+        try {
+          const next = await v2FetchRefresh();
+          setModel(next);
+          setSyncState({ ...next.sync, notice: `Auto-refreshed stale snapshot (${staleLabel} old).` });
+        } catch (refreshErr) {
+          const fallback = refreshErr.fallbackSnapshot || snapshot;
+          setModel(fallback);
+          setSyncState({
+            ...fallback.sync,
+            state: 'failed',
+            error: `Auto-refresh failed: ${refreshErr.message}`,
+            notice: refreshErr.fallbackReason || `Showing snapshot ${staleLabel} old.`,
+          });
+        }
+        return;
+      }
       setSyncState({ ...snapshot.sync });
       return;
     }
@@ -1878,7 +1945,7 @@ function V2Settings({ model, sync, onRefresh, onSignOut }) {
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:8 }}>
           <div>
             <div style={{ fontSize:18, fontWeight:600, fontFamily:V2.fontDisplay }}>{healthy ? `Synced ${sync.label}` : 'Refresh failed'}</div>
-            <div style={{ fontSize:11.5, color:V2.muted, marginTop:3 }}>Railway Postgres · manual refresh + daily cron</div>
+            <div style={{ fontSize:11.5, color:V2.muted, marginTop:3 }}>Railway Postgres · manual refresh + scheduled refresh</div>
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:6, background:healthy?V2.okSoft:V2.badSoft, color:healthy?V2.ok:V2.bad, padding:'6px 11px', borderRadius:999 }}>
             <div style={{ width:6, height:6, background:healthy?V2.ok:V2.bad, borderRadius:'50%' }}/>
