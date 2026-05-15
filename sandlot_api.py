@@ -84,6 +84,27 @@ def refresh(request: Request, background_tasks: BackgroundTasks) -> dict[str, An
     _require_refresh_token(request)
     result = run_refresh(source="manual")
     row = sandlot_db.latest_successful_snapshot()
+    if result.status == "skipped":
+        if not row:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "status": result.status,
+                    "snapshot_id": None,
+                    "duration_ms": result.duration_ms,
+                    "errors": result.errors,
+                    "fallback": False,
+                },
+            )
+        return jsonable_encoder(
+            {
+                "status": result.status,
+                "snapshot_id": row.get("id"),
+                "duration_ms": result.duration_ms,
+                "fallback_reason": "Refresh already running; showing the latest successful Fantrax snapshot.",
+                "snapshot": _snapshot_payload(row),
+            }
+        )
     if not result.ok:
         raise HTTPException(
             status_code=502,

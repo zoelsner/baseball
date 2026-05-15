@@ -34,6 +34,9 @@ def main() -> int:
             waiver_result = sandlot_waivers.warm_latest_waiver_ai(snapshot_id=result.snapshot_id)
             logging.info("Sandlot waiver AI warm result: %s", waiver_result)
         return 0
+    if result.status == "skipped":
+        logging.info("Sandlot cron refresh skipped: %s", "; ".join(result.errors))
+        return 0
     logging.error("Sandlot cron refresh failed: %s", "; ".join(result.errors))
     return 1
 

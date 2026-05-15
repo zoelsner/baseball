@@ -3,8 +3,7 @@
 V1 runs all-in on Railway:
 
 - `web`: FastAPI app serving `/api/*` plus `web/sandlot/index.html`
-- `cron`: one-shot scraper using the same refresh runner as the API
-- GitHub Actions scheduled refresh: hourly during 7am-11pm Eastern, calling the same `/api/refresh` endpoint
+- `cron`: scheduled Railway scraper using the same refresh runner as the API
 - Postgres: source of truth for raw Fantrax snapshots, stored cookies, chat history, player stat/media caches, and cached player-card takes
 
 ## Required Variables
@@ -75,13 +74,19 @@ cron: python sandlot_cron.py
 ```
 
 For Railway, create one web service from the repo and one cron service that
-runs `python sandlot_cron.py` on the desired schedule.
+runs `python sandlot_cron.py` on the desired schedule. For production, run it
+hourly during the 7am-11pm America/New_York window so the latest stored Fantrax
+snapshot is normally less than one hour old while the app is in use.
 
-The production freshness floor is also enforced in code by
-`.github/workflows/sandlot-refresh.yml`. That workflow runs hourly, gates on
-America/New_York 7am-11pm, and posts to the production `/api/refresh` endpoint.
-This keeps the latest snapshot at most about one hour old during waking hours
-even if the Railway cron schedule is misconfigured or missed.
+The web app also protects freshness on open: if the latest snapshot is at least
+60 minutes old during the same 7am-11pm Eastern window, it keeps showing the
+stale snapshot and triggers `/api/refresh` in the background. Browser
+auto-refresh attempts are cooled down for five minutes.
+
+`sandlot_refresh.run_refresh()` uses a Postgres advisory lock, so Railway cron,
+manual refresh, and app-open refresh cannot run overlapping Fantrax scrapes.
+If another refresh is already running, the later attempt records a skipped
+`refresh_runs` row and returns the latest successful snapshot instead.
 
 ## API
 
