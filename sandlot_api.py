@@ -465,7 +465,11 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _player_index(data: dict[str, Any]) -> list[dict[str, Any]]:
+def _player_index(
+    data: dict[str, Any],
+    *,
+    drops: dict[str, int] | None = None,
+) -> list[dict[str, Any]]:
     """Flat list of every player the snapshot knows about.
 
     Frontend uses this two ways:
@@ -474,18 +478,49 @@ def _player_index(data: dict[str, Any]) -> list[dict[str, Any]]:
        [[name|id]] tag.
     2. Trade tab pickers: filter by `source` ("mine" / "league" / "free_agent")
        to populate the give/get autocompletes.
+
+    Malformed rows and team buckets are skipped from the output (the prior
+    behavior) but now emit WARN logs and, if a `drops` dict is supplied,
+    increment per-reason counters so #14's data-quality gates can surface
+    degraded snapshots honestly. The `drops` kwarg is opt-in; existing callers
+    that just want the flat list need no change.
     """
+    if drops is not None:
+        for reason in ("non_dict_row", "missing_id_or_name", "duplicate", "non_dict_team"):
+            drops.setdefault(reason, 0)
+
+    def _note(reason: str) -> None:
+        if drops is not None:
+            drops[reason] = drops.get(reason, 0) + 1
+
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
 
     def add(rows: Any, *, source: str, team_id: str | None = None) -> None:
         for r in rows or []:
             if not isinstance(r, dict):
+                log.warning(
+                    "_player_index drop: non_dict_row source=%s row_type=%s",
+                    source, type(r).__name__,
+                )
+                _note("non_dict_row")
                 continue
             pid = r.get("id")
             name = r.get("name")
             pid_key = str(pid) if pid else ""
-            if not pid_key or not name or pid_key in seen:
+            if not pid_key or not name:
+                log.warning(
+                    "_player_index drop: missing_id_or_name source=%s id=%r name=%r",
+                    source, pid, name,
+                )
+                _note("missing_id_or_name")
+                continue
+            if pid_key in seen:
+                log.warning(
+                    "_player_index drop: duplicate id=%s source=%s name=%r",
+                    pid_key, source, name,
+                )
+                _note("duplicate")
                 continue
             seen.add(pid_key)
             out.append({
@@ -505,6 +540,11 @@ def _player_index(data: dict[str, Any]) -> list[dict[str, Any]]:
         team_id=my_team_id)
     for tid, team in (data.get("all_team_rosters") or {}).items():
         if not isinstance(team, dict):
+            log.warning(
+                "_player_index drop: non_dict_team team_id=%r team_type=%s",
+                tid, type(team).__name__,
+            )
+            _note("non_dict_team")
             continue
         team_id = team.get("team_id") or tid
         is_mine = bool(team.get("is_me")) or (
