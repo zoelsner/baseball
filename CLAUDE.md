@@ -14,7 +14,7 @@ Anything prefixed `sandlot_` belongs to the web app. `mlb_stats.py` and `player_
 python audit.py                                                 # daily CLI (Selenium-prompts on first run)
 ```
 
-There is **no Python test suite** — no `conftest.py`, no pytest in `requirements.txt`. Don't run `pytest`. End-to-end coverage lives in `tests/playwright/` (Playwright + TypeScript) and runs against the deployed Railway URL by default. See `tests/playwright/README.md`.
+**Tests live in two places:** `tests/test_*.py` (Python `unittest` — run with `.venv/bin/python -m unittest discover -s tests -p "test_*.py"`) and `tests/playwright/` (Playwright + TypeScript E2E — run with `npx playwright test` from that directory; targets the deployed Railway URL by default via `SANDLOT_URL`). The repo doesn't use `pytest` — don't reach for `conftest.py` or pytest fixtures. See `tests/playwright/README.md` for E2E details.
 
 ## Required env (`.env`)
 
@@ -31,7 +31,7 @@ There is **no Python test suite** — no `conftest.py`, no pytest in `requiremen
 - **No `import`/`export` anywhere.** Babel's `env,react` presets don't transform module syntax — using it silently breaks the in-browser pipeline. Stick to top-level `function` / `const` declarations.
 - **Inter-file refs go through `window.*`.** Each file ends with `Object.assign(window, { Foo, Bar, ... })`. When you add a shared symbol, add it to that block or later files won't see it. Script load order in `index.html` matters: `atoms.jsx` → `data.jsx` → `data2.jsx` → `v2-pages.jsx`.
 - Files: `atoms.jsx` (tokens, `Sparkline`, `Avatar`, `Icons`), `data.jsx`/`data2.jsx` (mock fallback for when `DATABASE_URL` is unset), `v2-pages.jsx` (every page + the app shell `V2App`).
-- **Two navigation states in `V2App`:** `page` (active tab from the bottom tab bar) and `detail` (player id → renders `V2PlayerSheet`, the bottom sheet that itself fetches `/api/player/{id}`). The sheet is opened by any roster row tap and dismissed via its `aria-label="Close"` button or backdrop click — Escape is not wired up.
+- **Two navigation states in `V2App`:** `page` (active tab from the bottom tab bar) and `detail` (player id → renders `V2PlayerSheet`, the bottom sheet that itself fetches `/api/player/{id}`). The sheet is opened by any roster row tap and dismissed via its `aria-label="Close"` button or backdrop click — Escape is not wired up. A third state for a full-overlay player profile (opened from Skipper chat links) is planned but not yet built — see #37.
 - **No `localStorage`.** Don't reach for it for new state.
 - **Validating `.jsx` edits**: `node --check` doesn't understand JSX, so the user's post-edit hook errors out (harmless). To actually validate JSX, use Babel:
   ```bash
@@ -43,7 +43,7 @@ There is **no Python test suite** — no `conftest.py`, no pytest in `requiremen
 - `startup` only calls `init_schema()` when `DATABASE_URL` is set. Locally, `_snapshot_payload()` and other handlers will 503 (`/api/snapshot/latest`, `/api/skipper/messages`, `/api/player/{id}`).
 - `/api/health` is the **only no-DB-friendly probe** — it catches DB errors and returns 200 with `ok: false`. Don't refactor it to behave like the others.
 - Snapshots are stored as JSONB in `snapshots.data`. The frontend reads from `_snapshot_payload()` in `sandlot_api.py`, which derives a flat shape (roster rows, standings, player_index) from the raw blob.
-- Skipper chat: primary `moonshotai/kimi-k2`, fallback `tencent/hy3-preview:free`. Streams via SSE through `sandlot_skipper.SkipperClient`. Fallback only triggers on **pre-stream** errors / empty stream — mid-stream cutoffs are not retried in V1.
+- Skipper chat: primary `moonshotai/kimi-k2`, fallback `tencent/hy3-preview:free`. Streams via SSE through `sandlot_skipper.SkipperClient`. Fallback triggers on **any** exception during streaming (pre-stream, mid-stream, or empty stream) — the `for model in model_order: try ... except: continue` loop in `SkipperClient.stream` retries the next model on any failure. The SSE client may already have received partial tokens from the failed model when the retry kicks in; downstream consumers should treat the stream as best-effort, not transactional.
 - Single-user app — Sandlot routes are mostly unauthenticated by design. `/api/refresh` is the only one with an optional `SANDLOT_REFRESH_TOKEN` guard.
 - **Cached-AI pattern** (`ai_briefs` table): deterministic compute → AI overlay → cache by `(snapshot_id, brief_type, subject_key)` with `input_hash` for staleness. `sandlot_waivers.py` and `sandlot_trades.py` are reference. Use `sandlot_db.{get,set}_ai_brief` for new cached-AI features.
 - **Model order helpers** in `sandlot_skipper`: `default_model_order()` = Kimi-first (chat default). For cold short prompts (takes, grades), pass `model_order=(fallback_model(), primary_model())` to put Tencent first.
@@ -52,7 +52,10 @@ There is **no Python test suite** — no `conftest.py`, no pytest in `requiremen
 ## Git workflow
 
 - **Non-trivial work goes through PRs.** Branch `<type>/<issue#>-<slug>`, open PR, wait for CI green, merge with `--squash --delete-branch`. Direct push to `main` is fine for one-line fixes only.
-- **CI** (`.github/workflows/ci.yml`) runs two jobs on every PR: `python-import-smoke` (imports every Sandlot module) and `jsx-parse` (Babel-parses every `web/sandlot/*.jsx`). No tests, so green CI ≠ "works" — just "doesn't break boot".
+- **CI** runs two workflows on every PR:
+  - `.github/workflows/ci.yml`: `python-import-smoke` (imports every Sandlot module + runs `python -m unittest discover -s tests -p "test_*.py"`) and `jsx-parse` (Babel-parses every `web/sandlot/*.jsx`).
+  - `.github/workflows/playwright.yml`: `E2E against Railway` runs Playwright specs from `tests/playwright/` against the live Railway deploy (or `SANDLOT_URL`). Also fires on a daily 14:30 UTC cron.
+  - Green CI means: modules import, JSX parses, the Python unit suite is clean, and the Playwright assertions pass against prod. It does *not* mean the new code under review is wired up correctly — read the diff, don't rubber-stamp.
 - **Labels** (`gh label list`): `type:feature` / `type:bug` / `type:chore`, `area:backend` / `area:frontend`. Use both axes when filing.
 - `gh` is authed as `zoelsner` for `zoelsner/baseball`. Use the `distill-issue` skill (`.claude/skills/distill-issue/SKILL.md`) for structured issues.
 
