@@ -239,11 +239,12 @@ def warm_latest_waiver_ai(snapshot_id: int | None = None, limit: int = CARD_LIMI
 
         for card in cards[:limit]:
             subject_key = str(card["id"])
-            if sandlot_db.get_ai_brief(sid, BRIEF_TYPE_SWAP, subject_key):
-                skipped += 1
-                continue
             context = _swap_prompt_context(row, card)
             input_hash = _hash_context(context)
+            cached = sandlot_db.get_ai_brief(sid, BRIEF_TYPE_SWAP, subject_key)
+            if cached and cached.get("input_hash") == input_hash:
+                skipped += 1
+                continue
             try:
                 raw, model = client.complete(
                     _swap_messages(context),
@@ -258,22 +259,23 @@ def warm_latest_waiver_ai(snapshot_id: int | None = None, limit: int = CARD_LIMI
                 log.warning("Waiver swap AI failed for %s: %s", subject_key, exc)
                 errors.append(f"{subject_key}: {exc}")
 
-        if not sandlot_db.get_ai_brief(sid, BRIEF_TYPE_REFRESH, REFRESH_SUBJECT):
-            context = _refresh_prompt_context(row, payload)
-            input_hash = _hash_context(context)
+        refresh_context = _refresh_prompt_context(row, payload)
+        refresh_hash = _hash_context(refresh_context)
+        cached_refresh = sandlot_db.get_ai_brief(sid, BRIEF_TYPE_REFRESH, REFRESH_SUBJECT)
+        if cached_refresh and cached_refresh.get("input_hash") == refresh_hash:
+            skipped += 1
+        else:
             try:
                 text, model = client.complete(
-                    _refresh_messages(context),
+                    _refresh_messages(refresh_context),
                     max_tokens=260,
                     model_order=sandlot_skipper.default_model_order(),
                 )
-                sandlot_db.set_ai_brief(sid, BRIEF_TYPE_REFRESH, REFRESH_SUBJECT, text.strip(), model, input_hash)
+                sandlot_db.set_ai_brief(sid, BRIEF_TYPE_REFRESH, REFRESH_SUBJECT, text.strip(), model, refresh_hash)
                 generated += 1
             except Exception as exc:
                 log.warning("Refresh brief AI failed for snapshot %s: %s", sid, exc)
                 errors.append(f"refresh_brief: {exc}")
-        else:
-            skipped += 1
 
         return {"attempted": len(cards[:limit]) + 1, "generated": generated, "skipped": skipped, "errors": errors[:8]}
     except Exception as exc:
