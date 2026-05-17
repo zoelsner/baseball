@@ -1,18 +1,19 @@
 import { test, expect } from '@playwright/test';
-import { waitForAppMount, waitForSnapshotLoaded } from '../fixtures/sandlot';
+import { waitForAppMount } from '../fixtures/sandlot';
 
 /**
- * Matchup projection UI lives on `feat/matchup-projection-v01`. The deployed
- * frontend does NOT yet contain `V2WinProbabilityRing`, so injecting the
- * `projection` field via route-mock alone is insufficient — there's no JSX on
- * prod to render the ring.
+ * Matchup projection regression coverage. `V2WinProbabilityRing` landed in #17
+ * and the ring + "Projected X.X — Y.Y" line live on the Today page (see
+ * v2-pages.jsx:668 and :883-887). Route-mocks inject `projection` into
+ * /api/snapshot/latest so tests are deterministic regardless of the actual
+ * scrape state on prod.
  *
- * Marked `fixme` until the branch ships. After merge + deploy:
- *   1. Drop the `test.fixme` calls below
- *   2. Re-run: `npm test -- specs/today-projection.spec.ts`
- *   3. The route-mock keeps tests deterministic on real data shapes.
+ * Originally gated behind `test.fixme` with assertions written ahead of the
+ * deploy. The gate masked: (1) a broken `waitForSnapshotLoaded` import that
+ * doesn't exist in fixtures, (2) assertions on text the UI never renders
+ * (e.g. "% TO WIN"). Rewritten in #35 to match what the Today page actually
+ * shows; gate removed so the suite catches future regressions.
  */
-test.fixme(true, 'Pending feat/matchup-projection-v01 deploy — see file header.');
 
 async function overlayProjection(page: import('@playwright/test').Page, projection: any) {
   await page.route('**/api/snapshot/latest', async route => {
@@ -24,7 +25,7 @@ async function overlayProjection(page: import('@playwright/test').Page, projecti
 }
 
 test.describe('Today — matchup projection ring', () => {
-  test('shows green ring + projected line when win probability ≥ 60%', async ({ page }) => {
+  test('renders projected line when win probability is high (>=60%)', async ({ page }) => {
     await overlayProjection(page, {
       projected_my: 270.4,
       projected_opp: 240.1,
@@ -36,14 +37,11 @@ test.describe('Today — matchup projection ring', () => {
 
     await page.goto('/');
     await waitForAppMount(page);
-    await waitForSnapshotLoaded(page);
 
-    await expect(page.getByText(/^78$/)).toBeVisible();
-    await expect(page.getByText(/% TO WIN/i)).toBeVisible();
     await expect(page.getByText(/Projected\s+270\.4\s*[—-]\s*240\.1/i)).toBeVisible();
   });
 
-  test('shows red ring when win probability < 40%', async ({ page }) => {
+  test('renders projected line when win probability is low (<40%)', async ({ page }) => {
     await overlayProjection(page, {
       projected_my: 200.0,
       projected_opp: 250.0,
@@ -55,13 +53,11 @@ test.describe('Today — matchup projection ring', () => {
 
     await page.goto('/');
     await waitForAppMount(page);
-    await waitForSnapshotLoaded(page);
 
-    await expect(page.getByText(/^18$/)).toBeVisible();
-    await expect(page.getByText(/% TO WIN/i)).toBeVisible();
+    await expect(page.getByText(/Projected\s+200\.0\s*[—-]\s*250\.0/i)).toBeVisible();
   });
 
-  test('hides ring when matchup is complete and tied', async ({ page }) => {
+  test('hides projected line when matchup is complete (tied or not)', async ({ page }) => {
     await overlayProjection(page, {
       projected_my: 200.0,
       projected_opp: 200.0,
@@ -73,13 +69,14 @@ test.describe('Today — matchup projection ring', () => {
 
     await page.goto('/');
     await waitForAppMount(page);
-    await waitForSnapshotLoaded(page);
-
-    // Matchup card should still render (margin etc.), but the ring is hidden.
-    await expect(page.getByText(/% TO WIN/i)).toHaveCount(0);
+    // Wait for the matchup card to actually render before asserting absence.
+    // "Margin" label is rendered by V2MatchupCard whenever a matchup exists,
+    // so it's a stable readiness signal that's independent of projection state.
+    await expect(page.getByText(/^margin$/i)).toBeVisible();
+    await expect(page.getByText(/^Projected\s+\d/i)).toHaveCount(0);
   });
 
-  test('hides ring when win_probability is missing', async ({ page }) => {
+  test('hides projected line when win_probability is missing', async ({ page }) => {
     await overlayProjection(page, {
       projected_my: 250.0,
       projected_opp: 240.0,
@@ -91,8 +88,7 @@ test.describe('Today — matchup projection ring', () => {
 
     await page.goto('/');
     await waitForAppMount(page);
-    await waitForSnapshotLoaded(page);
-
-    await expect(page.getByText(/% TO WIN/i)).toHaveCount(0);
+    await expect(page.getByText(/^margin$/i)).toBeVisible();
+    await expect(page.getByText(/^Projected\s+\d/i)).toHaveCount(0);
   });
 });
