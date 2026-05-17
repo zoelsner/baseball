@@ -1,7 +1,11 @@
 """Skipper chat — roster Q&A grounded in the latest Fantrax snapshot.
 
 Uses OpenRouter's OpenAI-compatible API. Kimi (Moonshot) is the primary model;
-Tencent Hunyuan free is a fallback if Kimi errors before any tokens stream.
+Tencent Hunyuan free is the fallback. The `for model in model_order: try ...
+except: continue` loop in `SkipperClient.stream` retries the next model on any
+exception during streaming — pre-stream, mid-stream, or empty stream. Partial
+tokens from a failed primary may already be on the wire when the fallback
+takes over; the SSE consumer should treat the stream as best-effort.
 
 Context tier:
 - Tier 2 (default): system prompt + my roster + standings
@@ -713,9 +717,14 @@ class SkipperClient:
     ) -> Iterator[tuple[str, str]]:
         """Yield ('token', text) chunks plus a final ('model', model_id) once.
 
-        Tries the environment-configured primary model first. On error before
-        any tokens stream, falls back to the configured fallback. Mid-stream
-        errors are not retried (V1).
+        Tries the environment-configured primary model first. On *any* exception
+        during streaming — pre-stream, mid-stream, or empty stream — the loop
+        continues to the next model in `model_order`. Partial tokens from the
+        failed primary may already have been yielded to the caller; consumers
+        should treat the stream as best-effort, not transactional. If every
+        model in `model_order` fails, raises `RuntimeError` with the failure
+        list — the SSE handler in `sandlot_api.py:341` catches that and emits
+        a single `{"type":"error", ...}` frame to the client.
         """
         failures: list[str] = []
         extra_body = _reasoning_extra_body(reasoning_effort)
