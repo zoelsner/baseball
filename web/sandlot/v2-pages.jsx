@@ -41,20 +41,13 @@ const V2_SKIPPER_MODELS = [
 const V2_SKIPPER_DEFAULT_MODEL = 'moonshotai/kimi-k2';
 const V2_AUTO_REFRESH_MAX_AGE_MINUTES = 60;
 const V2_AUTO_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
-const V2_AUTO_REFRESH_LAST_ATTEMPT_KEY = 'sandlot_last_auto_refresh_at';
 
-function v2StoredValue(key, fallback) {
-  try {
-    const value = window.localStorage.getItem(key);
-    return value || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function v2StoreValue(key, value) {
-  try { window.localStorage.setItem(key, value); } catch {}
-}
+// Preference persistence helpers removed in #36 — Sandlot does not persist UI
+// state to `window.localStorage` (global rule in CLAUDE.md). Skipper model +
+// reasoning toggle now reset to defaults on each page load. The refresh-token
+// read at v2RefreshHeaders is intentionally retained: that's reading a
+// manually-set config value (per the 401 error copy in v2RefreshErrorMessage),
+// not persisting app state.
 
 function v2StateColor(state){
   if (state==='ok')      return { fg:V2.inLineup, bg:V2.inLineupSoft, label:'In lineup' };
@@ -309,17 +302,19 @@ function v2IsActiveRefreshWindow() {
   return hour >= 7 && hour <= 23;
 }
 
+// In-memory cooldown tracker. Previously persisted to localStorage so the
+// cooldown survived reloads; removed in #36 per CLAUDE.md global rule.
+// Trade-off: cooldown is now per-tab and resets on reload. Acceptable because
+// (a) auto-refresh only fires for snapshots > 60min stale (already rare),
+// (b) scrape is rate-limited server-side, and (c) Sandlot is a single-user app.
+let _v2LastAutoRefreshAt = 0;
+
 function v2LastAutoRefreshAttempt() {
-  try {
-    const value = Number(window.localStorage.getItem(V2_AUTO_REFRESH_LAST_ATTEMPT_KEY) || 0);
-    return Number.isFinite(value) ? value : 0;
-  } catch {
-    return 0;
-  }
+  return _v2LastAutoRefreshAt;
 }
 
 function v2MarkAutoRefreshAttempt() {
-  try { window.localStorage.setItem(V2_AUTO_REFRESH_LAST_ATTEMPT_KEY, String(Date.now())); } catch {}
+  _v2LastAutoRefreshAt = Date.now();
 }
 
 function v2ShouldAutoRefreshSnapshot(snapshot) {
@@ -2909,11 +2904,8 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
   const [streaming, setStreaming] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [brief, setBrief] = React.useState({ status:'loading', data:null, error:null });
-  const [chatModel, setChatModel] = React.useState(() => {
-    const stored = v2StoredValue('sandlot.skipper.model', V2_SKIPPER_DEFAULT_MODEL);
-    return V2_SKIPPER_MODELS.some(m => m.id === stored) ? stored : V2_SKIPPER_DEFAULT_MODEL;
-  });
-  const [reasoning, setReasoning] = React.useState(() => v2StoredValue('sandlot.skipper.reasoning', 'off') === 'on');
+  const [chatModel, setChatModel] = React.useState(V2_SKIPPER_DEFAULT_MODEL);
+  const [reasoning, setReasoning] = React.useState(false);
   const scrollRef = React.useRef(null);
 
   const playerNameIndex = React.useMemo(
@@ -2932,12 +2924,10 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
 
   const updateChatModel = React.useCallback((next) => {
     setChatModel(next);
-    v2StoreValue('sandlot.skipper.model', next);
   }, []);
 
   const updateReasoning = React.useCallback((next) => {
     setReasoning(next);
-    v2StoreValue('sandlot.skipper.reasoning', next ? 'on' : 'off');
   }, []);
 
   React.useEffect(() => {
