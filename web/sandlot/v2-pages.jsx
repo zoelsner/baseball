@@ -39,8 +39,6 @@ const V2_SKIPPER_MODELS = [
   { id:'deepseek/deepseek-v4-pro', label:'DeepSeek V4 Pro', short:'DS Pro' },
 ];
 const V2_SKIPPER_DEFAULT_MODEL = 'moonshotai/kimi-k2';
-const V2_AUTO_REFRESH_MAX_AGE_MINUTES = 60;
-const V2_AUTO_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 
 // Preference persistence helpers removed in #36 — Sandlot does not persist UI
 // state to `window.localStorage` (global rule in CLAUDE.md). Skipper model +
@@ -284,46 +282,6 @@ async function v2FetchRefresh() {
   return v2NormalizeSnapshot(payload.snapshot);
 }
 
-function v2EasternHour() {
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
-      hour: '2-digit',
-      hourCycle: 'h23',
-    }).formatToParts(new Date());
-    const hour = Number(parts.find(part => part.type === 'hour')?.value);
-    if (Number.isFinite(hour)) return hour;
-  } catch {}
-  return new Date().getHours();
-}
-
-function v2IsActiveRefreshWindow() {
-  const hour = v2EasternHour();
-  return hour >= 7 && hour <= 23;
-}
-
-// In-memory cooldown tracker. Previously persisted to localStorage so the
-// cooldown survived reloads; removed in #36 per CLAUDE.md global rule.
-// Trade-off: cooldown is now per-tab and resets on reload. Acceptable because
-// (a) auto-refresh only fires for snapshots > 60min stale (already rare),
-// (b) scrape is rate-limited server-side, and (c) Sandlot is a single-user app.
-let _v2LastAutoRefreshAt = 0;
-
-function v2LastAutoRefreshAttempt() {
-  return _v2LastAutoRefreshAt;
-}
-
-function v2MarkAutoRefreshAttempt() {
-  _v2LastAutoRefreshAt = Date.now();
-}
-
-function v2ShouldAutoRefreshSnapshot(snapshot) {
-  const age = Number(snapshot?.sync?.ageMinutes);
-  if (!Number.isFinite(age) || age < V2_AUTO_REFRESH_MAX_AGE_MINUTES) return false;
-  if (!v2IsActiveRefreshWindow()) return false;
-  return Date.now() - v2LastAutoRefreshAttempt() >= V2_AUTO_REFRESH_COOLDOWN_MS;
-}
-
 // ── App shell ──────────────────────────────────────────────────
 function V2App({ initial }) {
   const [page, setPageRaw] = React.useState(initial?.page || 'today');
@@ -361,53 +319,19 @@ function V2App({ initial }) {
     const firstPullEmpty = snapshot && snapshot.roster.length === 0;
     if (snapshot && !firstPullEmpty) {
       setModel(snapshot);
-      if (v2ShouldAutoRefreshSnapshot(snapshot)) {
-        const staleLabel = snapshot.sync?.label || 'stale';
-        v2MarkAutoRefreshAttempt();
-        setSyncState({
-          ...snapshot.sync,
-          state: 'refreshing',
-          label: 'syncing',
-          error: null,
-          notice: `Snapshot ${staleLabel} old; refreshing Fantrax data...`,
-        });
-        try {
-          const next = await v2FetchRefresh();
-          setModel(next);
-          setSyncState({ ...next.sync, notice: `Auto-refreshed stale snapshot (${staleLabel} old).` });
-        } catch (refreshErr) {
-          const fallback = refreshErr.fallbackSnapshot || snapshot;
-          setModel(fallback);
-          setSyncState({
-            ...fallback.sync,
-            state: 'failed',
-            error: `Auto-refresh failed: ${refreshErr.message}`,
-            notice: refreshErr.fallbackReason || `Showing snapshot ${staleLabel} old.`,
-          });
-        }
-        return;
-      }
       setSyncState({ ...snapshot.sync });
       return;
     }
 
-    // Step 2: auto-trigger a fresh refresh and surface the first-pull failure.
+    // Step 2: surface the broken/missing snapshot without auto-running the scraper.
     const reason = firstPullError || 'first snapshot was empty';
-    setSyncState({ state:'refreshing', label:'retrying', error:null, notice:`First pull failed (${reason}); refreshing…` });
-    try {
-      const next = await v2FetchRefresh();
-      setModel(next);
-      setSyncState({ ...next.sync, notice:`First pull failed (${reason}); auto-refreshed.` });
-    } catch (refreshErr) {
-      const fallback = refreshErr.fallbackSnapshot || snapshot;
-      if (fallback) setModel(fallback);
-      setSyncState({
-        state: 'failed',
-        label: fallback?.sync?.label || 'failed',
-        error: `First pull failed (${reason}); refresh also failed: ${refreshErr.message}`,
-        notice: fallback ? (refreshErr.fallbackReason || 'Showing the last successful Fantrax pull.') : null,
-      });
-    }
+    if (snapshot) setModel(snapshot);
+    setSyncState({
+      state:'failed',
+      label:snapshot?.sync?.label || 'no data',
+      error:reason,
+      notice:snapshot ? 'Showing the latest stored Fantrax pull.' : null,
+    });
   }, []);
 
   const refreshSnapshot = React.useCallback(async () => {

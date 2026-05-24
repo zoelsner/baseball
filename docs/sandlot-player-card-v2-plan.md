@@ -35,7 +35,7 @@ Implemented in this pass:
 - `player_service.py` now includes `take` in `/api/player/{id}` payloads, caches takes by `(player_id, snapshot_id)`, and degrades gracefully if OpenRouter is unavailable.
 - Player profile loading is now layered: normal `GET /api/player/{id}` is cache-only and returns Fantrax/cached Postgres data immediately; `/refresh`, background warm tasks, and cron do the expensive MLB/OpenRouter work.
 - `player_media` stores MLB game-content media found from recent game logs. The profile payload returns `media.items` from cache first, so the Media Scout section can show clips when available without slowing initial sheet open.
-- `sandlot_cron.py` now pre-warms roster player profiles after each successful Fantrax snapshot. By default it warms MLB ids, game logs, and media; Skipper take pre-generation is opt-in via `SANDLOT_PROFILE_WARM_TAKES=1`.
+- `sandlot_cron.py` can pre-warm roster player profiles after each successful Fantrax snapshot, but warmups are opt-in via `SANDLOT_PROFILE_WARM_ENABLED=1`; Skipper take pre-generation remains separately opt-in via `SANDLOT_PROFILE_WARM_TAKES=1`.
 
 Validation completed locally:
 
@@ -135,12 +135,12 @@ The reliable free sources have all eroded: Twitter/X is paywalled, MLB's `/trans
 
 ### Cron strategy (decided: Option A)
 
-`Procfile` already has a `cron: python sandlot_cron.py` line. Today that script just calls `run_refresh()` (Fantrax snapshot pull).
+`Procfile` already has a `cron: python sandlot_cron.py` line. Today that script runs the Fantrax snapshot pull; optional profile and AI warmups are gated by explicit env flags.
 
 **Decision: extend `sandlot_cron.py` with `--job={refresh|splits|matchups}` CLI flags** (default `refresh` for backwards compat). Each Railway cron schedule points at the same script with a different flag. One file, multiple entry points, shared logging/error handling.
 
 Cadences:
-- `refresh` (existing Fantrax snapshot pull): every 30 min during game days.
+- `refresh` (existing Fantrax snapshot pull): start with daily/manual only; increase cadence only after the scrape is proven stable.
 - `splits` (per-rostered-player splits + season totals from MLB Stats API): once nightly, ~3 AM ET.
 - `matchups` (today's probable pitcher per team + park from MLB Stats API): once daily, ~9 AM ET.
 

@@ -25,7 +25,7 @@ GAME_LOG_TTL_HOURS = 12
 MEDIA_TTL_HOURS = 12
 SPARKLINE_GAMES = 14
 TREND_GAMES = 7
-DEFAULT_WARM_LIMIT = 30
+DEFAULT_WARM_LIMIT = 12
 
 PITCHING_SLOT_TOKENS = {"SP", "RP", "P"}
 
@@ -189,7 +189,7 @@ def warm_roster_profiles(
 
     warmed = 0
     errors: list[str] = []
-    workers = max(1, min(int(os.environ.get("SANDLOT_PROFILE_WARM_PARALLELISM", "8")), len(ids) or 1))
+    workers = max(1, min(int(os.environ.get("SANDLOT_PROFILE_WARM_PARALLELISM", "3")), len(ids) or 1))
     if workers <= 1 or len(ids) <= 1:
         for fantrax_id in ids:
             if refresh_cached_profile(fantrax_id, generate_take=generate_takes) is None:

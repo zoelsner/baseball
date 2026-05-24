@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date as date_cls, datetime, timezone
+from datetime import date as date_cls, datetime, time as time_cls, timezone
 from typing import Any
 
 import requests
@@ -87,6 +87,88 @@ try:
     log.debug("Applied MLB-friendly reset_info patch to fantraxapi.objs.league.League")
 except Exception as _e:
     log.warning("Could not apply reset_info patch: %s", _e)
+
+
+# ---------------------------------------------------------------------------
+# fantraxapi monkey-patch: Game.__init__ crashes on MLB future-game strings
+# ---------------------------------------------------------------------------
+# The upstream parser assumes every future-game content cell has two <br/> parts
+# and a token like "at 7:05PM". MLB rows can omit that second token or include a
+# different label, which prevents RosterRow construction before our row-level
+# error handling can run. Keep the parsed metadata best-effort and never raise
+# from game parsing.
+
+def _patched_game_init(self, league: Any, player: Any, game_date: str, data: dict) -> None:  # type: ignore[no-redef]
+    from fantraxapi.objs.base import FantraxBaseObject
+
+    FantraxBaseObject.__init__(self, league, data)
+    self.id = self._data.get("eventId")
+    self.player = player
+    self.date = _parse_fantrax_game_date(league, game_date)
+    self.time = _parse_game_time(data)
+
+    parts = _game_content_parts(data)
+    team = getattr(player, "team_short_name", None) or ""
+    first = parts[0] if parts else ""
+    second = parts[1] if len(parts) > 1 else ""
+
+    if self.time is not None or not second:
+        opponent = _clean_team_token(first)
+        home_team = team if first.strip().startswith("@") else opponent
+    else:
+        home_team = _clean_team_token(first)
+        away_team = _clean_team_token(second)
+        opponent = away_team if home_team == team else home_team
+
+    self.opponent = opponent or _clean_team_token(first) or "TBD"
+    self.home = bool(team and home_team == team)
+    self.away = not self.home
+
+
+def _parse_fantrax_game_date(league: Any, game_date: str) -> date_cls:
+    league_start = league.start_date.date()
+    league_end = league.end_date.date()
+    for year in {league.start_date.year, league.end_date.year}:
+        try:
+            parsed = datetime.strptime(f"{game_date} {year}", "%a %m/%d %Y").date()
+        except Exception:
+            continue
+        if league_start <= parsed <= league_end:
+            return parsed
+    return league_start
+
+
+def _game_content_parts(data: dict) -> list[str]:
+    content = str((data or {}).get("content") or "").removesuffix(" F")
+    return [part.strip() for part in re.split(r"<br\s*/?>", content) if part and part.strip()]
+
+
+def _parse_game_time(data: dict) -> time_cls | None:
+    content = " ".join(_game_content_parts(data))
+    match = re.search(r"\b(\d{1,2}:\d{2})\s*([AP]M)\b", content, flags=re.IGNORECASE)
+    if not match:
+        return None
+    raw = f"{match.group(1)}{match.group(2).upper()}"
+    try:
+        return datetime.strptime(raw, "%I:%M%p").time()
+    except ValueError:
+        return None
+
+
+def _clean_team_token(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\b\d+(\.\d+)?\b", "", text)
+    text = text.replace("@", "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+try:
+    from fantraxapi.objs.game import Game as _Game
+    _Game.__init__ = _patched_game_init  # type: ignore[method-assign]
+    log.debug("Applied MLB-friendly Game.__init__ patch to fantraxapi.objs.game.Game")
+except Exception as _e:
+    log.warning("Could not apply Game.__init__ patch: %s", _e)
 
 
 def _to_jsonable(obj: Any, depth: int = 0) -> Any:

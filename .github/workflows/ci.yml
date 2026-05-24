@@ -25,6 +25,7 @@ jobs:
         run: |
           python -c "
           import sandlot_api
+          import sandlot_config
           import sandlot_skipper
           import sandlot_db
           import sandlot_refresh

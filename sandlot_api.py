@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import player_service
+import sandlot_config
 import sandlot_data_quality
 import sandlot_db
 import sandlot_matchup
@@ -119,11 +120,11 @@ def refresh(request: Request, background_tasks: BackgroundTasks) -> dict[str, An
             },
         )
 
-    if result.snapshot_id and os.environ.get("SANDLOT_WAIVER_AI_WARM_DISABLED") != "1":
+    if result.snapshot_id and sandlot_config.waiver_ai_warm_enabled():
         background_tasks.add_task(sandlot_waivers.warm_latest_waiver_ai, result.snapshot_id)
-    # Mirror the cron's profile warm so manual refresh doesn't leave every
-    # cached take un-keyed against the new snapshot_id.
-    if result.snapshot_id and os.environ.get("SANDLOT_PROFILE_WARM_DISABLED") != "1":
+    # Optional post-refresh warmups are intentionally opt-in; the refresh itself
+    # should stay focused on producing one fresh Fantrax snapshot.
+    if result.snapshot_id and sandlot_config.profile_warm_enabled():
         background_tasks.add_task(
             player_service.warm_roster_profiles,
             snapshot_id=result.snapshot_id,
