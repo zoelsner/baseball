@@ -18,7 +18,7 @@ test.describe('Adds (waiver swaps) page', () => {
     // The page may legitimately render an empty state when no positive
     // swaps exist. Assert that branch explicitly when cards is empty.
     if (cards.length === 0) {
-      await expect(page.getByText(/no positive waiver swaps|no cards|nothing in this filter/i)).toBeVisible();
+      await expect(page.getByText(/no positive waiver swaps|no cards|nothing in this filter/i).first()).toBeVisible();
       test.info().annotations.push({
         type: 'note',
         description: 'API returned 0 waiver cards; only empty-state asserted.',
