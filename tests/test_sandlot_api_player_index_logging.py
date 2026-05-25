@@ -42,6 +42,18 @@ class PlayerIndexDropLoggingTests(unittest.TestCase):
             f"Expected at least one 'missing_id_or_name' WARN log; got {msgs}",
         )
 
+    def test_counts_fully_blank_row_without_warning_log(self):
+        data = {
+            "team_id": "team-me",
+            "all_team_rosters": {
+                "team-opp": {"rows": [{"id": None, "name": None}, {"id": "p1", "name": "OK"}]},
+            },
+        }
+        drops: dict[str, int] = {}
+        with self.assertNoLogs("sandlot_api", level=logging.WARNING):
+            _player_index(data, drops=drops)
+        self.assertEqual(drops.get("missing_id_or_name"), 1)
+
     def test_logs_warning_when_team_bucket_is_not_a_dict(self):
         data = {
             "team_id": "team-me",
