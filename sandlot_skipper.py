@@ -1,7 +1,7 @@
 """Skipper chat — roster Q&A grounded in the latest Fantrax snapshot.
 
 Uses OpenRouter's OpenAI-compatible API. Kimi (Moonshot) is the primary model;
-Tencent Hunyuan free is the fallback. The `for model in model_order: try ...
+DeepSeek V4 Flash is the fallback. The `for model in model_order: try ...
 except: continue` loop in `SkipperClient.stream` retries the next model on any
 exception during streaming — pre-stream, mid-stream, or empty stream. Partial
 tokens from a failed primary may already be on the wire when the fallback
@@ -30,13 +30,13 @@ log = logging.getLogger(__name__)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 PRIMARY_MODEL = "moonshotai/kimi-k2"
-# Verified via OpenRouter /v1/models: hunyuan-a13b-instruct has no `:free`
-# variant anymore; the current free Tencent model is hy3-preview:free.
-FALLBACK_MODEL = "tencent/hy3-preview:free"
+# Keep the fallback on a current, low-cost non-Tencent model. The retired
+# `tencent/hy3-preview:free` id caused every fallback-first short prompt to
+# fail before trying Kimi.
+FALLBACK_MODEL = "deepseek/deepseek-v4-flash"
 ALLOWED_CHAT_MODELS = (
     PRIMARY_MODEL,
     FALLBACK_MODEL,
-    "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-pro",
 )
 ALLOWED_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
@@ -770,10 +770,11 @@ class SkipperClient:
     ) -> tuple[str, str]:
         """Return a single completion plus the model id, using the stream fallback order.
 
-        Pass `model_order` to override which model is tried first — e.g. the
-        player-take call uses Tencent-first because Kimi's first-token latency
-        on a cold prompt regularly pushes the profile load over a noticeable
-        threshold. Defaults to the environment-configured primary/fallback order.
+        Pass `model_order` to override which model is tried first. The player
+        take and trade-grade paths use fallback-first because Kimi's
+        first-token latency on a cold prompt can push those compact prompts
+        over a noticeable threshold. Defaults to the environment-configured
+        primary/fallback order.
         """
         failures: list[str] = []
         extra_body = _reasoning_extra_body(reasoning_effort)

@@ -302,7 +302,7 @@ Update `sandlot_skipper.py` so model ids can be controlled by env vars:
 
 ```bash
 SANDLOT_AI_MODEL_PRIMARY=moonshotai/kimi-k2
-SANDLOT_AI_MODEL_FALLBACK=tencent/hy3-preview:free
+SANDLOT_AI_MODEL_FALLBACK=deepseek/deepseek-v4-flash
 ```
 
 This lets Railway try cheap models such as DeepSeek without code changes.

@@ -188,7 +188,6 @@ def skipper_options() -> dict[str, Any]:
         "default_model": sandlot_skipper.primary_model(),
         "models": [
             {"id": "moonshotai/kimi-k2", "label": "Kimi K2", "primary": True},
-            {"id": "tencent/hy3-preview:free", "label": "Tencent HY3 free"},
             {"id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash"},
             {"id": "deepseek/deepseek-v4-pro", "label": "DeepSeek V4 Pro"},
         ],
@@ -481,10 +480,12 @@ def _player_index(
        to populate the give/get autocompletes.
 
     Malformed rows and team buckets are skipped from the output (the prior
-    behavior) but now emit WARN logs and, if a `drops` dict is supplied,
-    increment per-reason counters so #14's data-quality gates can surface
-    degraded snapshots honestly. The `drops` kwarg is opt-in; existing callers
-    that just want the flat list need no change.
+    behavior) but emit WARN logs and, if a `drops` dict is supplied, increment
+    per-reason counters so #14's data-quality gates can surface degraded
+    snapshots honestly. Duplicate ids are expected when the same player is
+    visible through multiple Fantrax surfaces, so they are counted without
+    warning-level log spam. The `drops` kwarg is opt-in; existing callers that
+    just want the flat list need no change.
     """
     if drops is not None:
         for reason in ("non_dict_row", "missing_id_or_name", "duplicate", "non_dict_team"):
@@ -517,7 +518,7 @@ def _player_index(
                 _note("missing_id_or_name")
                 continue
             if pid_key in seen:
-                log.warning(
+                log.debug(
                     "_player_index drop: duplicate id=%s source=%s name=%r",
                     pid_key, source, name,
                 )
@@ -537,8 +538,9 @@ def _player_index(
             })
 
     my_team_id = data.get("team_id")
-    add((data.get("roster") or {}).get("rows"), source="mine",
-        team_id=my_team_id)
+    my_roster_rows = (data.get("roster") or {}).get("rows")
+    has_canonical_my_roster = bool(my_roster_rows)
+    add(my_roster_rows, source="mine", team_id=my_team_id)
     for tid, team in (data.get("all_team_rosters") or {}).items():
         if not isinstance(team, dict):
             log.warning(
@@ -551,6 +553,8 @@ def _player_index(
         is_mine = bool(team.get("is_me")) or (
             my_team_id is not None and str(team_id) == str(my_team_id)
         )
+        if is_mine and has_canonical_my_roster:
+            continue
         add(team.get("rows"), source="mine" if is_mine else "league", team_id=team_id)
     add((data.get("free_agents") or {}).get("players"), source="free_agent")
     return out

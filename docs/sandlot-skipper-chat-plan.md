@@ -7,7 +7,7 @@ Sandlot V1 just shipped (real-data viewer on Railway). The next feature is **Ski
 User decisions locked via brainstorming:
 
 - **Use case:** Roster Q&A only (no opinionated strategy, no trade grading — those are separate features)
-- **Models:** Kimi (Moonshot) primary, Tencent Hunyuan free fallback — both via OpenRouter (OpenAI-compatible API)
+- **Models:** Kimi (Moonshot) primary, DeepSeek V4 Flash fallback — both via OpenRouter (OpenAI-compatible API)
 - **Context routing:** Default to tier 2 (my roster + standings); escalate to tier 3 (+ all 12 rosters) on keyword match
 - **UI placement:** Existing 5th bottom-nav tab (`Skipper` — already scaffolded as mock at `web/sandlot/v2-pages.jsx`)
 - **Memory:** Persistent in Postgres (no localStorage)
@@ -29,7 +29,7 @@ Builds on V1's working foundation: FastAPI + Postgres + cookie-backed Fantrax sc
     3. detect_tier(prompt, snapshot) → 2 or 3
     4. build_context(tier, snapshot) → text block
     5. build_messages(system + context + recent history + user msg)
-    6. stream from OpenRouter (Kimi → fallback Tencent on error)
+    6. stream from OpenRouter (Kimi → fallback DeepSeek on error)
     7. yield SSE chunks: {"type":"token","text":"..."}
     8. on stream end: append assistant msg → chat_messages
        yield {"type":"done","tier":2,"model":"kimi"}
@@ -47,7 +47,7 @@ Builds on V1's working foundation: FastAPI + Postgres + cookie-backed Fantrax sc
 
 | Path | Purpose |
 |---|---|
-| `sandlot_skipper.py` | OpenRouter client wrapper (Kimi → Tencent fallback), tier detection, context formatter, system prompt, message builder, streaming generator |
+| `sandlot_skipper.py` | OpenRouter client wrapper (Kimi → DeepSeek fallback), tier detection, context formatter, system prompt, message builder, streaming generator |
 
 (no new frontend files — wire existing `V2Skipper` page in `v2-pages.jsx`)
 
@@ -76,10 +76,10 @@ Builds on V1's working foundation: FastAPI + Postgres + cookie-backed Fantrax sc
 
 1. **DB schema** — add `chat_sessions`, `chat_messages` to `sandlot_db.init_schema()`. Add helper functions. Verify by running `init_schema()` against Railway DB.
 2. **Scraper change** — modify `collect_all()` to include `all_team_rosters`. Run a manual refresh; confirm snapshot has 12 team rosters. Verify size + duration acceptable (~12s, ~40KB).
-3. **Skipper module** — `sandlot_skipper.py` with: `SkipperClient` class (OpenRouter client with Kimi→Tencent fallback), `detect_tier()`, `build_context()`, `SYSTEM_PROMPT` constant, `build_messages()`, `stream_response()` generator.
+3. **Skipper module** — `sandlot_skipper.py` with: `SkipperClient` class (OpenRouter client with Kimi→DeepSeek fallback), `detect_tier()`, `build_context()`, `SYSTEM_PROMPT` constant, `build_messages()`, `stream_response()` generator.
 4. **API endpoints** — wire `GET/POST/DELETE /api/skipper/messages` in `sandlot_api.py`. Use `StreamingResponse` for SSE. Append messages to DB at start (user) and end (assistant). Include tier + model in DB row for debugging.
 5. **Frontend wiring** — replace the mock state in `V2Skipper` with real fetch calls + SSE consumer.
-6. **Local end-to-end test** — `uvicorn` against Railway DB. Open Skipper tab. Test tier 2 ("who's my best SP?"), tier 3 ("how does my pitching compare to the league?"), persistence (reload → history shows). Test fallback (set `OPENROUTER_API_KEY=invalid` and verify Tencent path takes over).
+6. **Local end-to-end test** — `uvicorn` against Railway DB. Open Skipper tab. Test tier 2 ("who's my best SP?"), tier 3 ("how does my pitching compare to the league?"), persistence (reload → history shows). Test fallback (set `OPENROUTER_API_KEY=invalid` and verify DeepSeek path takes over).
 7. **Deploy** — push to main; Railway auto-deploys. Confirm `OPENROUTER_API_KEY` exists on Railway web service. Smoke test on Railway URL.
 
 ## Verification
@@ -102,7 +102,7 @@ curl -N -X POST http://127.0.0.1:8000/api/skipper/messages \
 
 **Fallback**
 - Set `OPENROUTER_API_KEY` to a bogus value, restart, send a message
-- Expect: log "Kimi failed, falling back to Tencent" and Tencent still responds
+- Expect: log "Kimi failed, falling back to DeepSeek" and DeepSeek still responds
 
 **Data integrity**
 ```sql
@@ -123,6 +123,6 @@ SELECT tier, model, count(*) FROM chat_messages WHERE role='assistant' GROUP BY 
 
 - **Exact OpenRouter model IDs.** Verify at impl time:
   - Kimi: likely `moonshotai/kimi-k2` or `moonshotai/moonshot-v1-128k`
-  - Tencent free: likely `tencent/hunyuan-a13b-instruct:free`
+  - DeepSeek fallback: `deepseek/deepseek-v4-flash`
   - Use OpenRouter's `/v1/models` endpoint to confirm.
 - **System prompt voice.** Default draft: neutral, grounded, refuses to speculate beyond snapshot data. V1 = "neutral helpful assistant," not "strategist".

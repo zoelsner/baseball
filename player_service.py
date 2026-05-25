@@ -392,9 +392,9 @@ def _load_or_generate_take(
 
     try:
         messages = _build_take_messages(snapshot, player_row, payload)
-        # Player-take uses the configured fallback first; the default Tencent
-        # free model is faster on cold short prompts. Chat still uses the
-        # configured primary-first order via stream().
+        # Player-take uses the configured fallback first because short cached
+        # prompts should return quickly. Chat still uses the configured
+        # primary-first order via stream().
         text, model = sandlot_skipper.SkipperClient().complete(
             messages,
             max_tokens=220,

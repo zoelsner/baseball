@@ -1,11 +1,13 @@
 """Drop-logging + drop-counting regression tests for _player_index (#38).
 
 `_player_index` silently dropped malformed rows (non-dict rows, missing
-id/name, duplicates, non-dict team buckets). With no observability, a bad
+id/name, non-dict team buckets). With no observability, a bad
 scrape that returned nulls or partial rows would propagate as a quiet
 player-missing bug through trade picker, Skipper, waivers, and #14's
-data-quality gates. These tests lock in: every drop emits a WARN log, and
-callers can opt into a `drops` counter for #14 to consume.
+data-quality gates. These tests lock in: malformed rows emit WARN logs, and
+callers can opt into a `drops` counter for #14 to consume. Duplicate ids are
+counted but not warning-logged because they are expected when Fantrax exposes
+the same player through multiple snapshot sections.
 """
 
 import logging
@@ -55,18 +57,16 @@ class PlayerIndexDropLoggingTests(unittest.TestCase):
             f"Expected a 'non_dict_team' WARN log; got {cm.output}",
         )
 
-    def test_logs_warning_when_duplicate_id_is_dropped(self):
+    def test_counts_duplicate_id_without_warning_log(self):
         data = {
             "team_id": "team-me",
             "roster": {"rows": [{"id": "p1", "name": "First"}]},
             "free_agents": {"players": [{"id": "p1", "name": "Duplicate"}]},
         }
-        with self.assertLogs("sandlot_api", level=logging.WARNING) as cm:
-            _player_index(data)
-        self.assertTrue(
-            any("duplicate" in msg for msg in cm.output),
-            f"Expected a 'duplicate' WARN log; got {cm.output}",
-        )
+        drops: dict[str, int] = {}
+        with self.assertNoLogs("sandlot_api", level=logging.WARNING):
+            _player_index(data, drops=drops)
+        self.assertEqual(drops.get("duplicate"), 1)
 
 
 class PlayerIndexDropCounterTests(unittest.TestCase):
@@ -78,8 +78,8 @@ class PlayerIndexDropCounterTests(unittest.TestCase):
             "roster": {"rows": [None, {"id": "p1", "name": "OK"}, {"name": "No ID"}]},
             "all_team_rosters": {
                 "team-bad": "not a dict",
-                "team-me": {"is_me": True, "rows": [{"id": "p1", "name": "OK"}]},  # duplicate of roster p1
             },
+            "free_agents": {"players": [{"id": "p1", "name": "Duplicate"}]},
         }
         drops: dict[str, int] = {}
         _player_index(data, drops=drops)
