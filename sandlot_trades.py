@@ -717,8 +717,8 @@ def _load_or_generate_rationale(
     if cached and cached.get("input_hash") == input_hash and cached.get("text"):
         return str(cached["text"]).strip(), str(cached.get("model") or ""), True
 
-    # Tencent-first matches the player-take pattern: faster on cold, short
-    # prompts. Kimi remains the fallback if Tencent errors.
+    # Fallback-first matches the player-take pattern: faster on cold, short
+    # prompts. Kimi remains the fallback if the configured fallback errors.
     model_order = (sandlot_skipper.fallback_model(), sandlot_skipper.primary_model())
     try:
         text, model = sandlot_skipper.SkipperClient().complete(
