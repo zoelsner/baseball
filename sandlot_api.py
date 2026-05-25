@@ -511,10 +511,16 @@ def _player_index(
             name = r.get("name")
             pid_key = str(pid) if pid else ""
             if not pid_key or not name:
-                log.warning(
-                    "_player_index drop: missing_id_or_name source=%s id=%r name=%r",
-                    source, pid, name,
-                )
+                if pid is None and name is None:
+                    log.debug(
+                        "_player_index drop: blank_row source=%s",
+                        source,
+                    )
+                else:
+                    log.warning(
+                        "_player_index drop: missing_id_or_name source=%s id=%r name=%r",
+                        source, pid, name,
+                    )
                 _note("missing_id_or_name")
                 continue
             if pid_key in seen:
