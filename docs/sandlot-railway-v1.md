@@ -21,9 +21,11 @@ Optional:
 
 ```bash
 SANDLOT_KEEP_SNAPSHOTS=30
-SANDLOT_PROFILE_WARM_LIMIT=30
-SANDLOT_PROFILE_WARM_DISABLED=0
+SANDLOT_PROFILE_WARM_ENABLED=0
+SANDLOT_PROFILE_WARM_LIMIT=12
+SANDLOT_PROFILE_WARM_PARALLELISM=3
 SANDLOT_PROFILE_WARM_TAKES=0
+SANDLOT_WAIVER_AI_WARM_ENABLED=0
 FANTRAX_COOKIES_JSON=<json array of Fantrax cookies>
 OPENROUTER_API_KEY=<openrouter key for Skipper chat and player takes>
 ```
@@ -74,14 +76,9 @@ cron: python sandlot_cron.py
 ```
 
 For Railway, create one web service from the repo and one cron service that
-runs `python sandlot_cron.py` on the desired schedule. For production, run it
-hourly during the 7am-11pm America/New_York window so the latest stored Fantrax
-snapshot is normally less than one hour old while the app is in use.
-
-The web app also protects freshness on open: if the latest snapshot is at least
-60 minutes old during the same 7am-11pm Eastern window, it keeps showing the
-stale snapshot and triggers `/api/refresh` in the background. Browser
-auto-refresh attempts are cooled down for five minutes.
+runs `python sandlot_cron.py` on the desired schedule. Keep the schedule
+conservative until the scrape is stable; manual refresh is the primary freshness
+control.
 
 `sandlot_refresh.run_refresh()` uses a Postgres advisory lock, so Railway cron,
 manual refresh, and app-open refresh cannot run overlapping Fantrax scrapes.
@@ -109,10 +106,12 @@ web service schedules a best-effort background warm.
 the MLB id, refreshes game logs, refreshes MLB game-content media, and can
 generate/cache a roster-aware Skipper take keyed to the latest Fantrax snapshot.
 
-The Railway cron refresh runs `python sandlot_cron.py`, stores the Fantrax
-snapshot, then pre-warms roster player profiles. By default this warms MLB ids,
-game logs, and media only; set `SANDLOT_PROFILE_WARM_TAKES=1` if you want cron
-to spend OpenRouter calls pre-generating takes too.
+The Railway cron refresh runs `python sandlot_cron.py` and stores the Fantrax
+snapshot. Profile and waiver AI warmups are off by default to keep refresh cheap:
+set `SANDLOT_PROFILE_WARM_ENABLED=1` for MLB profile cache warming, and
+`SANDLOT_WAIVER_AI_WARM_ENABLED=1` for cached waiver explanations. Set
+`SANDLOT_PROFILE_WARM_TAKES=1` only if you want profile warming to spend
+OpenRouter calls pre-generating takes.
 
 The app only stores and displays data. It does not make roster moves, drops,
 claims, or trade actions in Fantrax.
