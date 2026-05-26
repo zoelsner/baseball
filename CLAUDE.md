@@ -29,8 +29,9 @@ python audit.py                                                 # daily CLI (Sel
 
 - **No bundler, no `npm install`.** JSX runs through `@babel/standalone` from CDN, configured via `<script type="text/babel" data-presets="env,react">` tags in `index.html`. Edit a `.jsx` file and refresh.
 - **No `import`/`export` anywhere.** Babel's `env,react` presets don't transform module syntax — using it silently breaks the in-browser pipeline. Stick to top-level `function` / `const` declarations.
-- **Inter-file refs go through `window.*`.** Each file ends with `Object.assign(window, { Foo, Bar, ... })`. When you add a shared symbol, add it to that block or later files won't see it. Script load order in `index.html` matters: `atoms.jsx` → `data.jsx` → `data2.jsx` → `v2-pages.jsx`.
-- Files: `atoms.jsx` (tokens, `Sparkline`, `Avatar`, `Icons`), `data.jsx`/`data2.jsx` (mock fallback for when `DATABASE_URL` is unset), `v2-pages.jsx` (every page + the app shell `V2App`).
+- **Inter-file refs go through `window.*`.** Each file ends with `Object.assign(window, { Foo, Bar, ... })`. When you add a shared symbol, add it to that block or later files won't see it. Script load order in `index.html` matters: `atoms.jsx` → `v2-pages.jsx`.
+- Files: `atoms.jsx` (tokens, `Sparkline`, `Avatar`, `Icons`) and `v2-pages.jsx` (every page + the app shell `V2App`).
+- The production app is API-backed only. Do not add mock globals or `file://` demo fallbacks to `index.html`; no-data states should be explicit API loading/error states.
 - **Two navigation states in `V2App`:** `page` (active tab from the bottom tab bar) and `detail` (player id → renders `V2PlayerSheet`, the bottom sheet that itself fetches `/api/player/{id}`). The sheet is opened by any roster row tap and dismissed via its `aria-label="Close"` button or backdrop click — Escape is not wired up. A third state for a full-overlay player profile (opened from Skipper chat links) is planned but not yet built — see #37.
 - **No `localStorage`.** Don't reach for it for new state.
 - **Validating `.jsx` edits**: `node --check` doesn't understand JSX, so the user's post-edit hook errors out (harmless). To actually validate JSX, use Babel:
