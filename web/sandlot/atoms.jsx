@@ -1,4 +1,5 @@
 // Shared atoms used across all three directions
+import React from 'react';
 
 // ── Status / trend / vs-expectation tokens ────────────────────
 // Keep semantic, each direction maps these to its own palette.
@@ -109,8 +110,8 @@ function buildPlayerNameIndex(playerIndex) {
   return out;
 }
 
-Object.assign(window, {
+export {
   STATUS_LABEL, vsExpTier,
   Sparkline, Icons, TrendIcon, Avatar, PlayerPhoto,
   buildPlayerNameIndex,
-});
+};

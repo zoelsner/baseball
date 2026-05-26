@@ -46,11 +46,15 @@ That writes `.cookies/fantrax.json` into `fantrax_sessions` in Postgres.
 ## Local Run
 
 ```bash
+npm install
+npm run build:sandlot
 source .venv/bin/activate
 uvicorn sandlot_api:app --reload --port 8000
 ```
 
 Open `http://127.0.0.1:8000/`.
+FastAPI serves the committed `web/sandlot/app.js` bundle; rerun
+`npm run build:sandlot` after editing `web/sandlot/*.jsx`.
 
 Manual refresh:
 

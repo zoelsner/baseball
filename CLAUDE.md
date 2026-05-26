@@ -10,6 +10,7 @@ Anything prefixed `sandlot_` belongs to the web app. `mlb_stats.py` and `player_
 
 ```bash
 .venv/bin/python -c "..."                                       # venv is not auto-activated
+npm install && npm run build:sandlot                            # rebuild web/sandlot/app.js after JSX edits
 .venv/bin/uvicorn sandlot_api:app --reload --port 8000          # local API (most routes 503 without DATABASE_URL)
 python audit.py                                                 # daily CLI (Selenium-prompts on first run)
 ```
@@ -27,16 +28,15 @@ python audit.py                                                 # daily CLI (Sel
 
 ## Sandlot frontend (`web/sandlot/`)
 
-- **No bundler, no `npm install`.** JSX runs through `@babel/standalone` from CDN, configured via `<script type="text/babel" data-presets="env,react">` tags in `index.html`. Edit a `.jsx` file and refresh.
-- **No `import`/`export` anywhere.** Babel's `env,react` presets don't transform module syntax — using it silently breaks the in-browser pipeline. Stick to top-level `function` / `const` declarations.
-- **Inter-file refs go through `window.*`.** Each file ends with `Object.assign(window, { Foo, Bar, ... })`. When you add a shared symbol, add it to that block or later files won't see it. Script load order in `index.html` matters: `atoms.jsx` → `v2-pages.jsx`.
-- Files: `atoms.jsx` (tokens, `Sparkline`, `Avatar`, `Icons`) and `v2-pages.jsx` (every page + the app shell `V2App`).
+- **Frontend build required.** Source lives in `web/sandlot/*.jsx` and is bundled with esbuild to `web/sandlot/app.js`. Run `npm run build:sandlot` after JSX edits and commit the regenerated bundle.
+- **ES modules are allowed.** Use normal `import`/`export`; do not add globals through `window.*`.
+- Files: `main.jsx` (entry/render), `atoms.jsx` (tokens, `Sparkline`, `Avatar`, `Icons`), and `v2-pages.jsx` (every page + the app shell `V2App`).
 - The production app is API-backed only. Do not add mock globals or `file://` demo fallbacks to `index.html`; no-data states should be explicit API loading/error states.
 - **Two navigation states in `V2App`:** `page` (active tab from the bottom tab bar) and `detail` (player id → renders `V2PlayerSheet`, the bottom sheet that itself fetches `/api/player/{id}`). The sheet is opened by any roster row tap and dismissed via its `aria-label="Close"` button or backdrop click — Escape is not wired up. A third state for a full-overlay player profile (opened from Skipper chat links) is planned but not yet built — see #37.
 - **No `localStorage`.** Don't reach for it for new state.
-- **Validating `.jsx` edits**: `node --check` doesn't understand JSX, so the user's post-edit hook errors out (harmless). To actually validate JSX, use Babel:
+- **Validating `.jsx` edits**: build the frontend bundle:
   ```bash
-  node -e "require('/tmp/node_modules/@babel/parser').parse(require('fs').readFileSync('web/sandlot/v2-pages.jsx','utf8'),{sourceType:'module',plugins:['jsx']})"
+  npm run build:sandlot
   ```
 
 ## Sandlot backend (`sandlot_*.py`)
@@ -55,9 +55,9 @@ python audit.py                                                 # daily CLI (Sel
 
 - **Non-trivial work goes through PRs.** Branch `<type>/<issue#>-<slug>`, open PR, wait for CI green, merge with `--squash --delete-branch`. Direct push to `main` is fine for one-line fixes only.
 - **CI** runs two workflows on every PR:
-  - `.github/workflows/ci.yml`: `python-import-smoke` (imports every Sandlot module + runs `python -m unittest discover -s tests -p "test_*.py"`) and `jsx-parse` (Babel-parses every `web/sandlot/*.jsx`).
+  - `.github/workflows/ci.yml`: `python-import-smoke` (imports every Sandlot module + runs `python -m unittest discover -s tests -p "test_*.py"`) and `frontend-build` (`npm ci`, `npm run build:sandlot`, and verifies `web/sandlot/app.js` is current).
   - `.github/workflows/playwright.yml`: `E2E against Railway` runs Playwright specs from `tests/playwright/` against the live Railway deploy (or `SANDLOT_URL`). Also fires on a daily 14:30 UTC cron.
-  - Green CI means: modules import, JSX parses, the Python unit suite is clean, and the Playwright assertions pass against prod. It does *not* mean the new code under review is wired up correctly — read the diff, don't rubber-stamp.
+  - Green CI means: modules import, the frontend bundle builds, the Python unit suite is clean, and the Playwright assertions pass against prod. It does *not* mean the new code under review is wired up correctly — read the diff, don't rubber-stamp.
 - **Labels** (`gh label list`): `type:feature` / `type:bug` / `type:chore`, `area:backend` / `area:frontend`. Use both axes when filing.
 - `gh` is authed as `zoelsner` for `zoelsner/baseball`. Use the `distill-issue` skill (`.claude/skills/distill-issue/SKILL.md`) for structured issues.
 
