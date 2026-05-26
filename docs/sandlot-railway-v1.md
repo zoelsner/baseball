@@ -76,14 +76,24 @@ cron: python sandlot_cron.py
 ```
 
 For Railway, create one web service from the repo and one cron service that
-runs `python sandlot_cron.py` on the desired schedule. Keep the schedule
-conservative until the scrape is stable; manual refresh is the primary freshness
-control.
+runs `python sandlot_cron.py`.
+
+Production cron cadence:
+
+```bash
+0 13,21 * * *
+```
+
+Railway evaluates cron in UTC. During EDT baseball season this runs at 9:00 AM
+ET and 5:00 PM ET: one baseline morning snapshot and one pre-lineup-lock
+snapshot. If the app is used after daylight saving time ends, revisit the UTC
+hours.
 
 `sandlot_refresh.run_refresh()` uses a Postgres advisory lock, so Railway cron,
-manual refresh, and app-open refresh cannot run overlapping Fantrax scrapes.
-If another refresh is already running, the later attempt records a skipped
-`refresh_runs` row and returns the latest successful snapshot instead.
+manual refresh, and any future refresh caller cannot run overlapping Fantrax
+scrapes. If another refresh is already running, the later attempt records a
+skipped `refresh_runs` row and returns the latest successful snapshot instead.
+The web app must not auto-refresh on page load.
 
 ## API
 
@@ -112,6 +122,11 @@ set `SANDLOT_PROFILE_WARM_ENABLED=1` for MLB profile cache warming, and
 `SANDLOT_WAIVER_AI_WARM_ENABLED=1` for cached waiver explanations. Set
 `SANDLOT_PROFILE_WARM_TAKES=1` only if you want profile warming to spend
 OpenRouter calls pre-generating takes.
+
+Architectural boundary: refresh should produce one deterministic Fantrax
+snapshot plus deterministic Python projections/recommendations. AI reads cached
+snapshots and computed fields; it should not be required to compute core facts
+or make refresh succeed.
 
 The app only stores and displays data. It does not make roster moves, drops,
 claims, or trade actions in Fantrax.
