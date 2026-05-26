@@ -1,6 +1,14 @@
 // v2 — Card direction merged with Soft Cream tokens.
 // Cream surface, generous padding, hairline-thin internal dividers,
 // segmented pill controls, soft-tinted selection states, large rounded primaries.
+import React from 'react';
+import {
+  STATUS_LABEL,
+  Icons,
+  Avatar,
+  PlayerPhoto,
+  buildPlayerNameIndex,
+} from './atoms.jsx';
 
 // ── Tokens ─────────────────────────────────────────────────────
 const V2 = {
@@ -3077,4 +3085,4 @@ function V2Bubble({ m, renderText, matchup, dataQuality }) {
   );
 }
 
-window.V2App = V2App;
+export { V2App };

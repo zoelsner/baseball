@@ -35,16 +35,6 @@
 <body>
 <div id="stage"><div id="app"><div id="root" style="width:100%;height:100%"></div></div></div>
 
-<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
-<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
-
-<script type="text/babel" data-presets="env,react" src="atoms.jsx"></script>
-<script type="text/babel" data-presets="env,react" src="v2-pages.jsx?v=roster-health-today"></script>
-
-<script type="text/babel" data-presets="env,react">
-  const root = ReactDOM.createRoot(document.getElementById('root'));
-  root.render(<window.V2App initial={{ page:'today' }}/>);
-</script>
+<script src="app.js?v=frontend-build" defer></script>
 </body>
 </html>
