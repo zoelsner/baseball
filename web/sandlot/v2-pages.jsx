@@ -34,7 +34,6 @@ const V2 = {
 
 const V2_SKIPPER_MODELS = [
   { id:'moonshotai/kimi-k2', label:'Kimi K2', short:'Kimi' },
-  { id:'tencent/hy3-preview:free', label:'Tencent HY3 free', short:'Tencent' },
   { id:'deepseek/deepseek-v4-flash', label:'DeepSeek V4 Flash', short:'DS Flash' },
   { id:'deepseek/deepseek-v4-pro', label:'DeepSeek V4 Pro', short:'DS Pro' },
 ];
@@ -291,17 +290,12 @@ function V2App({ initial }) {
   const [model, setModel] = React.useState(v2EmptyModel);
   const [syncState, setSyncState] = React.useState({ state:'loading', label:'loading', error:null, notice:null });
 
-  // Reset the in-page team-roster overlay whenever we leave the league tab.
   const setPage = React.useCallback((next) => {
     if (next !== 'league') setLeagueTeam(null);
     setPageRaw(next);
   }, []);
 
   const loadSnapshot = React.useCallback(async () => {
-    if (window.location.protocol === 'file:') {
-      setSyncState({ state:'failed', label:'no data', error:'Open over http(s) to load real data', notice:null });
-      return;
-    }
     setSyncState({ state:'loading', label:'loading', error:null, notice:null });
 
     // Step 1: read the latest stored snapshot.
@@ -335,7 +329,6 @@ function V2App({ initial }) {
   }, []);
 
   const refreshSnapshot = React.useCallback(async () => {
-    if (window.location.protocol === 'file:') return;
     setSyncState(s => ({ ...s, state:'refreshing', label:'syncing', error:null, notice:null }));
     try {
       const next = await v2FetchRefresh();
@@ -423,7 +416,7 @@ function V2TopBar({ page, setPage, model, sync, onRefresh }) {
           }}>{titles[page]}</div>
         </div>
         {page!=='settings' && (
-          <button onClick={onRefresh} disabled={sync.state === 'refreshing' || window.location.protocol === 'file:'} title={sync.error || 'Refresh Fantrax data'} style={{
+          <button onClick={onRefresh} disabled={sync.state === 'refreshing'} title={sync.error || 'Refresh Fantrax data'} style={{
             background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:999,
             padding:'7px 11px', display:'flex', alignItems:'center', gap:7, cursor:'pointer',
             fontFamily:'inherit', flexShrink:0, marginTop:2,
@@ -1316,10 +1309,6 @@ function V2FreeAgents({ onOpenPlayer }) {
 
   React.useEffect(() => {
     let cancelled = false;
-    if (window.location.protocol === 'file:') {
-      setState({ status:'ready', payload:v2MockWaiverPayload(), error:null });
-      return () => { cancelled = true; };
-    }
     setState({ status:'loading', payload:null, error:null });
     fetch('/api/waiver-swaps/latest')
       .then(async r => {
@@ -1339,7 +1328,6 @@ function V2FreeAgents({ onOpenPlayer }) {
     const positions = `${card?.add?.positions || ''} ${card?.fills_position || ''}`.toUpperCase();
     return positions.includes(filter);
   });
-  const isMock = state.payload?.source === 'mock';
   const briefState = state.payload?.brief?.state;
 
   if (state.status === 'loading') {
@@ -1351,7 +1339,7 @@ function V2FreeAgents({ onOpenPlayer }) {
 
   return (
     <div style={{ padding:'4px 16px 32px', display:'flex', flexDirection:'column', gap:14 }}>
-      <V2Caution eyebrow={isMock ? 'Mock waiver board' : 'Deterministic board'} tone="accent">
+      <V2Caution eyebrow="Deterministic board" tone="accent">
         {cards.length
           ? `${cards.length} ranked swap${cards.length===1?'':'s'} from the latest snapshot. Review in Fantrax before making any move.`
           : (state.payload?.message || 'No positive waiver swaps found.')}
@@ -1518,40 +1506,6 @@ function v2BriefLines(text) {
     .split(/\n+/)
     .map(line => line.replace(/^\s*[-*•]\s*/, '').trim())
     .filter(Boolean);
-}
-
-function v2MockWaiverPayload() {
-  const cards = (FREE_AGENTS || []).filter(f => f.swap).slice(0, 8).map((fa, idx) => {
-    const move = (ROSTER || []).find(p => p.id === fa.swap.id) || {};
-    const addFpg = Number(fa.l30avg || fa.proj30 || 0);
-    const moveFpg = Number(move.proj || move.l30avg || 0);
-    const net = addFpg - moveFpg;
-    return {
-      id:`mock-waiver-${fa.id}`,
-      rank:idx+1,
-      add:{ id:fa.id, name:fa.name, team:fa.team, positions:fa.pos, age:fa.age, fpg:addFpg, score_source:'L30/G' },
-      move_out:{ id:move.id || fa.swap.id, name:fa.swap.name, team:move.team || '', positions:move.pos || '', slot:move.slot || 'BN', age:move.age, fpg:moveFpg, injury:move.injury || move.status },
-      net_delta:Number.isFinite(net) ? Math.round(net * 10) / 10 : fa.vsExp,
-      sort_score:fa.vsExp || 0,
-      fills_position:fa.pos,
-      fit:'direct',
-      confidence:idx < 2 ? 'High' : 'Medium',
-      why:fa.why,
-      risk:fa.tradeoffs,
-      dynasty_note:'Mock card only; real dynasty note comes from Fantrax snapshot data.',
-      evidence_chips:[`${v2Signed(Number.isFinite(net)?net:fa.vsExp, 1)} FP/G`, `${fa.pos} fit`, 'Mock fallback'],
-      explanation:{ state:'deterministic' },
-    };
-  });
-  return {
-    source:'mock',
-    snapshot_id:null,
-    taken_at:null,
-    freshness:{ state:'fallback', age_minutes:null },
-    cards,
-    brief:{ state:'missing', text:null },
-    message:null,
-  };
 }
 
 // ── /trade-grader ──────────────────────────────────────────────
@@ -2856,10 +2810,6 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
 
   React.useEffect(() => {
     let cancelled = false;
-    if (window.location.protocol === 'file:') {
-      setBrief({ status:'missing', data:null, error:null });
-      return () => { cancelled = true; };
-    }
     setBrief({ status:'loading', data:null, error:null });
     fetch('/api/waiver-swaps/latest')
       .then(async r => {
@@ -3122,75 +3072,6 @@ function V2Bubble({ m, renderText, matchup, dataQuality }) {
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, color:V2.ink, padding:'10px 13px', borderRadius:'14px 14px 14px 4px', fontSize:13.5, maxWidth:'92%', lineHeight:1.5 }}>
         {showProjectionCard && <V2MatchupProjectionCard matchup={matchup} dataQuality={dataQuality}/>}
         {body}
-      </div>
-    </div>
-  );
-}
-
-function V2ChatSheet({ context, onClose }) {
-  const ctxPrompts = {
-    today:   ['Should I start Brennan today?', 'Who is my weakest slot?'],
-    roster:  ['Where am I weakest?', 'Which position should I trade for?'],
-    league:  ['Who is my biggest threat?', 'How do I match up vs Bullpen Brigade?'],
-    fa:      ['Best add for OF?', 'Compare Talavera vs Hayes'],
-    trade:   ['Suggest a trade I should pitch', 'Roast my last trade'],
-    settings:['Is my sync healthy?'],
-  }[context] || SUGGESTED_PROMPTS;
-  return (
-    <div onClick={onClose} style={{ position:'absolute', inset:0, background:'rgba(26,26,26,0.36)', display:'flex', alignItems:'flex-end', zIndex:10 }}>
-      <div onClick={e=>e.stopPropagation()} style={{
-        background:V2.bg, borderTopLeftRadius:22, borderTopRightRadius:22, width:'100%', height:'82%', display:'flex', flexDirection:'column',
-      }}>
-        <div style={{ padding:'14px 16px', display:'flex', alignItems:'center', justifyContent:'space-between', borderBottom:`1px solid ${V2.hairline}` }}>
-          <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-            {Icons.sparkle(V2.accent, 16)}
-            <div style={{ fontWeight:600, fontFamily:V2.fontDisplay, fontSize:16 }}>Skipper</div>
-            <div style={{ fontSize:10.5, background:V2.accentSoft, color:V2.accent, fontWeight:700, padding:'2px 8px', borderRadius:999, letterSpacing:'0.04em', textTransform:'uppercase' }}>
-              context: {context}
-            </div>
-          </div>
-          <button onClick={onClose} style={{ background:'none', border:'none', cursor:'pointer', padding:6 }}>{Icons.close(V2.muted, 14)}</button>
-        </div>
-        <div style={{ flex:1, overflow:'hidden' }}><V2ChatInner ctxPrompts={ctxPrompts}/></div>
-      </div>
-    </div>
-  );
-}
-function V2ChatInner({ ctxPrompts }) {
-  const [msgs, setMsgs] = React.useState(AI_SEED);
-  const [input, setInput] = React.useState('');
-  const send = (t) => {
-    const text = (t ?? input).trim();
-    if (!text) return;
-    setMsgs(m => [...m, { role:'user', text }, { role:'ai', text:'…' }]);
-    setInput('');
-    setTimeout(()=>{
-      setMsgs(m => { const next=[...m]; next[next.length-1]={role:'ai',text:'(Skipper would respond using Kimi with full league context loaded.)'}; return next; });
-    }, 700);
-  };
-  return (
-    <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
-      <div style={{ flex:1, overflow:'auto', padding:'14px 16px' }}>
-        {msgs.map((m,i)=> <V2Bubble key={i} m={m}/>)}
-      </div>
-      <div style={{ borderTop:`1px solid ${V2.hairline}`, padding:'12px 14px 16px', background:V2.surface }}>
-        <div style={{ display:'flex', gap:6, overflowX:'auto', paddingBottom:10 }}>
-          {ctxPrompts.map(p => (
-            <button key={p} onClick={()=>send(p)} style={{
-              flexShrink:0, padding:'8px 12px', borderRadius:999, border:`1px solid ${V2.hairline}`,
-              background:V2.surface2, color:V2.body, fontSize:11.5, cursor:'pointer', fontFamily:'inherit', fontWeight:600,
-            }}>{p}</button>
-          ))}
-        </div>
-        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')send();}}
-            placeholder="Ask Skipper..."
-            style={{ flex:1, border:`1px solid ${V2.hairline}`, background:V2.surface2, borderRadius:999, padding:'12px 16px', outline:'none', fontSize:14, color:V2.ink, fontFamily:'inherit' }}/>
-          <button onClick={()=>send()} style={{
-            width:42, height:42, borderRadius:'50%', background:V2.ink, border:'none', cursor:'pointer',
-            display:'flex', alignItems:'center', justifyContent:'center',
-          }}>{Icons.send('#fff', 14)}</button>
-        </div>
       </div>
     </div>
   );
