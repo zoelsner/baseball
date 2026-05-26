@@ -19,7 +19,7 @@ python audit.py                                                 # daily CLI (Sel
 ## Required env (`.env`)
 
 - `FANTRAX_USER` / `FANTRAX_PASS` / `FANTRAX_LEAGUE_ID` / `FANTRAX_TEAM_ID` — for the scrape
-- `OPENROUTER_API_KEY` — Skipper chat (Kimi primary, Tencent fallback)
+- `OPENROUTER_API_KEY` — Skipper chat (Kimi primary, DeepSeek fallback)
 - `DATABASE_URL` — only set on Railway; locally most Sandlot endpoints will 503
 - `SANDLOT_REFRESH_TOKEN` — Railway-only; gates `/api/refresh`
 - `SANDLOT_KEEP_SNAPSHOTS` — optional, default 30
@@ -43,10 +43,11 @@ python audit.py                                                 # daily CLI (Sel
 - `startup` only calls `init_schema()` when `DATABASE_URL` is set. Locally, `_snapshot_payload()` and other handlers will 503 (`/api/snapshot/latest`, `/api/skipper/messages`, `/api/player/{id}`).
 - `/api/health` is the **only no-DB-friendly probe** — it catches DB errors and returns 200 with `ok: false`. Don't refactor it to behave like the others.
 - Snapshots are stored as JSONB in `snapshots.data`. The frontend reads from `_snapshot_payload()` in `sandlot_api.py`, which derives a flat shape (roster rows, standings, player_index) from the raw blob.
-- Skipper chat: primary `moonshotai/kimi-k2`, fallback `tencent/hy3-preview:free`. Streams via SSE through `sandlot_skipper.SkipperClient`. Fallback triggers on **any** exception during streaming (pre-stream, mid-stream, or empty stream) — the `for model in model_order: try ... except: continue` loop in `SkipperClient.stream` retries the next model on any failure. The SSE client may already have received partial tokens from the failed model when the retry kicks in; downstream consumers should treat the stream as best-effort, not transactional.
+- Refresh architecture: Railway cron runs `python sandlot_cron.py` at `0 13,21 * * *` UTC during baseball season (9 AM + 5 PM ET while EDT is active). Manual refresh remains available through `/api/refresh`. The frontend must not auto-refresh on page load. Refresh work should stay deterministic: scrape Fantrax, store one snapshot, compute Python projections/recommendations, and leave AI as a cached explanation layer.
+- Skipper chat: primary `moonshotai/kimi-k2`, fallback `deepseek/deepseek-v4-flash`. Streams via SSE through `sandlot_skipper.SkipperClient`. Fallback triggers on **any** exception during streaming (pre-stream, mid-stream, or empty stream) — the `for model in model_order: try ... except: continue` loop in `SkipperClient.stream` retries the next model on any failure. The SSE client may already have received partial tokens from the failed model when the retry kicks in; downstream consumers should treat the stream as best-effort, not transactional.
 - Single-user app — Sandlot routes are mostly unauthenticated by design. `/api/refresh` is the only one with an optional `SANDLOT_REFRESH_TOKEN` guard.
 - **Cached-AI pattern** (`ai_briefs` table): deterministic compute → AI overlay → cache by `(snapshot_id, brief_type, subject_key)` with `input_hash` for staleness. `sandlot_waivers.py` and `sandlot_trades.py` are reference. Use `sandlot_db.{get,set}_ai_brief` for new cached-AI features.
-- **Model order helpers** in `sandlot_skipper`: `default_model_order()` = Kimi-first (chat default). For cold short prompts (takes, grades), pass `model_order=(fallback_model(), primary_model())` to put Tencent first.
+- **Model order helpers** in `sandlot_skipper`: `default_model_order()` = Kimi-first (chat default). For cold short prompts (takes, grades), pass `model_order=(fallback_model(), primary_model())` to try the configured low-latency fallback first.
 - **Snapshot blob shape**: `data["roster"]["rows"]` (mine), `data["all_team_rosters"]` (`{team_id: {rows, is_me, ...}}`), `data["free_agents"]["players"]`, `data["standings"]`. `_player_index()` flattens all three with a `source` field.
 
 ## Git workflow
