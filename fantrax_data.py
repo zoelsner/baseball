@@ -17,6 +17,7 @@ from typing import Any
 
 import requests
 from fantraxapi import FantraxAPI
+from fantraxapi import api as _fantrax_api
 
 log = logging.getLogger(__name__)
 
@@ -401,8 +402,8 @@ def extract_pending_trades(api: FantraxAPI, my_team_id: str) -> list[dict]:
     try:
         trades = api.pending_trades()
     except Exception as e:
-        log.error("pending_trades failed: %s", e)
-        return []
+        log.info("pending_trades object parser failed; falling back to raw endpoint: %s", e)
+        return _extract_pending_trades_raw(api, my_team_id)
 
     out = []
     for t in trades:
@@ -440,6 +441,93 @@ def extract_pending_trades(api: FantraxAPI, my_team_id: str) -> list[dict]:
             log.warning("Failed to parse trade: %s", e)
             out.append({"error": str(e), "raw": _to_jsonable(t)})
     return out
+
+
+def _extract_pending_trades_raw(api: FantraxAPI, my_team_id: str) -> list[dict]:
+    try:
+        response = _fantrax_api.get_pending_transactions(api)
+    except Exception as e:
+        log.warning("pending_trades raw endpoint failed: %s", e)
+        return []
+
+    out = []
+    for trade in response.get("tradeInfoList") or []:
+        if not isinstance(trade, dict):
+            continue
+        try:
+            normalized = _normalize_pending_trade_raw(api, trade, my_team_id)
+            if normalized:
+                out.append(normalized)
+        except Exception as e:
+            log.warning("Failed to parse raw pending trade: %s", e)
+            out.append({"error": str(e), "raw": _to_jsonable(trade)})
+    return out
+
+
+def _normalize_pending_trade_raw(api: FantraxAPI, trade: dict[str, Any], my_team_id: str) -> dict | None:
+    info = _trade_info_map(trade)
+    proposed_by_id = trade.get("creatorTeamId")
+    moves = [_normalize_trade_move_raw(api, move) for move in trade.get("moves") or [] if isinstance(move, dict)]
+    involves_me = any(
+        m.get("from_team_id") == my_team_id or m.get("to_team_id") == my_team_id for m in moves
+    ) or proposed_by_id == my_team_id
+    if not involves_me:
+        return None
+    return {
+        "trade_id": trade.get("txSetId") or trade.get("tradeId"),
+        "proposed_by_id": proposed_by_id,
+        "proposed_by": _team_name(api, proposed_by_id),
+        "proposed": info.get("Proposed"),
+        "accepted": info.get("Accepted"),
+        "executed": info.get("To be executed"),
+        "moves": moves,
+    }
+
+
+def _normalize_trade_move_raw(api: FantraxAPI, move: dict[str, Any]) -> dict[str, Any]:
+    from_team_id = _team_ref_id(move.get("from"))
+    to_team_id = _team_ref_id(move.get("to"))
+    scorer = move.get("scorer") if isinstance(move.get("scorer"), dict) else None
+    draft_pick = move.get("draftPick") if isinstance(move.get("draftPick"), dict) else None
+    return {
+        "from_team_id": from_team_id,
+        "from_team": _team_name(api, from_team_id),
+        "to_team_id": to_team_id,
+        "to_team": _team_name(api, to_team_id),
+        "player": scorer.get("name") if scorer else None,
+        "player_id": (scorer.get("scorerId") or scorer.get("id")) if scorer else None,
+        "draft_pick": _to_jsonable(draft_pick) if draft_pick else None,
+    }
+
+
+def _trade_info_map(trade: dict[str, Any]) -> dict[str, str | None]:
+    out: dict[str, str | None] = {}
+    for item in trade.get("usefulInfo") or []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if name:
+            out[str(name)] = str(item.get("value") or "") or None
+    return out
+
+
+def _team_ref_id(ref: Any) -> str | None:
+    if isinstance(ref, dict):
+        return ref.get("teamId") or ref.get("id")
+    return None
+
+
+def _team_name(api: FantraxAPI, team_id: str | None) -> str | None:
+    if not team_id:
+        return None
+    try:
+        return getattr(api.team(team_id), "name", None)
+    except Exception:
+        try:
+            team = getattr(api, "team_lookup", {}).get(team_id)
+            return getattr(team, "name", None)
+        except Exception:
+            return None
 
 
 def extract_all_team_rosters(api: FantraxAPI, my_team_id: str) -> dict:
@@ -517,7 +605,7 @@ def extract_league_rules(session: requests.Session, league_id: str) -> dict | No
         except Exception as e:
             log.debug("League rules method %s raised: %s", method, e)
             continue
-    log.warning("League rules unavailable: all candidate methods failed")
+    log.info("League rules unavailable: all candidate methods failed")
     return None
 
 
