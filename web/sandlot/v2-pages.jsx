@@ -368,7 +368,7 @@ function V2App({ initial }) {
     roster:  <V2Roster model={model} onPlayer={setDetail}/>,
     league:  leagueTeam
       ? <V2TeamRoster teamId={leagueTeam.id} teamMeta={leagueTeam} onBack={()=>setLeagueTeam(null)} onPlayer={setDetail}/>
-      : <V2League model={model} onOpenTeam={setLeagueTeam}/>,
+      : <V2League model={model} onOpenTeam={setLeagueTeam} onOpenTrade={()=>setPage('trade')}/>,
     fa:      <V2FreeAgents onOpenPlayer={openPlayer}/>,
     trade:   <V2TradeGrader model={model}/>,
     skipper: <V2Skipper model={model} sync={syncState} onOpenPlayer={openPlayer}/>,
@@ -444,9 +444,8 @@ function V2TabBar({ page, setPage }) {
     { id:'today',  label:'Today',   icon:Icons.home },
     { id:'roster', label:'Roster',  icon:Icons.list },
     { id:'fa',     label:'Adds',    icon:Icons.spark },
-    { id:'skipper',label:'Skipper', icon:Icons.sparkle },
-    { id:'trade',  label:'Trade',   icon:Icons.trade },
     { id:'league', label:'League',  icon:Icons.diamond },
+    { id:'skipper',label:'Skipper', icon:Icons.sparkle },
   ];
   return (
     <div style={{ display:'flex', borderTop:`1px solid ${V2.hairline}`, background:V2.surface, paddingBottom:18, paddingTop:8 }}>
@@ -1261,7 +1260,7 @@ function V2RosterSlot({ player, last, onClick }) {
 }
 
 // ── /league ────────────────────────────────────────────────────
-function V2League({ model, onOpenTeam }) {
+function V2League({ model, onOpenTeam, onOpenTrade }) {
   const [sort, setSort] = React.useState('rank');
   const sorters = {
     rank:(a,b)=>a.rank-b.rank,
@@ -1271,6 +1270,7 @@ function V2League({ model, onOpenTeam }) {
   const list = [...(model.leagueTeams || [])].sort(sorters[sort]);
   return (
     <div style={{ padding:'4px 16px 32px', display:'flex', flexDirection:'column', gap:12 }}>
+      <V2LeagueTradeDesk onOpenTrade={onOpenTrade}/>
       <V2Segment items={[{value:'rank',label:'Rank'},{value:'pts',label:'Points'},{value:'name',label:'Name'}]} value={sort} onChange={setSort}/>
       <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
         {list.length ? list.map(t => <V2TeamRow key={t.id} team={t} onOpen={()=>onOpenTeam && onOpenTeam(t)}/>) : (
@@ -1278,6 +1278,32 @@ function V2League({ model, onOpenTeam }) {
             No standings in the latest snapshot.
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function V2LeagueTradeDesk({ onOpenTrade }) {
+  return (
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:'14px 16px' }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:14 }}>
+        <div style={{ minWidth:0 }}>
+          <V2Eyebrow color={V2.accent}>Trade desk</V2Eyebrow>
+          <div style={{ marginTop:6, fontSize:19, lineHeight:1.1, fontWeight:700, fontFamily:V2.fontDisplay }}>
+            Grade offers against the whole league.
+          </div>
+          <div style={{ marginTop:5, color:V2.muted, fontSize:12.5, lineHeight:1.4, fontWeight:600 }}>
+            Compare your roster with any opponent player before you answer.
+          </div>
+        </div>
+        <button onClick={onOpenTrade} style={{
+          flexShrink:0, border:'none', borderRadius:999, background:V2.ink, color:'#fff',
+          padding:'10px 13px', fontSize:12.5, fontWeight:800, cursor:'pointer', fontFamily:'inherit',
+          display:'inline-flex', alignItems:'center', gap:7,
+        }}>
+          {Icons.trade('#fff', 15)}
+          Grade an offer
+        </button>
       </div>
     </div>
   );
