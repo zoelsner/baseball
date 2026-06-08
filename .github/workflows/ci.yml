@@ -24,6 +24,7 @@ jobs:
         # the legacy CLI (audit.py / league_intel.py) is excluded per CLAUDE.md.
         run: |
           python -c "
+          import sandlot_actions
           import sandlot_api
           import sandlot_config
           import sandlot_skipper
@@ -36,6 +37,8 @@ jobs:
           import mlb_stats
           print('all imports OK')
           "
+      - name: Run Sandlot actions unit tests
+        run: python -m unittest discover -s tests -p "test_sandlot_actions*.py"
       - name: Run Python unit tests
         run: python -m unittest discover -s tests -p "test_*.py"
 

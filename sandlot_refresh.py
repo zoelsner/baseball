@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +21,7 @@ import sandlot_db
 import sandlot_matchup
 
 log = logging.getLogger(__name__)
-REFRESH_LOCK_ID = 2026051501
+REFRESH_LOCK_ID = 2026060802
 
 
 @dataclass
@@ -124,21 +123,8 @@ def _run_refresh_unlocked(source: str, started: float) -> RefreshResult:
         return RefreshResult(status="failed", snapshot_id=snapshot_id, duration_ms=duration_ms, errors=[error])
 
 
-@contextmanager
 def _refresh_lock():
-    with sandlot_db.connect() as conn:
-        row = conn.execute(
-            "SELECT pg_try_advisory_lock(%s) AS locked",
-            (REFRESH_LOCK_ID,),
-        ).fetchone()
-        locked = bool(row and row.get("locked"))
-        if not locked:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            conn.execute("SELECT pg_advisory_unlock(%s)", (REFRESH_LOCK_ID,))
+    return sandlot_db.advisory_lock(REFRESH_LOCK_ID)
 
 
 def _skipped_refresh(source: str, started: float, reason: str) -> RefreshResult:
