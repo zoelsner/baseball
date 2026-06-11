@@ -5,7 +5,14 @@ test.describe('Trade page', () => {
   test('renders both player pickers and a disabled Grade CTA', async ({ page }) => {
     await page.goto('/');
     await waitForAppMount(page);
-    await gotoTab(page, 'Trade');
+
+    const tradeTab = page.getByRole('button', { name: 'Trade', exact: true });
+    if (await tradeTab.count()) {
+      await tradeTab.click();
+    } else {
+      await gotoTab(page, 'League');
+      await page.getByRole('button', { name: /Grade an offer/i }).click();
+    }
 
     // Both V2PlayerPicker labels.
     await expect(page.getByText(/^You give$/i)).toBeVisible();

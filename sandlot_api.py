@@ -33,6 +33,8 @@ log = logging.getLogger(__name__)
 load_dotenv()
 
 WEB_DIR = Path(__file__).parent / "web" / "sandlot"
+FRESH_SNAPSHOT_MINUTES = 18 * 60
+OLD_SNAPSHOT_MINUTES = 36 * 60
 
 app = FastAPI(title="Sandlot", version="0.1.0")
 
@@ -717,9 +719,9 @@ def _freshness(taken_at: Any) -> dict[str, Any]:
     if taken_at.tzinfo is None:
         taken_at = taken_at.replace(tzinfo=timezone.utc)
     age_minutes = max(0, int((now - taken_at).total_seconds() / 60))
-    if age_minutes <= 30:
+    if age_minutes <= FRESH_SNAPSHOT_MINUTES:
         state = "fresh"
-    elif age_minutes <= 24 * 60:
+    elif age_minutes <= OLD_SNAPSHOT_MINUTES:
         state = "stale"
     else:
         state = "old"

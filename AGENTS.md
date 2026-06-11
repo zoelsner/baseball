@@ -1,14 +1,21 @@
 # Agent Guide
 
-This repo is a single-user-first fantasy baseball app. Treat Sandlot as a
+This repo is a single-user-first fantasy baseball app. Treat the repo as a
 working product system, not a scratchpad. Keep changes scoped, prove behavior
 with the strongest available evidence, and do not overwrite user or agent work
 already in the tree.
 
 ## Product Context
 
-Read `CLAUDE.md` and the relevant docs before product, UI, or backend work. The
-active product is Sandlot V1: `sandlot_*.py`, `player_service.py`,
+Read these before product or UI work:
+
+- `PRODUCT.md` for the product frame and non-goals.
+- `DESIGN.md` for visual system and component rules.
+- `docs/ARCHITECTURE.md` for current technical boundaries.
+- `CLAUDE.md` for detailed local commands and Sandlot-specific implementation
+  notes.
+
+The active product is Sandlot V1: `sandlot_*.py`, `player_service.py`,
 `mlb_stats.py`, shared scrape modules, and `web/sandlot/*`. The older CLI
 scripts are legacy/supporting utilities unless the user explicitly asks for
 them.
@@ -20,8 +27,10 @@ Use this lightweight gate before editing non-doc code:
 1. Confirm the branch and dirty state with `git branch --show-current` and
    `git status --short`.
 2. Identify the slice: issue, plan, or explicit user request.
-3. Check for conflicts with `CLAUDE.md` and the relevant docs.
-4. Name the validation plan. For frontend JSX, run the bundle build. For
+3. Check for product/design/architecture conflicts in `PRODUCT.md`,
+   `DESIGN.md`, and `docs/ARCHITECTURE.md`.
+4. Name the validation plan. For docs-only work, say docs-only. For frontend
+   JSX, run `npm run build:sandlot` and commit the regenerated bundle. For
    Python, run targeted unit tests where available.
 5. Preserve unrelated dirty files. Do not revert or rewrite changes you did not
    make.
@@ -36,19 +45,23 @@ guessing.
   Skipper prompts.
 - Skipper explains and answers questions; deterministic data powers the core
   queue and rankings.
-- Sandlot remains recommend-only for human-facing surfaces. Do not imply the
-  app UI, Skipper, Today, Adds, or League can execute Fantrax moves.
-- `POST /api/actions` is the narrow exception: a Zo Computer
-  machine-to-machine executor only, token-gated with `SANDLOT_ACTIONS_TOKEN`,
-  Postgres advisory-lock guarded, and logged to `action_logs`. Do not expose it
-  as a user-facing feature.
+- Trade workflows live under League until they earn a separate primary surface.
+- The product UI is recommend-first: it surfaces decisions, it does not fire
+  Fantrax writes. Fantrax-write actions are allowed only through the
+  token-gated machine API (`POST /api/actions`), and every action must be
+  explicitly confirmed by Zach upstream (e.g., a Telegram yes relayed by his
+  agent). Never add autonomous or implicit execution paths.
+- The Town integration is downstream of the structured Attention Queue.
 
 ## Frontend Rules
 
-- Source lives in `web/sandlot/*.jsx` and is bundled to `web/sandlot/app.js`.
-- Use normal ES module `import`/`export` in the JSX source.
-- Run `npm run build:sandlot` after JSX edits and commit the regenerated
-  bundle.
+- Source lives in `web/sandlot/*.jsx` and is bundled with esbuild to the
+  committed `web/sandlot/app.js`. Run `npm run build:sandlot` after JSX edits
+  and commit the regenerated bundle — CI fails if it is stale.
+- ES modules are allowed: use normal `import`/`export`. Do not add globals
+  through `window.*`.
+- Production is API-backed only. Do not add mock-data globals or `file://`
+  demo fallbacks; no-data states are explicit loading/error states.
 - Keep bottom navigation durable and sparse: Today, Roster, Adds, League,
   Skipper.
 - Use labels and reason text alongside color for all status states.
@@ -59,11 +72,10 @@ guessing.
   optional AI warmups.
 - Snapshot-derived payloads should remain cache-first and explicit about
   freshness.
-- Use the cached-AI pattern for explanations: deterministic compute, AI
-  overlay, cache by snapshot/input, graceful degradation.
-- Fantrax write actions must have code-level safety constraints: no automatic
-  retries, drop confirmation, IL eligibility checks, roster-size guards,
-  session freshness checks, and transaction logging.
+- Use the cached-AI pattern for explanations: deterministic compute, AI overlay,
+  cache by snapshot/input, graceful degradation.
+- Treat current-news/injury enrichment as a separate data layer, not a reason to
+  weaken existing IL stash safety.
 
 ## Evidence To Report
 
@@ -76,6 +88,9 @@ At the end of a non-trivial change, report:
 - remaining risk or follow-up issue
 
 ## Issues And PRs
+
+Use GitHub issues for product slices that will take more than one short edit or
+need acceptance criteria. Use the repo issue template so the PR can mirror it.
 
 Use PRs for non-trivial code changes. Docs-only updates may still use a PR when
 they establish repo process or product direction.

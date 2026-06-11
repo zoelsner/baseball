@@ -38,6 +38,6 @@ export async function captureSnapshot(page: Page): Promise<any> {
   return res.json();
 }
 
-export async function gotoTab(page: Page, label: 'Today' | 'Roster' | 'Adds' | 'Skipper' | 'Trade' | 'League') {
+export async function gotoTab(page: Page, label: 'Today' | 'Roster' | 'Adds' | 'Skipper' | 'League') {
   await page.getByRole('button', { name: label, exact: true }).click();
 }

@@ -30,8 +30,8 @@ test.describe('V2PlayerSheet (bottom sheet)', () => {
 
     // Dismiss via the sheet's explicit Close button (aria-label="Close").
     // Escape isn't wired up; backdrop click works but is harder to target.
-    const closeButton = page.getByRole('button', { name: 'Close', exact: true });
-    await closeButton.click();
-    await expect(closeButton).toBeHidden({ timeout: 5_000 });
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+
+    await expect(page.getByRole('button', { name: 'Close', exact: true })).toHaveCount(0);
   });
 });

@@ -368,7 +368,7 @@ function V2App({ initial }) {
     roster:  <V2Roster model={model} onPlayer={setDetail}/>,
     league:  leagueTeam
       ? <V2TeamRoster teamId={leagueTeam.id} teamMeta={leagueTeam} onBack={()=>setLeagueTeam(null)} onPlayer={setDetail}/>
-      : <V2League model={model} onOpenTeam={setLeagueTeam}/>,
+      : <V2League model={model} onOpenTeam={setLeagueTeam} onOpenTrade={()=>setPage('trade')}/>,
     fa:      <V2FreeAgents onOpenPlayer={openPlayer}/>,
     trade:   <V2TradeGrader model={model}/>,
     skipper: <V2Skipper model={model} sync={syncState} onOpenPlayer={openPlayer}/>,
@@ -444,9 +444,8 @@ function V2TabBar({ page, setPage }) {
     { id:'today',  label:'Today',   icon:Icons.home },
     { id:'roster', label:'Roster',  icon:Icons.list },
     { id:'fa',     label:'Adds',    icon:Icons.spark },
-    { id:'skipper',label:'Skipper', icon:Icons.sparkle },
-    { id:'trade',  label:'Trade',   icon:Icons.trade },
     { id:'league', label:'League',  icon:Icons.diamond },
+    { id:'skipper',label:'Skipper', icon:Icons.sparkle },
   ];
   return (
     <div style={{ display:'flex', borderTop:`1px solid ${V2.hairline}`, background:V2.surface, paddingBottom:18, paddingTop:8 }}>
@@ -690,7 +689,6 @@ function v2RosterHealth(model) {
   const injuryRows = [];
   const coldRows = [];
   const lineupRows = [];
-  let softOnly = false;
 
   starters.forEach(p => {
     const state = v2PlayerState(p);
@@ -706,29 +704,25 @@ function v2RosterHealth(model) {
       ].filter(Boolean));
       return;
     }
+    if (lineupFlag) {
+      const lineupReason = p.alert?.msg || (
+        String(p.opp || '').toUpperCase() === 'OFF' ? 'Off today' :
+        metric === 0 ? 'No projected output' :
+        'Lineup check'
+      );
+      addRow(lineupRows, p, lineupReason, [
+        p.alert?.kind ? p.alert.kind.replace(/-/g, ' ') : null,
+        metric ? `${metric.toFixed(1)} FP/G` : null,
+      ].filter(Boolean));
+      return;
+    }
     if (isCold) {
       addRow(coldRows, p, p.trend === 'cold' ? 'Cold streak' : 'Low FP/G for active slot', [
         metric ? `${metric.toFixed(1)} FP/G` : null,
         p.vsExp ? `${p.vsExp > 0 ? '+' : ''}${p.vsExp.toFixed(1)} vs exp` : null,
       ].filter(Boolean));
-      return;
-    }
-    if (lineupFlag) {
-      addRow(lineupRows, p, p.alert?.msg || (String(p.opp || '').toUpperCase() === 'OFF' ? 'Off today' : 'Lineup check'), [
-        p.alert?.kind ? p.alert.kind.replace(/-/g, ' ') : null,
-        metric ? `${metric.toFixed(1)} FP/G` : null,
-      ].filter(Boolean));
     }
   });
-
-  if (!injuryRows.length && !coldRows.length && !lineupRows.length) {
-    softOnly = true;
-    starters
-      .filter(p => v2PlayerMetric(p) > 0)
-      .sort((a,b)=>v2PlayerMetric(a)-v2PlayerMetric(b))
-      .slice(0, 2)
-      .forEach(p => addRow(coldRows, p, 'Lowest active FP/G', [`${v2PlayerMetric(p).toFixed(1)} FP/G`]));
-  }
 
   const flagged = injuryRows.length + coldRows.length + lineupRows.length;
   const healthy = Math.max(0, starters.length - flagged);
@@ -745,17 +739,99 @@ function v2RosterHealth(model) {
     flagged,
     healthy,
     score,
-    softOnly,
+    softOnly:false,
   };
+}
+
+function v2PlayerContext(p) {
+  return [p?.slot, p?.pos, p?.team].filter(Boolean).join(' · ') || 'Roster';
+}
+
+function v2QueueMetricChip(p) {
+  const metric = v2PlayerMetric(p);
+  return metric ? `${metric.toFixed(1)} FP/G` : null;
+}
+
+function v2AttentionSeverity(severity) {
+  if (severity === 'urgent') return { label:'Urgent', color:V2.bad, bg:V2.badSoft };
+  if (severity === 'check') return { label:'Check', color:V2.warn, bg:V2.warnSoft };
+  if (severity === 'review') return { label:'Review', color:V2.accent, bg:V2.accentSoft };
+  return { label:'Watch', color:V2.muted, bg:V2.surface2 };
+}
+
+function v2AttentionReason(kind, row) {
+  const p = row.player;
+  if (kind === 'status') {
+    return `${row.reason} on ${p.slot || 'active roster'}. Inspect replacement risk before lock.`;
+  }
+  if (kind === 'lineup') {
+    return `${row.reason}. Confirm the active slot before leaving this player in.`;
+  }
+  return `${row.reason}. Check whether this active spot needs a replacement.`;
+}
+
+function v2AttentionQueue(health, matchupRecommendations) {
+  const items = [];
+  const addPlayerItem = (kind, row, index) => {
+    const p = row.player;
+    const metric = v2PlayerMetric(p);
+    const meta = {
+      status:{ priority:300, severity:'urgent', label:'Status', action:'Inspect' },
+      lineup:{ priority:200, severity:'check', label:'Role', action:'Inspect' },
+      output:{ priority:100, severity:'review', label:'Output', action:'Inspect' },
+    }[kind];
+    items.push({
+      id:`${kind}-${p.id || p.name || index}`,
+      kind,
+      priority:meta.priority + metric,
+      severity:meta.severity,
+      label:meta.label,
+      player:p,
+      title:p.name,
+      context:v2PlayerContext(p),
+      reason:v2AttentionReason(kind, row),
+      chips:[v2StatusText(p) !== 'Active' ? v2StatusText(p) : null, ...(row.chips || []), v2QueueMetricChip(p)]
+        .filter(Boolean)
+        .filter((chip, chipIndex, all) => all.indexOf(chip) === chipIndex)
+        .slice(0, 3),
+      action:meta.action,
+    });
+  };
+
+  health.injuryRows.forEach((row, index) => addPlayerItem('status', row, index));
+  health.lineupRows.forEach((row, index) => addPlayerItem('lineup', row, index));
+  health.coldRows.forEach((row, index) => addPlayerItem('output', row, index));
+
+  const top = matchupRecommendations?.recommendations?.[0] || null;
+  if (top) {
+    const points = v2Number(top.points_delta);
+    const confidence = top.confidence || 'medium';
+    items.push({
+      id:`replacement-${top.id || v2MoveChainText(top.action?.chain || [])}`,
+      kind:'replacement',
+      priority:50 + Math.max(0, points),
+      severity:'review',
+      label:'Replacement',
+      title:'Review lineup move',
+      context:'Roster decision',
+      reason:`${v2MoveChainText(top.action?.chain || [])}. Projected gain ${points >= 0 ? '+' : ''}${points.toFixed(1)} points.`,
+      chips:[`${confidence} confidence`, ...(top.reason_chips || [])].slice(0, 3),
+      action:'Review',
+      nav:'roster',
+    });
+  }
+
+  return items.sort((a,b)=>b.priority-a.priority).slice(0, 6);
 }
 
 function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
   const health = v2RosterHealth(model);
+  const matchupRecommendations = model.matchup?.recommendations || null;
+  const queue = v2AttentionQueue(health, matchupRecommendations);
   const matchup = v2MatchupInfo(model.matchup);
   const dataQuality = model.dataQuality || null;
   const projection = matchup?.projection || null;
   const projectionInfo = v2ProjectionInfo(projection);
-  const matchupRecommendations = model.matchup?.recommendations || null;
   const showProjection = projectionInfo && !projectionInfo.complete;
   const showProjectionFallback = matchup && !showProjection && dataQuality?.projection_ready === false;
   const showRecommendationFallback = model.source === 'api' && dataQuality?.recommendations_ready === false && !matchupRecommendations;
@@ -771,15 +847,11 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
 
   return (
     <div style={{ padding:'18px 16px 28px', display:'flex', flexDirection:'column', gap:14 }}>
-      {sync.notice && sync.state !== 'refreshing' && (
-        <V2Caution eyebrow="Heads up" tone="warn">{sync.notice}</V2Caution>
-      )}
-
       <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12, paddingTop:2 }}>
         <div>
           <V2Eyebrow color={V2.accent}>Today · {weekLabel}</V2Eyebrow>
           <div style={{ marginTop:8, fontSize:34, lineHeight:0.96, fontWeight:700, letterSpacing:'-0.035em', fontFamily:V2.fontDisplay }}>
-            Roster health
+            Attention Queue
           </div>
         </div>
         <button onClick={onRefresh} style={{
@@ -792,11 +864,17 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
         </button>
       </div>
 
+      <V2AttentionQueue items={queue} hasRealData={hasRealData} sync={sync} onPlayer={onPlayer} onNav={onNav}/>
+
+      {sync.notice && sync.state !== 'refreshing' && (
+        <V2Caution eyebrow="Heads up" tone="warn">{sync.notice}</V2Caution>
+      )}
+
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:20, padding:'16px 18px' }}>
         {matchup ? (
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
             <div style={{ minWidth:0 }}>
-              <V2Eyebrow color={matchup.leading ? V2.accent : V2.bad}>{matchup.leading ? 'Leading' : matchup.margin < 0 ? 'Trailing' : 'Tied'}</V2Eyebrow>
+              <V2Eyebrow color={matchup.leading ? V2.accent : V2.bad}>Matchup · {matchup.leading ? 'Leading' : matchup.margin < 0 ? 'Trailing' : 'Tied'}</V2Eyebrow>
               <div style={{ marginTop:8, fontSize:25, lineHeight:1, fontWeight:800, letterSpacing:'-0.045em', fontFamily:V2.fontMono }}>
                 {matchup.my.toFixed(1)} <span style={{ color:'#b8afa0', fontFamily:V2.fontDisplay, fontWeight:700 }}>·</span> <span style={{ color:'#b8afa0' }}>{matchup.opp.toFixed(1)}</span>
               </div>
@@ -838,40 +916,11 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
         )}
       </div>
 
-      <V2MatchupRecommendationCard recommendations={matchupRecommendations}/>
-
       {showRecommendationFallback ? (
         <V2Caution eyebrow="Advice paused" tone="warn">
           Recommendation data is incomplete: {v2QualityReason(dataQuality, 'recommendation')}.
         </V2Caution>
       ) : null}
-
-      <V2HealthSummary health={health}/>
-
-      <V2HealthSection
-        title="Injury risk"
-        count={health.injuryRows.length}
-        color={V2.bad}
-        rows={health.injuryRows}
-        empty="No active starters are carrying injury flags."
-        onPlayer={onPlayer}
-      />
-      <V2HealthSection
-        title="Cold streak"
-        count={health.coldRows.length}
-        color="#c9872e"
-        rows={health.coldRows}
-        empty="No obvious low-output starter from this snapshot."
-        onPlayer={onPlayer}
-      />
-      <V2HealthSection
-        title="Role check"
-        count={health.lineupRows.length}
-        color="#c9872e"
-        rows={health.lineupRows}
-        empty="No lineup or role checks found in the cached data."
-        onPlayer={onPlayer}
-      />
 
       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
         <button onClick={()=>onNav('fa')} style={{ background:V2.ink, color:'#fff', border:'none', borderRadius:999, padding:'13px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:800 }}>
@@ -880,6 +929,125 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
         <button onClick={()=>onNav('skipper')} style={{ background:V2.surface, color:V2.body, border:`1px solid ${V2.hairline}`, borderRadius:999, padding:'13px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:13, fontWeight:800 }}>
           Ask Skipper
         </button>
+      </div>
+    </div>
+  );
+}
+
+function V2AttentionQueue({ items, hasRealData, sync, onPlayer, onNav }) {
+  const urgentCount = items.filter(item => item.severity === 'urgent').length;
+  const checkCount = items.filter(item => item.severity === 'check').length;
+  const reviewCount = items.length - urgentCount - checkCount;
+  const headline = items.length
+    ? [
+        urgentCount ? `${urgentCount} urgent` : null,
+        checkCount ? `${checkCount} check` : null,
+        reviewCount ? `${reviewCount} review` : null,
+      ].filter(Boolean).join(' · ')
+    : 'No current issues';
+  return (
+    <section style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, overflow:'hidden' }}>
+      <div style={{ padding:'17px 18px 14px', borderBottom:items.length ? `1px solid ${V2.hairline2}` : 'none' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+          <V2Eyebrow color={items.length ? V2.accent : V2.ok}>Attention Queue</V2Eyebrow>
+          <span style={{
+            background:items.length ? V2.accentSoft : V2.okSoft,
+            color:items.length ? V2.accent : V2.ok,
+            borderRadius:999,
+            padding:'5px 9px',
+            fontSize:11,
+            fontWeight:900,
+          }}>{items.length || 0}</span>
+        </div>
+        <div style={{ marginTop:9, fontSize:24, lineHeight:1.05, fontWeight:800, fontFamily:V2.fontDisplay }}>
+          {headline}
+        </div>
+        <div style={{ marginTop:7, color:V2.muted, fontSize:12.5, lineHeight:1.4, fontWeight:700 }}>
+          Ordered by roster consequence from the latest Fantrax snapshot.
+        </div>
+      </div>
+      {items.length ? (
+        <div>
+          {items.map((item, index) => (
+            <V2AttentionQueueRow
+              key={item.id}
+              item={item}
+              last={index === items.length - 1}
+              onPlayer={onPlayer}
+              onNav={onNav}
+            />
+          ))}
+        </div>
+      ) : (
+        <V2AttentionEmptyState hasRealData={hasRealData} sync={sync}/>
+      )}
+    </section>
+  );
+}
+
+function V2AttentionQueueRow({ item, last, onPlayer, onNav }) {
+  const sev = v2AttentionSeverity(item.severity);
+  const open = () => {
+    if (item.player?.id) onPlayer?.(item.player.id);
+    else if (item.nav) onNav?.(item.nav);
+  };
+  return (
+    <button onClick={open} style={{
+      width:'100%', display:'grid', gridTemplateColumns:'42px 1fr auto', alignItems:'center', gap:12,
+      padding:'15px 16px', border:'none', borderBottom:last?'none':`1px solid ${V2.hairline2}`,
+      background:'transparent', textAlign:'left', cursor:'pointer', fontFamily:'inherit', color:V2.ink,
+    }}>
+      {item.player ? (
+        <Avatar name={item.player.name} size={40}/>
+      ) : (
+        <div style={{
+          width:40, height:40, borderRadius:12, background:sev.bg, color:sev.color,
+          display:'flex', alignItems:'center', justifyContent:'center',
+        }}>{Icons.swap(sev.color, 18)}</div>
+      )}
+      <div style={{ minWidth:0 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:7, flexWrap:'wrap' }}>
+          <span style={{ fontSize:16, lineHeight:1.15, fontWeight:700, fontFamily:V2.fontDisplay }}>{item.title}</span>
+          <span style={{ background:sev.bg, color:sev.color, borderRadius:999, padding:'4px 7px', fontSize:10.5, fontWeight:900 }}>{sev.label}</span>
+        </div>
+        <div style={{ marginTop:4, color:V2.muted, fontSize:11.5, fontWeight:800, lineHeight:1.25 }}>
+          {item.label} · {item.context}
+        </div>
+        <div style={{ marginTop:7, color:V2.body, fontSize:12.5, fontWeight:650, lineHeight:1.42 }}>
+          {item.reason}
+        </div>
+        {item.chips?.length ? (
+          <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginTop:8 }}>
+            {item.chips.map(chip => (
+              <span key={chip} style={{ background:V2.surface2, color:V2.muted, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:800 }}>
+                {chip}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <div style={{ color:sev.color, fontSize:12, fontWeight:900, whiteSpace:'nowrap', alignSelf:'center' }}>
+        {item.action} ›
+      </div>
+    </button>
+  );
+}
+
+function V2AttentionEmptyState({ hasRealData, sync }) {
+  const copy = hasRealData
+    ? 'No injury, lineup, output, or replacement issue needs action in the current snapshot.'
+    : sync.state === 'failed'
+      ? (sync.error || 'Snapshot data is unavailable right now.')
+      : 'Waiting for the first successful Fantrax snapshot.';
+  return (
+    <div style={{ padding:'16px 18px 18px' }}>
+      <div style={{ background:V2.surface2, border:`1px solid ${V2.hairline2}`, borderRadius:18, padding:'15px 16px' }}>
+        <div style={{ color:hasRealData ? V2.ok : V2.warn, fontSize:12, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em' }}>
+          {hasRealData ? 'Clear' : 'No data'}
+        </div>
+        <div style={{ marginTop:7, color:V2.body, fontSize:13, lineHeight:1.45, fontWeight:700 }}>
+          {copy}
+        </div>
       </div>
     </div>
   );
@@ -1261,7 +1429,7 @@ function V2RosterSlot({ player, last, onClick }) {
 }
 
 // ── /league ────────────────────────────────────────────────────
-function V2League({ model, onOpenTeam }) {
+function V2League({ model, onOpenTeam, onOpenTrade }) {
   const [sort, setSort] = React.useState('rank');
   const sorters = {
     rank:(a,b)=>a.rank-b.rank,
@@ -1271,6 +1439,7 @@ function V2League({ model, onOpenTeam }) {
   const list = [...(model.leagueTeams || [])].sort(sorters[sort]);
   return (
     <div style={{ padding:'4px 16px 32px', display:'flex', flexDirection:'column', gap:12 }}>
+      <V2LeagueTradeDesk onOpenTrade={onOpenTrade}/>
       <V2Segment items={[{value:'rank',label:'Rank'},{value:'pts',label:'Points'},{value:'name',label:'Name'}]} value={sort} onChange={setSort}/>
       <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
         {list.length ? list.map(t => <V2TeamRow key={t.id} team={t} onOpen={()=>onOpenTeam && onOpenTeam(t)}/>) : (
@@ -1278,6 +1447,32 @@ function V2League({ model, onOpenTeam }) {
             No standings in the latest snapshot.
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function V2LeagueTradeDesk({ onOpenTrade }) {
+  return (
+    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:'14px 16px' }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:14 }}>
+        <div style={{ minWidth:0 }}>
+          <V2Eyebrow color={V2.accent}>Trade desk</V2Eyebrow>
+          <div style={{ marginTop:6, fontSize:19, lineHeight:1.1, fontWeight:700, fontFamily:V2.fontDisplay }}>
+            Grade offers against the whole league.
+          </div>
+          <div style={{ marginTop:5, color:V2.muted, fontSize:12.5, lineHeight:1.4, fontWeight:600 }}>
+            Compare your roster with any opponent player before you answer.
+          </div>
+        </div>
+        <button onClick={onOpenTrade} style={{
+          flexShrink:0, border:'none', borderRadius:999, background:V2.ink, color:'#fff',
+          padding:'10px 13px', fontSize:12.5, fontWeight:800, cursor:'pointer', fontFamily:'inherit',
+          display:'inline-flex', alignItems:'center', gap:7,
+        }}>
+          {Icons.trade('#fff', 15)}
+          Grade an offer
+        </button>
       </div>
     </div>
   );

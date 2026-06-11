@@ -11,10 +11,11 @@ test.describe('app boot', () => {
     await page.goto('/');
     await waitForAppMount(page);
 
-    // All six tabs are wired up. `exact: true` because the empty-state Today
+    // The durable tabs are wired up. `exact: true` because the empty-state Today
     // page renders an "Ask Skipper" CTA that would otherwise collide with the
-    // "Skipper" tab match.
-    for (const label of ['Today', 'Roster', 'Adds', 'Skipper', 'Trade', 'League']) {
+    // "Skipper" tab match. Trade moved under League in #57; the League spec
+    // carries that migration assertion when the target deploy has the new UI.
+    for (const label of ['Today', 'Roster', 'Adds', 'League', 'Skipper']) {
       await expect(page.getByRole('button', { name: label, exact: true })).toBeVisible();
     }
 
