@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 import player_service
 import sandlot_actions
+import sandlot_attention
 import sandlot_config
 import sandlot_data_quality
 import sandlot_db
@@ -82,6 +83,31 @@ def latest_snapshot() -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail="No successful Fantrax snapshot has been stored yet")
     return jsonable_encoder(_snapshot_payload(row))
+
+
+@app.get("/api/attention")
+def attention_queue() -> dict[str, Any]:
+    """Machine-readable Attention Queue (#64) — read-only.
+
+    Same ordered queue the Today page renders, derived from the latest
+    successful snapshot, so external agents (Zo) and the UI share one source
+    of truth. Writes stay in POST /api/actions.
+    """
+    try:
+        row = sandlot_db.latest_successful_snapshot()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
+    if not row:
+        raise HTTPException(status_code=503, detail="No successful Fantrax snapshot has been stored yet")
+    taken_at = row.get("taken_at")
+    return jsonable_encoder(
+        {
+            "snapshot_id": row.get("id"),
+            "taken_at": taken_at,
+            "freshness": _freshness(taken_at),
+            "items": sandlot_attention.attention_items(row.get("data") or {}),
+        }
+    )
 
 
 @app.post("/api/refresh")
