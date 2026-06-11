@@ -37,8 +37,6 @@ jobs:
           import mlb_stats
           print('all imports OK')
           "
-      - name: Run Sandlot actions unit tests
-        run: python -m unittest discover -s tests -p "test_sandlot_actions*.py"
       - name: Run Python unit tests
         run: python -m unittest discover -s tests -p "test_*.py"
 

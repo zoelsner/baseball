@@ -384,7 +384,11 @@ class FantraxActionExecutor:
             player_name = (player_row or {}).get("name") or self._row_name(row)
             from_slot = (player_row or {}).get("slot") or self._row_slot(row)
             self._click_row_action(row, ("move", "slot", "lineup", "edit"))
-            self._click_button_or_text(driver, ("IL", "IR", "Injured Reserve"))
+            self._click_button_or_text(
+                driver,
+                ("IL", "IR", "Injured Reserve", "Move to IL", "Move to Injured Reserve"),
+                exact=True,
+            )
             self._click_optional_confirmation(driver)
             return ActionResult(
                 ok=True,
@@ -412,7 +416,7 @@ class FantraxActionExecutor:
                 self._select_move_out_player(driver, move_out_player_id)
                 detail["move_out_player_id"] = move_out_player_id
                 detail["move_out_player_name"] = (move_out_player_row or {}).get("name")
-            self._click_button_or_text(driver, ("Confirm", "Submit", "Add", "Claim"))
+            self._click_button_or_text(driver, ("Confirm", "Submit", "Add", "Claim"), exact=True)
             return ActionResult(
                 ok=True,
                 action="add_free_agent",
@@ -448,7 +452,7 @@ class FantraxActionExecutor:
             player_name = (player_row or {}).get("name") or self._row_name(row)
             from_slot = (player_row or {}).get("slot") or self._row_slot(row)
             self._click_row_action(row, ("move", "slot", "lineup", "edit"))
-            self._click_button_or_text(driver, (to_slot,))
+            self._click_button_or_text(driver, (to_slot,), exact=True)
             self._click_optional_confirmation(driver)
             return ActionResult(
                 ok=True,
@@ -549,19 +553,23 @@ class FantraxActionExecutor:
             )
         self._safe_click(element)
 
-    def _click_button_or_text(self, driver: WebDriver, labels: tuple[str, ...]) -> None:
-        element = self._find_clickable_by_text(driver, labels)
+    def _click_button_or_text(self, driver: WebDriver, labels: tuple[str, ...], *, exact: bool = False) -> None:
+        element = self._find_clickable_by_text(driver, labels, exact=exact)
         if element is None:
             raise ActionFailure(
                 "action_control_not_found",
-                detail={"labels": list(labels)},
+                detail={"labels": list(labels), "exact": exact},
                 status_code=502,
                 selenium_state=self._state(driver),
             )
         self._safe_click(element)
 
     def _click_optional_confirmation(self, driver: WebDriver) -> None:
-        element = self._find_clickable_by_text(driver, ("Confirm", "Submit", "Save", "OK", "Yes", "Drop", "Move"))
+        # Page-wide and optional, so exact-only: a contains() match on "ok" or
+        # "move" against the whole document would click unrelated elements.
+        element = self._find_clickable_by_text(
+            driver, ("Confirm", "Submit", "Save", "OK", "Yes", "Drop", "Move"), exact=True
+        )
         if element is not None:
             self._safe_click(element)
 
@@ -593,14 +601,30 @@ class FantraxActionExecutor:
             selenium_state=self._state(driver),
         )
 
-    def _find_clickable_by_text(self, scope: WebDriver | WebElement, labels: tuple[str, ...]) -> WebElement | None:
+    def _find_clickable_by_text(
+        self,
+        scope: WebDriver | WebElement,
+        labels: tuple[str, ...],
+        *,
+        exact: bool = False,
+    ) -> WebElement | None:
+        # exact=True requires the element's full normalized text to equal the
+        # label (case-insensitive). Slot codes like "UT" or "C" are far too
+        # short for substring matching — contains() would happily click the
+        # first element whose text merely includes those letters.
         for label in labels:
             needle = label.strip().lower()
             if not needle:
                 continue
+            lowered = "translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
+            predicate = (
+                f"[{lowered} = {_xpath_literal(needle)}]"
+                if exact
+                else f"[contains({lowered}, {_xpath_literal(needle)})]"
+            )
             xpath = (
                 ".//*[self::button or self::a or @role='button' or self::span or self::div]"
-                f"[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), {_xpath_literal(needle)})]"
+                + predicate
             )
             try:
                 candidates = scope.find_elements(By.XPATH, xpath)

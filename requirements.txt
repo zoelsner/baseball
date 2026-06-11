@@ -8,6 +8,7 @@ markdown>=3.5
 fastapi>=0.115
 uvicorn[standard]>=0.30
 psycopg[binary]>=3.2
+httpx>=0.27  # fastapi.testclient dependency — keep explicit, not just transitive via anthropic/openai
 
 # Anthropic SDK — used for grounded research + synthesis (Railway-deployable)
 anthropic>=0.40
