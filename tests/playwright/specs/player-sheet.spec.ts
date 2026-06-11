@@ -32,8 +32,6 @@ test.describe('V2PlayerSheet (bottom sheet)', () => {
     // Escape isn't wired up; backdrop click works but is harder to target.
     await page.getByRole('button', { name: 'Close', exact: true }).click();
 
-    await expect.poll(async () => {
-      return await page.getByText(firstRow.name, { exact: false }).count();
-    }, { timeout: 5_000 }).toBeLessThanOrEqual(1);
+    await expect(page.getByRole('button', { name: 'Close', exact: true })).toHaveCount(0);
   });
 });

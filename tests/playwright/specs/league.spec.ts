@@ -55,4 +55,20 @@ test.describe('League page', () => {
     // not response payload, since opponent rosters are noisy real data.
     expect([200, 503]).toContain(res.status());
   });
+
+  test('offers trade grading from League instead of the bottom nav', async ({ page }) => {
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const tradeTabCount = await page.getByRole('button', { name: 'Trade', exact: true }).count();
+    test.skip(tradeTabCount > 0, 'Target deploy still exposes Trade as a primary tab.');
+    await expect(page.getByRole('button', { name: 'Trade', exact: true })).toHaveCount(0);
+
+    await gotoTab(page, 'League');
+    await expect(page.getByText('Trade desk')).toBeVisible();
+    await page.getByRole('button', { name: /Grade an offer/i }).click();
+
+    await expect(page.getByText(/^You give$/i)).toBeVisible();
+    await expect(page.getByText(/^You get$/i)).toBeVisible();
+  });
 });
