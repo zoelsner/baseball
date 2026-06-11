@@ -18,7 +18,7 @@ Sandlot turns Fantrax league data and baseball context into a small attention qu
 
 The core job is not to be a general dashboard. The core job is to answer: what changed, what needs attention, what should I inspect next, and why should I trust that read?
 
-The app is recommend-only. It must not make lineup moves, drops, claims, trade accepts, or other irreversible Fantrax actions. It should surface decisions clearly enough that Zach can make the move himself in Fantrax.
+The app is recommend-first. The product UI surfaces decisions clearly enough that Zach can act on them; it does not fire Fantrax writes itself. Execution exists only through a token-gated machine API (`POST /api/actions`) used by Zach's external agent, and every action requires Zach's explicit per-action confirmation (e.g., a Telegram yes) before it runs. Trade accepts are out of scope for execution entirely — trades stay a manual, human activity.
 
 Success means Zach can read the morning brief or open Today and quickly know:
 
@@ -42,7 +42,7 @@ Skipper is a helper and explainer, not the hidden command center. Important work
 - AI chat apps where the user must ask the right prompt before important information appears.
 - News firehoses, rumor feeds, and injury blurbs without roster-specific consequence.
 - SaaS-style feature sprawl where every idea becomes a top-level tab.
-- Overconfident automation that implies Sandlot can or should execute moves in Fantrax.
+- Autonomous automation that executes Fantrax moves without explicit per-action human confirmation.
 - Decorative baseball nostalgia that makes the interface less scannable.
 - Future-user abstraction that weakens Zach's current morning workflow.
 
@@ -57,8 +57,10 @@ Skipper is a helper and explainer, not the hidden command center. Important work
 3. Deterministic before AI.
    Python/Fantrax/MLB data should produce the core queue and rankings. AI can explain, summarize, and help with context, but it should not be the only way important information appears.
 
-4. Recommend-only, never execute.
-   Sandlot can suggest, compare, explain, and point Zach to Fantrax. It must not hide the manual decision boundary.
+4. Recommend first; execute only on explicit confirmation.
+   Sandlot suggests, compares, and explains. Fantrax writes happen only through
+   the token-gated actions API after Zach confirms the specific action — never
+   autonomously, and never hidden behind an ambiguous boundary.
 
 5. Fewer primary surfaces.
    Bottom navigation should reflect durable workflows: Today, Roster, Adds, League, and Skipper. Trade belongs inside League context until it earns a separate primary surface.

@@ -30,7 +30,8 @@ Use this lightweight gate before editing non-doc code:
 3. Check for product/design/architecture conflicts in `PRODUCT.md`,
    `DESIGN.md`, and `docs/ARCHITECTURE.md`.
 4. Name the validation plan. For docs-only work, say docs-only. For frontend
-   JSX, parse with Babel. For Python, run targeted unit tests where available.
+   JSX, run `npm run build:sandlot` and commit the regenerated bundle. For
+   Python, run targeted unit tests where available.
 5. Preserve unrelated dirty files. Do not revert or rewrite changes you did not
    make.
 
@@ -45,15 +46,22 @@ guessing.
 - Skipper explains and answers questions; deterministic data powers the core
   queue and rankings.
 - Trade workflows live under League until they earn a separate primary surface.
-- Sandlot is recommend-only. Never imply the app can execute Fantrax moves.
+- The product UI is recommend-first: it surfaces decisions, it does not fire
+  Fantrax writes. Fantrax-write actions are allowed only through the
+  token-gated machine API (`POST /api/actions`), and every action must be
+  explicitly confirmed by Zach upstream (e.g., a Telegram yes relayed by his
+  agent). Never add autonomous or implicit execution paths.
 - The Town integration is downstream of the structured Attention Queue.
 
 ## Frontend Rules
 
-- `web/sandlot/*` has no bundler. JSX is loaded in the browser through Babel
-  script tags.
-- Do not use `import` or `export`.
-- Cross-file shared symbols must be assigned to `window` in the defining file.
+- Source lives in `web/sandlot/*.jsx` and is bundled with esbuild to the
+  committed `web/sandlot/app.js`. Run `npm run build:sandlot` after JSX edits
+  and commit the regenerated bundle — CI fails if it is stale.
+- ES modules are allowed: use normal `import`/`export`. Do not add globals
+  through `window.*`.
+- Production is API-backed only. Do not add mock-data globals or `file://`
+  demo fallbacks; no-data states are explicit loading/error states.
 - Keep bottom navigation durable and sparse: Today, Roster, Adds, League,
   Skipper.
 - Use labels and reason text alongside color for all status states.
