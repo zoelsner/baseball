@@ -2,6 +2,8 @@
 
 **Sandlot V1 (the web app) is the live product.** All active development happens here: `sandlot_*.py` (FastAPI) + `web/sandlot/*` (React via in-browser Babel), deployed on Railway. See `docs/sandlot-railway-v1.md`.
 
+**Picking up ongoing work? Read `STATUS.md` (repo root) first** — it holds the current state, the ordered next steps, and the standing safety rules for the actions executor. Update it whenever the plan changes.
+
 The repo also contains an **older local CLI** (`audit.py`, `league_intel.py`, `claude_analyzer.py`, `decision_engine.py`, `research_layer.py`) that emails a daily/weekly report. **Not actively used.** Treat it as a scrape utility: when you need to inspect live Fantrax data during a session, run `python audit.py` to refresh `.data/snapshot-YYYY-MM-DD.json`. Don't spend time changing the CLI scripts unless asked.
 
 Anything prefixed `sandlot_` belongs to the web app. `mlb_stats.py` and `player_service.py` are also web-app modules. Shared scrape modules (`auth.py`, `fantrax_data.py`) are used by both.
