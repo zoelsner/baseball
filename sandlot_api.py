@@ -5,18 +5,20 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import player_service
+import sandlot_actions
 import sandlot_attention
 import sandlot_config
 import sandlot_data_quality
@@ -165,6 +167,148 @@ def refresh(request: Request, background_tasks: BackgroundTasks) -> dict[str, An
             "duration_ms": result.duration_ms,
             "snapshot": _snapshot_payload(row) if row else None,
         }
+    )
+
+
+class ActionRequest(BaseModel):
+    action: str | None = None
+    player_id: str | None = None
+    to_slot: str | None = None
+    confirm_player_name: str | None = None
+    move_out_player_id: str | None = None
+
+
+class ActionResponse(BaseModel):
+    ok: bool
+    action: str
+    player_name: str | None = None
+    detail: dict[str, Any] | None = None
+    error: str | None = None
+    duration_ms: int
+
+
+@app.post("/api/actions")
+def run_action(request: Request, payload: ActionRequest | None = Body(default=None)) -> JSONResponse:
+    _require_actions_token(request)
+    payload = payload or ActionRequest()
+    started = time.perf_counter()
+
+    validation_error = _validate_action_payload(payload)
+    if validation_error:
+        return _action_response(
+            status_code=400,
+            started=started,
+            action=payload.action or "unknown",
+            player_id=payload.player_id,
+            ok=False,
+            error=validation_error["error"],
+            detail=validation_error,
+            snapshot_id=None,
+        )
+
+    action = str(payload.action)
+    player_id = str(payload.player_id)
+    snapshot_id: int | None = None
+
+    try:
+        with sandlot_db.advisory_lock(sandlot_actions.ACTION_LOCK_ID) as locked:
+            if not locked:
+                return _action_response(
+                    status_code=409,
+                    started=started,
+                    action=action,
+                    player_id=player_id,
+                    ok=False,
+                    error="Refresh in progress, retry in 60s",
+                    detail={"lock_id": sandlot_actions.ACTION_LOCK_ID},
+                    snapshot_id=None,
+                )
+
+            try:
+                snapshot_row = sandlot_db.latest_successful_snapshot()
+            except Exception as exc:
+                log.exception("Action snapshot lookup failed")
+                return _action_response(
+                    status_code=503,
+                    started=started,
+                    action=action,
+                    player_id=player_id,
+                    ok=False,
+                    error=f"Database unavailable: {exc}",
+                    detail={"message": str(exc)},
+                    snapshot_id=None,
+                    require_log=False,
+                )
+            if not snapshot_row:
+                return _action_response(
+                    status_code=409,
+                    started=started,
+                    action=action,
+                    player_id=player_id,
+                    ok=False,
+                    error="No successful Fantrax snapshot is available",
+                    snapshot_id=None,
+                )
+            snapshot_id = _safe_int(snapshot_row.get("id"))
+
+            try:
+                result = sandlot_actions.execute_action(
+                    action,
+                    player_id,
+                    to_slot=payload.to_slot,
+                    confirm_player_name=payload.confirm_player_name,
+                    move_out_player_id=payload.move_out_player_id,
+                    snapshot_row=snapshot_row,
+                )
+            except sandlot_actions.ActionFailure as exc:
+                return _action_response(
+                    status_code=exc.status_code,
+                    started=started,
+                    action=action,
+                    player_id=player_id,
+                    ok=False,
+                    player_name=exc.player_name,
+                    error=exc.error,
+                    detail=exc.detail,
+                    snapshot_id=snapshot_id,
+                    selenium_state=exc.selenium_state,
+                )
+            except Exception as exc:
+                log.exception("Action execution failed")
+                return _action_response(
+                    status_code=502,
+                    started=started,
+                    action=action,
+                    player_id=player_id,
+                    ok=False,
+                    error="action_execution_failed",
+                    detail={"message": str(exc)},
+                    snapshot_id=snapshot_id,
+                )
+    except Exception as exc:
+        log.exception("Action advisory lock failed")
+        return _action_response(
+            status_code=503,
+            started=started,
+            action=action,
+            player_id=player_id,
+            ok=False,
+            error=f"Database unavailable: {exc}",
+            detail={"message": str(exc), "lock_id": sandlot_actions.ACTION_LOCK_ID},
+            snapshot_id=None,
+            require_log=False,
+        )
+
+    return _action_response(
+        status_code=200,
+        started=started,
+        action=action,
+        player_id=player_id,
+        ok=True,
+        player_name=result.player_name,
+        detail=result.api_detail(),
+        snapshot_id=snapshot_id,
+        selenium_state=result.selenium_state,
     )
 
 
@@ -634,6 +778,94 @@ def _require_refresh_token(request: Request) -> None:
         provided = auth[7:].strip()
     if provided != expected:
         raise HTTPException(status_code=401, detail="Missing or invalid refresh token")
+
+
+def _require_actions_token(request: Request) -> None:
+    expected = os.environ.get("SANDLOT_ACTIONS_TOKEN")
+    if not expected:
+        raise HTTPException(status_code=503, detail="SANDLOT_ACTIONS_TOKEN is not configured")
+    provided = request.headers.get("x-actions-token")
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        provided = auth[7:].strip()
+    if provided != expected:
+        raise HTTPException(status_code=401, detail="Missing or invalid actions token")
+
+
+def _validate_action_payload(payload: ActionRequest) -> dict[str, Any] | None:
+    action = (payload.action or "").strip()
+    player_id = (payload.player_id or "").strip()
+    if not action:
+        return {"error": "action is required"}
+    if action not in sandlot_actions.SUPPORTED_ACTIONS:
+        return {"error": "Invalid action type", "action": payload.action}
+    if not player_id:
+        return {"error": "player_id is required", "action": action}
+    if action == "change_slot" and not (payload.to_slot or "").strip():
+        return {"error": "to_slot is required for change_slot", "action": action, "player_id": player_id}
+    if action == "drop_player" and payload.confirm_player_name is None:
+        return {"error": "confirm_player_name is required for drop_player", "action": action, "player_id": player_id}
+    return None
+
+
+def _action_response(
+    *,
+    status_code: int,
+    started: float,
+    action: str,
+    player_id: str | None,
+    ok: bool,
+    snapshot_id: int | None,
+    player_name: str | None = None,
+    detail: dict[str, Any] | None = None,
+    error: str | None = None,
+    selenium_state: dict[str, Any] | None = None,
+    require_log: bool = True,
+) -> JSONResponse:
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    body = ActionResponse(
+        ok=ok,
+        action=action,
+        player_name=player_name,
+        detail=detail,
+        error=error,
+        duration_ms=duration_ms,
+    )
+    if require_log:
+        try:
+            sandlot_db.insert_action_log(
+                action_type=action,
+                player_id=player_id,
+                result="success" if ok else "failure",
+                error_detail=None if ok else {"error": error, "detail": detail},
+                duration_ms=duration_ms,
+                snapshot_id=snapshot_id,
+                selenium_state=selenium_state or {},
+            )
+        except Exception as exc:
+            log.exception("Action log write failed")
+            if ok:
+                body = ActionResponse(
+                    ok=False,
+                    action=action,
+                    player_name=player_name,
+                    detail={
+                        "completed_action_ok": True,
+                        "action_detail": detail,
+                        "log_error": str(exc),
+                    },
+                    error="transaction_log_failed",
+                    duration_ms=duration_ms,
+                )
+                return JSONResponse(status_code=500, content=jsonable_encoder(body))
+    return JSONResponse(status_code=status_code, content=jsonable_encoder(body))
+
+
+def _safe_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="sandlot")

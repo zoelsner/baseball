@@ -37,6 +37,23 @@ def connect() -> Iterator[psycopg.Connection]:
         conn.close()
 
 
+@contextmanager
+def advisory_lock(lock_id: int) -> Iterator[bool]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT pg_try_advisory_lock(%s) AS locked",
+            (lock_id,),
+        ).fetchone()
+        locked = bool(row and row.get("locked"))
+        if not locked:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            conn.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
+
+
 def init_schema() -> None:
     with connect() as conn:
         conn.execute(
@@ -84,6 +101,27 @@ def init_schema() -> None:
               duration_ms INTEGER,
               error TEXT
             )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS action_logs (
+              id BIGSERIAL PRIMARY KEY,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              action_type TEXT NOT NULL,
+              player_id TEXT,
+              result TEXT NOT NULL CHECK (result IN ('success', 'failure')),
+              error_detail JSONB,
+              duration_ms INTEGER NOT NULL,
+              snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL,
+              selenium_state JSONB NOT NULL DEFAULT '{}'::jsonb
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS action_logs_created_at_idx
+            ON action_logs (created_at DESC)
             """
         )
         # Migrate existing deployments: the FK was originally created without an
@@ -359,6 +397,38 @@ def latest_refresh_run() -> dict[str, Any] | None:
             LIMIT 1
             """
         ).fetchone()
+
+
+def insert_action_log(
+    *,
+    action_type: str,
+    player_id: str | None,
+    result: str,
+    error_detail: dict[str, Any] | None,
+    duration_ms: int,
+    snapshot_id: int | None,
+    selenium_state: dict[str, Any] | None,
+) -> int:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO action_logs
+              (action_type, player_id, result, error_detail, duration_ms, snapshot_id, selenium_state)
+            VALUES
+              (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                action_type,
+                player_id,
+                result,
+                Jsonb(error_detail) if error_detail is not None else None,
+                duration_ms,
+                snapshot_id,
+                Jsonb(selenium_state or {}),
+            ),
+        ).fetchone()
+    return int(row["id"])
 
 
 def upsert_fantrax_cookies(

@@ -25,6 +25,7 @@ python audit.py                                                 # daily CLI (Sel
 - `OPENROUTER_API_KEY` — Skipper chat (Kimi primary, DeepSeek fallback)
 - `DATABASE_URL` — only set on Railway; locally most Sandlot endpoints will 503
 - `SANDLOT_REFRESH_TOKEN` — Railway-only; gates `/api/refresh`
+- `SANDLOT_ACTIONS_TOKEN` — Railway-only; gates Zo Computer's `/api/actions` executor and must be separate from the refresh token
 - `SANDLOT_KEEP_SNAPSHOTS` — optional, default 30
 - `EMAIL_*` / `GMAIL_APP_PASSWORD` / `ANTHROPIC_API_KEY` — only the legacy CLI uses these; ignore unless explicitly working on `audit.py` / `league_intel.py`
 
@@ -50,6 +51,7 @@ python audit.py                                                 # daily CLI (Sel
 - Snapshot freshness in `sandlot_api._freshness()` matches that twice-daily cadence: `fresh` for 18 hours, `stale` until 36 hours, then `old`.
 - Skipper chat: primary `moonshotai/kimi-k2`, fallback `deepseek/deepseek-v4-flash`. Streams via SSE through `sandlot_skipper.SkipperClient`. Fallback triggers on **any** exception during streaming (pre-stream, mid-stream, or empty stream) — the `for model in model_order: try ... except: continue` loop in `SkipperClient.stream` retries the next model on any failure. The SSE client may already have received partial tokens from the failed model when the retry kicks in; downstream consumers should treat the stream as best-effort, not transactional.
 - Single-user app — Sandlot routes are mostly unauthenticated by design. `/api/refresh` is the only one with an optional `SANDLOT_REFRESH_TOKEN` guard.
+- `/api/actions` is the only Fantrax write surface and is not a user-facing Sandlot feature. It is a Zo Computer machine-to-machine executor only: `SANDLOT_ACTIONS_TOKEN`-gated, Postgres advisory-lock guarded, and transaction-logged to `action_logs`. Do not expose it in the UI, Skipper, Today, Adds, or any human-facing copy.
 - **Cached-AI pattern** (`ai_briefs` table): deterministic compute → AI overlay → cache by `(snapshot_id, brief_type, subject_key)` with `input_hash` for staleness. `sandlot_waivers.py` and `sandlot_trades.py` are reference. Use `sandlot_db.{get,set}_ai_brief` for new cached-AI features.
 - **Model order helpers** in `sandlot_skipper`: `default_model_order()` = Kimi-first (chat default). For cold short prompts (takes, grades), pass `model_order=(fallback_model(), primary_model())` to try the configured low-latency fallback first.
 - **Snapshot blob shape**: `data["roster"]["rows"]` (mine), `data["all_team_rosters"]` (`{team_id: {rows, is_me, ...}}`), `data["free_agents"]["players"]`, `data["standings"]`. `_player_index()` flattens all three with a `source` field.
