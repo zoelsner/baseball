@@ -74,6 +74,8 @@ def sample_snapshot(*, full=False):
                     {"id": "injured-1", "name": "Injured Player", "slot": "BN", "injury": "IL"},
                     {"id": "healthy-1", "name": "Healthy Player", "slot": "2B", "injury": None},
                     {"id": "drop-1", "name": "Drop Candidate", "slot": "BN", "injury": None},
+                    {"id": "prospect-1", "name": "Prospect Stash", "slot": "MIN", "injury": None},
+                    {"id": "il-stash-1", "name": "IL Stash", "slot": "IR", "injury": "IR"},
                 ],
             },
             "free_agents": {
@@ -201,6 +203,57 @@ class SandlotActionsEndpointTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"], "Drop confirmation name does not match roster player")
         self.assertEqual(payload["detail"]["expected_name"], "Drop Candidate")
+        self.assertFalse(validate_session.called)
+        self.assertTrue(insert_log.called)
+
+    def test_drop_protected_minors_player_returns_400(self):
+        response, insert_log, validate_session = self.post_action(
+            {
+                "action": "drop_player",
+                "player_id": "prospect-1",
+                "confirm_player_name": "Prospect Stash",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "Protected roster slot cannot be dropped by the executor")
+        self.assertEqual(payload["detail"]["slot"], "MIN")
+        self.assertFalse(validate_session.called)
+        self.assertTrue(insert_log.called)
+
+    def test_drop_protected_il_player_returns_400(self):
+        response, insert_log, validate_session = self.post_action(
+            {
+                "action": "drop_player",
+                "player_id": "il-stash-1",
+                "confirm_player_name": "IL Stash",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "Protected roster slot cannot be dropped by the executor")
+        self.assertEqual(payload["detail"]["slot"], "IR")
+        self.assertFalse(validate_session.called)
+        self.assertTrue(insert_log.called)
+
+    def test_add_with_protected_move_out_returns_400(self):
+        response, insert_log, validate_session = self.post_action(
+            {
+                "action": "add_free_agent",
+                "player_id": "fa-1",
+                "move_out_player_id": "prospect-1",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"], "Protected roster slot cannot be dropped by the executor")
+        self.assertEqual(payload["detail"]["player_name"], "Prospect Stash")
         self.assertFalse(validate_session.called)
         self.assertTrue(insert_log.called)
 

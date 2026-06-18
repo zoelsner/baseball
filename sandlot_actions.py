@@ -45,6 +45,7 @@ IL_STATUSES = {
     "15-DAY IL",
     "60-DAY IL",
 }
+PROTECTED_DROP_SLOTS = {"IL", "IR", "MIN", "MINORS", "MINOR"}
 
 
 @dataclass
@@ -229,6 +230,7 @@ def _validate_action_context(
         player = find_roster_player(snapshot, player_id)
         if not player:
             raise ActionFailure("Player is not on the current roster", detail={"player_id": player_id})
+        ensure_player_can_leave_roster(player)
         expected_name = player.get("name")
         if not confirm_player_name or confirm_player_name != expected_name:
             raise ActionFailure(
@@ -277,6 +279,20 @@ def injury_status(player: dict[str, Any]) -> str | None:
     return None
 
 
+def ensure_player_can_leave_roster(player: dict[str, Any]) -> None:
+    slot = _normalize_slot(player.get("slot") or player.get("slot_full"))
+    if slot in PROTECTED_DROP_SLOTS:
+        raise ActionFailure(
+            "Protected roster slot cannot be dropped by the executor",
+            detail={
+                "player_id": player.get("id"),
+                "player_name": player.get("name"),
+                "slot": player.get("slot"),
+            },
+            player_name=player.get("name"),
+        )
+
+
 def ensure_roster_room(snapshot: dict[str, Any], *, move_out_player_id: str | None) -> dict[str, Any] | None:
     if move_out_player_id:
         move_out = find_roster_player(snapshot, move_out_player_id)
@@ -285,6 +301,7 @@ def ensure_roster_room(snapshot: dict[str, Any], *, move_out_player_id: str | No
                 "move_out_player_id is not on the current roster",
                 detail={"move_out_player_id": move_out_player_id},
             )
+        ensure_player_can_leave_roster(move_out)
         return move_out
 
     roster = snapshot.get("roster") or {}
@@ -729,6 +746,21 @@ def _normalize_status(value: Any) -> str | None:
         return None
     text = str(value).strip().upper()
     return text or None
+
+
+def _normalize_slot(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    if not text:
+        return None
+    return {
+        "INJ": "IR",
+        "INJ RES": "IR",
+        "INJURED RESERVE": "IR",
+        "MINOR": "MIN",
+        "MINOR LEAGUE": "MIN",
+    }.get(text, text)
 
 
 def _to_int(value: Any) -> int | None:
