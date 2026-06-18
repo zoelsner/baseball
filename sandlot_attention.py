@@ -115,6 +115,34 @@ def _player_state(p: dict[str, Any]) -> str:
     return "ok"
 
 
+def _slot_key(value: Any) -> str:
+    slot = str(value or "").strip().upper()
+    return {
+        "BE": "BN",
+        "BENCH": "BN",
+        "RESERVE": "RES",
+        "IL": "IR",
+        "INJ": "IR",
+        "INJ RES": "IR",
+        "INJURED RESERVE": "IR",
+        "MINOR": "MIN",
+        "MINORS": "MIN",
+        "MINOR LEAGUE": "MIN",
+    }.get(slot, slot)
+
+
+def _state_label(state: str) -> str:
+    return {"ok": "Active", "bench": "Bench", "injured": "Injured"}.get(state, state.title())
+
+
+def _dedupe_chips(chips: list[str | None]) -> list[str]:
+    out: list[str] = []
+    for chip in chips:
+        if chip and chip not in out:
+            out.append(chip)
+    return out
+
+
 def _status_text(p: dict[str, Any]) -> str:
     raw = str(p.get("injury") or p.get("status") or "").strip()
     key = raw.lower()
@@ -123,9 +151,96 @@ def _status_text(p: dict[str, Any]) -> str:
     return STATUS_LABEL.get(key, raw)
 
 
+def _status_key(p: dict[str, Any]) -> str:
+    status = _status_text(p).strip().lower()
+    return "" if status in ("", "active", "ok") else status
+
+
 def _player_context(p: dict[str, Any]) -> str:
     parts = [p.get("slot"), p.get("pos"), p.get("team")]
     return " · ".join(str(part) for part in parts if part) or "Roster"
+
+
+def status_change_items(
+    current_snapshot: dict[str, Any],
+    previous_snapshot: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not previous_snapshot:
+        return []
+
+    current = [
+        _normalize_row(row, idx)
+        for idx, row in enumerate((current_snapshot.get("roster") or {}).get("rows") or [])
+        if isinstance(row, dict)
+    ]
+    previous = {
+        str(row["id"]): row
+        for idx, raw in enumerate((previous_snapshot.get("roster") or {}).get("rows") or [])
+        if isinstance(raw, dict)
+        for row in [_normalize_row(raw, idx)]
+        if row.get("id")
+    }
+    out: list[dict[str, Any]] = []
+
+    for player in current:
+        player_id = str(player.get("id") or "")
+        before = previous.get(player_id)
+        if not before:
+            continue
+
+        changes: list[dict[str, str | None]] = []
+        before_status = _status_key(before)
+        after_status = _status_key(player)
+        if before_status != after_status:
+            changes.append({
+                "field": "status",
+                "from": _status_text(before),
+                "to": _status_text(player),
+            })
+
+        before_slot = _slot_key(before.get("slot"))
+        after_slot = _slot_key(player.get("slot"))
+        if before_slot != after_slot:
+            changes.append({
+                "field": "slot",
+                "from": before_slot or None,
+                "to": after_slot or None,
+            })
+
+        before_state = _player_state(before)
+        after_state = _player_state(player)
+        if before_state != after_state:
+            changes.append({
+                "field": "state",
+                "from": _state_label(before_state),
+                "to": _state_label(after_state),
+            })
+
+        if not changes:
+            continue
+
+        status_changed_to_risky = any(
+            change["field"] == "status" and change["to"] not in ("Active", "", None)
+            for change in changes
+        )
+        severity = "urgent" if after_state == "injured" or status_changed_to_risky else "review"
+        summary = "; ".join(f"{c['field']} {c['from'] or 'None'} -> {c['to'] or 'None'}" for c in changes)
+        out.append({
+            "kind": "change",
+            "severity": severity,
+            "label": "Changed",
+            "priority": (260 if severity == "urgent" else 160) + _player_metric(player),
+            "title": player["name"],
+            "player_id": player_id,
+            "context": _player_context(player),
+            "reason": summary,
+            "chips": _dedupe_chips([c["field"].title() for c in changes])[:MAX_CHIPS],
+            "changes": changes,
+            "action": None,
+            "actions": [],
+        })
+
+    return sorted(out, key=lambda item: item["priority"], reverse=True)
 
 
 def _metric_chip(p: dict[str, Any]) -> str | None:
