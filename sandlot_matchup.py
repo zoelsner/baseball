@@ -7,7 +7,7 @@ from datetime import date
 from typing import Any
 
 
-INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH"}
+INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH", "MIN", "MINORS"}
 BENCH_SLOTS = {"BN", "BE", "BENCH", "RES", "RESERVE"}
 UNAVAILABLE_INJURIES = {"OUT", "IL", "IL10", "IL60", "IR"}
 MODEL_VERSION = "matchup_projection_v3"
@@ -22,7 +22,7 @@ POSITION_ALIASES = {
     "STARTING": "SP",
     "RELIEF": "RP",
 }
-GENERIC_POSITIONS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "HIT", "PIT", "ALL"}
+GENERIC_POSITIONS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "MIN", "MINORS", "HIT", "PIT", "ALL"}
 SLOT_COMPATIBILITY = {
     "UTIL": HITTER_POSITIONS,
     "MI": {"2B", "SS"},

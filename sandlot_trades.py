@@ -500,14 +500,14 @@ def _position_tokens(row: dict[str, Any]) -> set[str]:
         values = value if isinstance(value, list) else str(value or "").replace("/", ",").split(",")
         for raw in values:
             token = str(raw or "").strip().upper()
-            if token and token not in {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "HIT", "PIT", "ALL", "UTIL"}:
+            if token and token not in {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "MIN", "MINORS", "HIT", "PIT", "ALL", "UTIL"}:
                 tokens.add(token)
     return tokens
 
 
 def _is_inactive(row: dict[str, Any]) -> bool:
     slot = str(row.get("slot") or "").strip().upper()
-    return slot in {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "INJ", "INJ RES", "MINORS"}
+    return slot in {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "INJ", "INJ RES", "MIN", "MINORS"}
 
 
 def _is_unavailable(row: dict[str, Any]) -> bool:

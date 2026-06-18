@@ -216,25 +216,147 @@ def _injury_status(player: Any) -> str | None:
     return None
 
 
+ACTIVE_SLOT_LABELS = {"ACTIVE", "STARTER", "STARTING", "LINEUP"}
+ROSTER_SLOT_ALIASES = {
+    "BE": "BN",
+    "BENCH": "BN",
+    "RES": "RES",
+    "RESERVE": "RES",
+    "IR": "IR",
+    "IL": "IL",
+    "INJ": "IR",
+    "INJ RES": "IR",
+    "INJURED RESERVE": "IR",
+    "MIN": "MIN",
+    "MINORS": "MIN",
+    "MINOR": "MIN",
+    "MINOR LEAGUE": "MIN",
+}
+
+
+def _normalize_slot_label(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    compact = re.sub(r"\s+", " ", text.upper())
+    return ROSTER_SLOT_ALIASES.get(compact, compact)
+
+
+def _status_lookup(roster: Any) -> dict[str, str]:
+    data = getattr(roster, "_data", {}) if roster is not None else {}
+    totals = ((data.get("miscData") or {}).get("statusTotals") or []) if isinstance(data, dict) else []
+    lookup: dict[str, str] = {}
+    for item in totals:
+        if not isinstance(item, dict):
+            continue
+        label = item.get("shortName") or item.get("name") or item.get("label")
+        normalized = _normalize_slot_label(label)
+        if not normalized:
+            continue
+        for key in ("id", "statusId", "value"):
+            raw = item.get(key)
+            if raw not in (None, ""):
+                lookup[str(raw)] = normalized
+        raw_name = item.get("name")
+        if raw_name:
+            lookup[str(raw_name)] = normalized
+    return lookup
+
+
+def _raw_roster_rows(roster: Any) -> list[dict[str, Any]]:
+    data = getattr(roster, "_data", {}) if roster is not None else {}
+    if not isinstance(data, dict):
+        return []
+    out: list[dict[str, Any]] = []
+    for table in data.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        for row in table.get("rows") or []:
+            if isinstance(row, dict) and ("scorer" in row or "posId" in row):
+                out.append(row)
+    return out
+
+
+def _row_player_id(row: dict[str, Any]) -> str | None:
+    scorer = row.get("scorer") if isinstance(row.get("scorer"), dict) else {}
+    for value in (
+        row.get("scorerId"),
+        row.get("playerId"),
+        row.get("id"),
+        scorer.get("scorerId"),
+        scorer.get("playerId"),
+        scorer.get("id"),
+    ):
+        if value not in (None, ""):
+            return str(value)
+    return None
+
+
+def _assigned_slot_from_raw(row: dict[str, Any], status_lookup: dict[str, str]) -> tuple[str | None, str | None]:
+    for key in (
+        "lineupSlot",
+        "lineupSlotName",
+        "rosterSlot",
+        "rosterSlotName",
+        "slot",
+        "slotName",
+        "status",
+        "statusName",
+        "statusShortName",
+    ):
+        normalized = _normalize_slot_label(row.get(key))
+        if normalized and normalized not in ACTIVE_SLOT_LABELS:
+            source = f"raw.{key}"
+            return normalized, source
+
+    status_id = row.get("statusId")
+    if status_id not in (None, ""):
+        label = status_lookup.get(str(status_id))
+        if label and label not in ACTIVE_SLOT_LABELS:
+            return label, "raw.statusId"
+    return None, None
+
+
+def _assigned_slot_overrides(roster: Any) -> dict[str, tuple[str, str]]:
+    status_lookup = _status_lookup(roster)
+    overrides: dict[str, tuple[str, str]] = {}
+    for raw_row in _raw_roster_rows(roster):
+        player_id = _row_player_id(raw_row)
+        if not player_id:
+            continue
+        slot, source = _assigned_slot_from_raw(raw_row, status_lookup)
+        if slot and source:
+            overrides[player_id] = (slot, source)
+    return overrides
+
+
 def extract_roster(api: FantraxAPI, team_id: str) -> dict:
     """Returns dict with `rows` (list of normalized players) plus roster
     capacity totals (active/reserve/IR)."""
     roster = api.team_roster(team_id)
+    assigned_slots = _assigned_slot_overrides(roster)
 
     rows = []
     for row in getattr(roster, "rows", []) or []:
         try:
             player = getattr(row, "player", None)
             position = getattr(row, "position", None)
+            player_id = getattr(player, "id", None) if player else None
+            position_short = getattr(position, "short_name", None) if position else None
+            position_name = getattr(position, "name", None) if position else None
+            assigned_slot, slot_source = assigned_slots.get(str(player_id), (None, None))
+            slot = assigned_slot or position_short or position_name
+            slot_full = assigned_slot or position_name
 
             entry = {
                 "name": getattr(player, "name", None) if player else None,
-                "id": getattr(player, "id", None) if player else None,
+                "id": player_id,
                 "team": getattr(player, "team_short_name", None) or getattr(player, "team_name", None) if player else None,
                 "positions": getattr(player, "pos_short_name", None) if player else None,
                 "all_positions": [getattr(p, "short_name", None) for p in getattr(player, "all_positions", []) or []] if player else [],
-                "slot": getattr(position, "short_name", None) or getattr(position, "name", None) if position else None,
-                "slot_full": getattr(position, "name", None) if position else None,
+                "slot": slot,
+                "slot_full": slot_full,
+                "slot_source": slot_source or "position_fallback",
                 "fpts": getattr(row, "total_fantasy_points", None),
                 "fppg": getattr(row, "fantasy_points_per_game", None),
                 "injury": _injury_status(player),
