@@ -316,6 +316,25 @@ def latest_successful_snapshot() -> dict[str, Any] | None:
         ).fetchone()
 
 
+def previous_successful_snapshot(*, before_id: int, before_taken_at: datetime | None = None) -> dict[str, Any] | None:
+    cutoff = before_taken_at or datetime.now(timezone.utc)
+    with connect() as conn:
+        return conn.execute(
+            """
+            SELECT *
+            FROM snapshots
+            WHERE status = 'success'
+              AND (
+                taken_at < %s
+                OR (taken_at = %s AND id < %s)
+              )
+            ORDER BY taken_at DESC, id DESC
+            LIMIT 1
+            """,
+            (cutoff, cutoff, before_id),
+        ).fetchone()
+
+
 def snapshot_from_days_ago(days: int) -> dict[str, Any] | None:
     """Most recent successful snapshot taken at least `days` days ago.
 

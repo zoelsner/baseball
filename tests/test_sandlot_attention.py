@@ -234,6 +234,50 @@ class AttentionRecommendationGatingTests(unittest.TestCase):
         self.assertEqual(items[-1]["kind"], "replacement")
 
 
+class AttentionStatusChangeTests(unittest.TestCase):
+    def test_status_change_item_for_new_risk(self):
+        previous = snapshot_data([
+            {"id": "judge", "name": "Aaron Judge", "slot": "OF", "positions": "OF", "fppg": 6.2},
+        ])
+        current = snapshot_data([
+            {"id": "judge", "name": "Aaron Judge", "slot": "OF", "positions": "OF", "fppg": 6.2, "injury": "DTD"},
+        ])
+
+        changes = sandlot_attention.status_change_items(current, previous)
+
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["kind"], "change")
+        self.assertEqual(changes[0]["severity"], "urgent")
+        self.assertEqual(changes[0]["player_id"], "judge")
+        self.assertEqual(changes[0]["changes"], [
+            {"field": "status", "from": "Active", "to": "Day-to-day"},
+            {"field": "state", "from": "Active", "to": "Injured"},
+        ])
+        self.assertEqual(changes[0]["reason"], "status Active -> Day-to-day; state Active -> Injured")
+
+    def test_slot_and_state_transition_item(self):
+        previous = snapshot_data([
+            {"id": "woodruff", "name": "Brandon Woodruff", "slot": "SP", "positions": "SP", "fppg": 3.0},
+        ])
+        current = snapshot_data([
+            {"id": "woodruff", "name": "Brandon Woodruff", "slot": "IR", "positions": "SP", "fppg": 3.0},
+        ])
+
+        changes = sandlot_attention.status_change_items(current, previous)
+
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["changes"], [
+            {"field": "slot", "from": "SP", "to": "IR"},
+            {"field": "state", "from": "Active", "to": "Injured"},
+        ])
+        self.assertEqual(changes[0]["chips"], ["Slot", "State"])
+
+    def test_no_previous_snapshot_has_no_changes(self):
+        current = snapshot_data(today_page_roster())
+
+        self.assertEqual(sandlot_attention.status_change_items(current, None), [])
+
+
 class AttentionRouteTests(unittest.TestCase):
     def test_503_when_database_unavailable(self):
         with mock.patch("sandlot_db.latest_successful_snapshot", side_effect=RuntimeError("no db")):
@@ -255,12 +299,24 @@ class AttentionRouteTests(unittest.TestCase):
             "taken_at": datetime.now(timezone.utc),
             "data": snapshot_data(today_page_roster()),
         }
-        with mock.patch("sandlot_db.latest_successful_snapshot", return_value=row):
+        previous = {
+            "id": 41,
+            "taken_at": datetime.now(timezone.utc),
+            "data": snapshot_data([
+                {"id": "judge", "name": "Aaron Judge", "positions": "OF", "team": "NYY", "slot": "OF", "fppg": 6.2},
+                {"id": "webb", "name": "Logan Webb", "positions": "SP", "team": "SF", "slot": "SP", "fppg": 0},
+                {"id": "corner", "name": "Cold Corner", "positions": "1B", "team": "SEA", "slot": "UT", "fppg": 0.8},
+            ]),
+        }
+        with mock.patch("sandlot_db.latest_successful_snapshot", return_value=row), \
+            mock.patch("sandlot_db.previous_successful_snapshot", return_value=previous):
             payload = attention_queue()
 
         self.assertEqual(payload["snapshot_id"], 42)
+        self.assertEqual(payload["previous_snapshot_id"], 41)
         self.assertEqual(payload["freshness"]["state"], "fresh")
         self.assertEqual([i["kind"] for i in payload["items"]], ["status", "lineup", "output"])
+        self.assertEqual([c["player_id"] for c in payload["changes"]], ["judge"])
 
 
 if __name__ == "__main__":

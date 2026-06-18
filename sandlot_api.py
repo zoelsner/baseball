@@ -98,12 +98,24 @@ def attention_queue() -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=503, detail="No successful Fantrax snapshot has been stored yet")
     taken_at = row.get("taken_at")
+    previous_row = None
+    try:
+        previous_row = sandlot_db.previous_successful_snapshot(
+            before_id=int(row.get("id")),
+            before_taken_at=taken_at,
+        )
+    except Exception:
+        log.exception("Previous snapshot lookup failed")
+    current_data = row.get("data") or {}
+    previous_data = (previous_row or {}).get("data") or None
     return jsonable_encoder(
         {
             "snapshot_id": row.get("id"),
+            "previous_snapshot_id": previous_row.get("id") if previous_row else None,
             "taken_at": taken_at,
             "freshness": _freshness(taken_at),
-            "items": sandlot_attention.attention_items(row.get("data") or {}),
+            "items": sandlot_attention.attention_items(current_data),
+            "changes": sandlot_attention.status_change_items(current_data, previous_data),
         }
     )
 
