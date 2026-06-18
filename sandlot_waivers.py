@@ -42,7 +42,7 @@ POSITION_ALIASES = {
     "CI": "3B",
 }
 POSITION_TOKENS = {"C", "1B", "2B", "3B", "SS", "OF", "UT", "SP", "RP", "P"}
-GENERIC_POSITIONS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "HIT", "PIT", "ALL", "UTIL"}
+GENERIC_POSITIONS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "MIN", "MINORS", "HIT", "PIT", "ALL", "UTIL"}
 PITCHER_POSITIONS = {"SP", "RP", "P"}
 HITTER_POSITIONS = {"C", "1B", "2B", "3B", "SS", "OF", "UT"}
 STATUS_ISSUE_TOKENS = ("DTD", "OUT", "IL", "IL10", "IL60", "IR", "SUSP", "NA", "D/L")
@@ -633,7 +633,7 @@ def _protect_injury_stash(row: dict[str, Any], _fpg: float | None) -> bool:
 
 def _is_bench(row: dict[str, Any]) -> bool:
     joined = " ".join(str(row.get(k) or "") for k in ("slot", "slot_full")).upper()
-    return any(token in joined.split() for token in ("BN", "BE", "BENCH", "RESERVE", "RES"))
+    return any(token in joined.split() for token in ("BN", "BE", "BENCH", "RESERVE", "RES", "MIN", "MINORS"))
 
 
 def _age(row: dict[str, Any], stats: dict[str, Any]) -> int | None:

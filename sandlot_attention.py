@@ -29,7 +29,7 @@ MAX_CHIPS = 3
 STATUS_LABEL = {"ok": "Active", "dtd": "Day-to-day", "il10": "IL-10", "il60": "IL-60"}
 # Mirrors v2PlayerState's injured statuses in web/sandlot/v2-pages.jsx.
 INJURED_STATUSES = {"il10", "il60", "ir", "out", "dtd", "susp"}
-RESERVED_SLOTS = {"BN", "IL", "IR"}
+RESERVED_SLOTS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "MIN", "MINORS"}
 # Lowercased mirror of sandlot_actions.IL_STATUSES: a move_to_il payload is
 # only attached when the executor's own guard would accept it (a SUSP player
 # still surfaces as a status item, but suspension is not IL-eligible).
@@ -110,7 +110,7 @@ def _player_state(p: dict[str, Any]) -> str:
         return "injured"
     if slot in ("IL", "IR"):
         return "injured"
-    if slot == "BN":
+    if slot in ("BN", "BE", "BENCH", "RES", "RESERVE", "MIN", "MINORS"):
         return "bench"
     return "ok"
 

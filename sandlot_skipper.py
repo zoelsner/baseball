@@ -563,7 +563,7 @@ def _opponent_roster(snapshot: dict[str, Any], matchup: dict[str, Any] | None) -
 
 
 def _active_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    inactive = {"BN", "BENCH", "RES", "RESERVE", "IR", "IL", "INJ", "INJ RES", "MINORS"}
+    inactive = {"BN", "BENCH", "RES", "RESERVE", "IR", "IL", "INJ", "INJ RES", "MIN", "MINORS"}
     out = []
     for row in rows or []:
         if not row.get("name"):

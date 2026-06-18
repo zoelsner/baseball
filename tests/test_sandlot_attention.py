@@ -112,6 +112,15 @@ class AttentionQueueOrderingTests(unittest.TestCase):
 
         self.assertEqual(queue_for(roster), [])
 
+    def test_minors_and_reserve_players_are_excluded(self):
+        roster = [
+            {"id": "min", "name": "Protected Prospect", "slot": "MIN", "positions": "1B", "fppg": 0},
+            {"id": "res", "name": "Reserve Stash", "slot": "RES", "positions": "OF", "fppg": 0, "injury": "DTD"},
+            {"id": "ok", "name": "Healthy Starter", "slot": "OF", "fppg": 5.0},
+        ]
+
+        self.assertEqual(queue_for(roster), [])
+
     def test_empty_state_is_empty_list(self):
         roster = [
             {"id": "healthy-a", "name": "Healthy Bat", "slot": "OF", "fppg": 5.8},

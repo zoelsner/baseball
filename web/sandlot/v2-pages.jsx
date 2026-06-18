@@ -46,6 +46,8 @@ const V2_SKIPPER_MODELS = [
   { id:'deepseek/deepseek-v4-pro', label:'DeepSeek V4 Pro', short:'DS Pro' },
 ];
 const V2_SKIPPER_DEFAULT_MODEL = 'moonshotai/kimi-k2';
+const V2_INACTIVE_SLOTS = ['BN', 'BE', 'BENCH', 'IL', 'IR', 'RES', 'RESERVE', 'MIN', 'MINORS'];
+const V2_BENCH_SLOTS = ['BN', 'BE', 'BENCH', 'RES', 'RESERVE', 'MIN', 'MINORS'];
 
 // Preference persistence helpers removed in #36 — Sandlot does not persist UI
 // state to `window.localStorage` (global rule in CLAUDE.md). Skipper model +
@@ -66,7 +68,7 @@ function v2PlayerState(p) {
   const slot = String(p.slot || '').toUpperCase();
   if (['il10','il60','ir','out','dtd','susp'].includes(status)) return 'injured';
   if (['IL','IR'].includes(slot)) return 'injured';
-  if (slot === 'BN') return 'bench';
+  if (V2_BENCH_SLOTS.includes(slot)) return 'bench';
   return 'ok';
 }
 
@@ -517,7 +519,7 @@ function V2Auth({ onSignIn }) {
 function v2StarterRows(roster) {
   return (roster || []).filter(p => {
     const slot = String(p.slot || '').toUpperCase();
-    return !['BN', 'IL', 'IR'].includes(slot);
+    return !V2_INACTIVE_SLOTS.includes(slot);
   });
 }
 
@@ -1195,8 +1197,8 @@ function V2Roster({ model, onPlayer }) {
   const roster = model.roster || [];
   const list = roster.filter(p => {
     const slot = String(p.slot || '').toUpperCase();
-    if (view === 'starting') return !['BN','IL','IR'].includes(slot);
-    if (view === 'bench') return slot === 'BN';
+    if (view === 'starting') return !V2_INACTIVE_SLOTS.includes(slot);
+    if (view === 'bench') return V2_BENCH_SLOTS.includes(slot);
     return true;
   });
   const best = [...roster].sort((a,b)=>(b.fppg || b.proj || 0) - (a.fppg || a.proj || 0))[0];
@@ -1252,8 +1254,8 @@ function V2TeamRoster({ teamId, teamMeta, onBack, onPlayer }) {
 
   const list = roster.filter(p => {
     const slot = String(p.slot || '').toUpperCase();
-    if (view === 'starting') return !['BN','IL','IR'].includes(slot);
-    if (view === 'bench') return slot === 'BN';
+    if (view === 'starting') return !V2_INACTIVE_SLOTS.includes(slot);
+    if (view === 'bench') return V2_BENCH_SLOTS.includes(slot);
     return true;
   });
 
