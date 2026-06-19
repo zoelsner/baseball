@@ -45,6 +45,7 @@ POSITION_TOKENS = {"C", "1B", "2B", "3B", "SS", "OF", "UT", "SP", "RP", "P"}
 GENERIC_POSITIONS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "MIN", "MINORS", "HIT", "PIT", "ALL", "UTIL"}
 PITCHER_POSITIONS = {"SP", "RP", "P"}
 HITTER_POSITIONS = {"C", "1B", "2B", "3B", "SS", "OF", "UT"}
+PROTECTED_MOVE_OUT_SLOTS = {"IL", "IR", "MIN", "MINORS"}
 STATUS_ISSUE_TOKENS = ("DTD", "OUT", "IL", "IL10", "IL60", "IR", "SUSP", "NA", "D/L")
 INJURY_STASH_TOKENS = ("IL", "IL10", "IL60", "IR", "D/L")
 
@@ -311,7 +312,7 @@ def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) 
             continue
         tokens = _position_tokens(row)
         fpg = _number(row.get("fppg"))
-        if _protect_injury_stash(row, fpg):
+        if _protect_move_out_slot(row) or _protect_injury_stash(row, fpg):
             protected.append(str(row.get("name") or "Unknown player"))
             continue
         is_bench = _is_bench(row)
@@ -346,7 +347,7 @@ def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) 
         fpg = _number(row.get("fppg"))
         if fpg is None:
             continue
-        if _protect_injury_stash(row, fpg):
+        if _protect_move_out_slot(row) or _protect_injury_stash(row, fpg):
             protected.append(str(row.get("name") or "Unknown player"))
             continue
         tokens = _position_tokens(row)
@@ -629,6 +630,11 @@ def _protect_injury_stash(row: dict[str, Any], _fpg: float | None) -> bool:
     can classify return timing and long-absence risk.
     """
     return _has_injury_stash_status(row)
+
+
+def _protect_move_out_slot(row: dict[str, Any]) -> bool:
+    tokens = " ".join(str(row.get(k) or "") for k in ("slot", "slot_full")).upper().split()
+    return any(token in PROTECTED_MOVE_OUT_SLOTS for token in tokens)
 
 
 def _is_bench(row: dict[str, Any]) -> bool:
