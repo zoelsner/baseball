@@ -1554,6 +1554,7 @@ function V2TeamRow({ team, onOpen }) {
 function V2FreeAgents({ onOpenPlayer, onAskSkipper }) {
   const [filter, setFilter] = React.useState('ALL');
   const [state, setState] = React.useState({ status:'loading', payload:null, error:null });
+  const [contextCard, setContextCard] = React.useState(null);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1624,8 +1625,20 @@ function V2FreeAgents({ onOpenPlayer, onAskSkipper }) {
         <V2WaiverState eyebrow="No cards" title="Nothing in this filter" body="Try All, or refresh after Fantrax updates the free-agent pool." compact />
       )}
       {list.map(card => (
-        <V2WaiverSwapCard key={card.id} card={card} onOpenPlayer={onOpenPlayer} onAskSkipper={onAskSkipper}/>
+        <V2WaiverSwapCard key={card.id} card={card} onOpenPlayer={onOpenPlayer} onOpenContext={setContextCard}/>
       ))}
+      {contextCard && (
+        <V2SwapContextModal
+          card={contextCard}
+          prompt={v2BuildSwapSkipperPrompt(contextCard)}
+          onClose={()=>setContextCard(null)}
+          onAsk={()=>{
+            const prompt = v2BuildSwapSkipperPrompt(contextCard);
+            setContextCard(null);
+            onAskSkipper?.(prompt);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1643,13 +1656,11 @@ function V2WaiverState({ eyebrow, title, body, tone='accent', compact=false }) {
   );
 }
 
-function V2WaiverSwapCard({ card, onOpenPlayer, onAskSkipper }) {
+function V2WaiverSwapCard({ card, onOpenPlayer, onOpenContext }) {
   const add = card.add || {};
   const out = card.move_out || {};
   const conf = v2ConfidenceStyle(card.confidence);
   const net = v2Signed(card.net_delta, 1);
-  const [contextOpen, setContextOpen] = React.useState(false);
-  const skipperPrompt = React.useMemo(() => v2BuildSwapSkipperPrompt(card), [card]);
   return (
     <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, overflow:'hidden' }}>
       <div style={{ padding:'14px 16px 12px', display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
@@ -1691,7 +1702,7 @@ function V2WaiverSwapCard({ card, onOpenPlayer, onAskSkipper }) {
           borderRadius:999, fontSize:12.5, fontWeight:800, cursor:onOpenPlayer && add.id ? 'pointer' : 'default',
           fontFamily:'inherit',
         }}>Review swap</button>
-        <button onClick={()=>setContextOpen(true)} style={{
+        <button onClick={()=>onOpenContext?.(card)} style={{
           flex:'1 1 150px', display:'flex', alignItems:'center', justifyContent:'center', gap:7,
           background:V2.accentSoft, color:V2.accent, border:'none', padding:'11px 14px',
           borderRadius:999, fontSize:12.5, fontWeight:800, cursor:'pointer', fontFamily:'inherit',
@@ -1702,17 +1713,6 @@ function V2WaiverSwapCard({ card, onOpenPlayer, onAskSkipper }) {
           fontFamily:'inherit',
         }}>Roster player</button>
       </div>
-      {contextOpen && (
-        <V2SwapContextModal
-          card={card}
-          prompt={skipperPrompt}
-          onClose={()=>setContextOpen(false)}
-          onAsk={()=>{
-            setContextOpen(false);
-            onAskSkipper?.(skipperPrompt);
-          }}
-        />
-      )}
     </div>
   );
 }
