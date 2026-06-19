@@ -396,7 +396,7 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
         return None
 
     dynasty_note, dynasty_penalty = _dynasty_note(move)
-    fallback_penalty = 0 if add["true_fpg"] else -0.8
+    fallback_penalty = 0 if add["true_fpg"] else -2.0
     loose_penalty = -0.7 if fit == "loose" else 0
     sort_score = net_delta
     sort_score += 1.0 if weak_fit else 0
@@ -444,7 +444,7 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
         "fills_position": fills_position,
         "fit": fit,
         "confidence": confidence,
-        "why": _deterministic_why(add_name, move_name, net_delta, fills_position, fit, move),
+        "why": _deterministic_why(add_name, move_name, net_delta, fills_position, fit, move, bool(add["true_fpg"])),
         "risk": _deterministic_risk(add, move, fit),
         "dynasty_note": dynasty_note,
         "evidence_chips": evidence,
@@ -686,6 +686,8 @@ def _confidence(
     dynasty_penalty: float,
     sort_score: float,
 ) -> str:
+    if not true_fpg:
+        return "Low"
     if net_delta >= 1.5 and (fit == "direct" or weak_fit) and true_fpg and dynasty_penalty == 0:
         return "High"
     if net_delta > 0 and sort_score >= 0:
@@ -725,8 +727,11 @@ def _deterministic_why(
     fills_position: str | None,
     fit: str,
     move: dict[str, Any],
+    true_fpg: bool,
 ) -> str:
     fit_text = f" at {fills_position}" if fills_position else ""
+    if not true_fpg:
+        return f"{add_name} is a watch-list fit over {move_name}{fit_text}, but the FP/G edge is unverified."
     if move["status_issue"]:
         return f"{add_name} is {_format_delta(net_delta)} FP/G over {move_name}{fit_text}, and {move_name} carries a status flag."
     if move["is_bench"]:
@@ -738,7 +743,7 @@ def _deterministic_why(
 
 def _deterministic_risk(add: dict[str, Any], move: dict[str, Any], fit: str) -> str:
     if not add["true_fpg"]:
-        return f"{add['name']}'s value uses {add['score_source']}; verify the Fantrax stat column before trusting the delta."
+        return f"{add['name']}'s FP/G is inferred from unlabeled Fantrax cells; treat this as a scouting lead, not trade-value evidence."
     if fit == "loose":
         return "Position fit is loose, so this is a roster-shape review rather than a clean one-for-one replacement."
     if move.get("age") is None or (isinstance(move.get("age"), int) and move["age"] <= 24):
