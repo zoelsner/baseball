@@ -22,9 +22,12 @@ class SkipperModelConfigTests(unittest.TestCase):
     def test_options_do_not_advertise_retired_tencent_free_model(self):
         options = skipper_options()
         model_ids = [m["id"] for m in options["models"]]
+        models_by_id = {m["id"]: m for m in options["models"]}
         self.assertEqual(options["default_model"], "deepseek/deepseek-v4-flash")
         self.assertIn("deepseek/deepseek-v4-flash", model_ids)
         self.assertIn("z-ai/glm-5.2", model_ids)
+        self.assertEqual(models_by_id["z-ai/glm-5.2"]["label"], "GLM 5.2")
+        self.assertEqual(models_by_id["z-ai/glm-5.2"]["short"], "GLM 5.2")
         self.assertNotIn("tencent/hy3-preview:free", model_ids)
         self.assertFalse(any(m.startswith("tencent/") for m in model_ids))
 
