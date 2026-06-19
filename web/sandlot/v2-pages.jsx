@@ -1554,7 +1554,6 @@ function V2TeamRow({ team, onOpen }) {
 function V2FreeAgents({ onOpenPlayer, onAskSkipper }) {
   const [filter, setFilter] = React.useState('ALL');
   const [state, setState] = React.useState({ status:'loading', payload:null, error:null });
-  const [contextCard, setContextCard] = React.useState(null);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -1625,20 +1624,8 @@ function V2FreeAgents({ onOpenPlayer, onAskSkipper }) {
         <V2WaiverState eyebrow="No cards" title="Nothing in this filter" body="Try All, or refresh after Fantrax updates the free-agent pool." compact />
       )}
       {list.map(card => (
-        <V2WaiverSwapCard key={card.id} card={card} onOpenPlayer={onOpenPlayer} onOpenContext={setContextCard}/>
+        <V2WaiverSwapCard key={card.id} card={card} onOpenPlayer={onOpenPlayer} onAskSkipper={onAskSkipper}/>
       ))}
-      {contextCard && (
-        <V2SwapContextModal
-          card={contextCard}
-          prompt={v2BuildSwapSkipperPrompt(contextCard)}
-          onClose={()=>setContextCard(null)}
-          onAsk={()=>{
-            const prompt = v2BuildSwapSkipperPrompt(contextCard);
-            setContextCard(null);
-            onAskSkipper?.(prompt);
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -1656,7 +1643,7 @@ function V2WaiverState({ eyebrow, title, body, tone='accent', compact=false }) {
   );
 }
 
-function V2WaiverSwapCard({ card, onOpenPlayer, onOpenContext }) {
+function V2WaiverSwapCard({ card, onOpenPlayer, onAskSkipper }) {
   const add = card.add || {};
   const out = card.move_out || {};
   const conf = v2ConfidenceStyle(card.confidence);
@@ -1702,7 +1689,7 @@ function V2WaiverSwapCard({ card, onOpenPlayer, onOpenContext }) {
           borderRadius:999, fontSize:12.5, fontWeight:800, cursor:onOpenPlayer && add.id ? 'pointer' : 'default',
           fontFamily:'inherit',
         }}>Review swap</button>
-        <button onClick={()=>onOpenContext?.(card)} style={{
+        <button onClick={()=>onAskSkipper?.(v2BuildSwapSkipperPrompt(card))} style={{
           flex:'1 1 150px', display:'flex', alignItems:'center', justifyContent:'center', gap:7,
           background:V2.accentSoft, color:V2.accent, border:'none', padding:'11px 14px',
           borderRadius:999, fontSize:12.5, fontWeight:800, cursor:'pointer', fontFamily:'inherit',
@@ -1712,59 +1699,6 @@ function V2WaiverSwapCard({ card, onOpenPlayer, onOpenContext }) {
           borderRadius:999, fontSize:12, fontWeight:800, cursor:onOpenPlayer && out.id ? 'pointer' : 'default',
           fontFamily:'inherit',
         }}>Roster player</button>
-      </div>
-    </div>
-  );
-}
-
-function V2SwapContextModal({ card, prompt, onClose, onAsk }) {
-  const add = card?.add || {};
-  const out = card?.move_out || {};
-  return (
-    <div role="dialog" aria-modal="true" aria-label="Swap context for Skipper" style={{
-      position:'fixed', inset:0, zIndex:30, background:'rgba(15, 23, 42, 0.34)',
-      display:'flex', alignItems:'flex-end', padding:12,
-    }}>
-      <button aria-label="Close swap context" onClick={onClose} style={{ position:'absolute', inset:0, border:'none', background:'transparent', cursor:'pointer' }}/>
-      <div style={{
-        position:'relative', width:'100%', background:V2.surface, color:V2.ink,
-        border:`1px solid ${V2.hairline}`, borderRadius:22, padding:16,
-        boxShadow:'0 18px 50px rgba(15,23,42,0.22)',
-      }}>
-        <div style={{ display:'flex', justifyContent:'space-between', gap:12, alignItems:'flex-start' }}>
-          <div>
-            <V2Eyebrow color={V2.accent}>Skipper context</V2Eyebrow>
-            <div style={{ marginTop:7, fontFamily:V2.fontDisplay, fontSize:19, fontWeight:750, lineHeight:1.12 }}>
-              {add.name || 'Free agent'} for {out.name || 'roster player'}
-            </div>
-          </div>
-          <button onClick={onClose} aria-label="Close" style={{
-            width:30, height:30, borderRadius:'50%', border:`1px solid ${V2.hairline}`,
-            background:V2.surface2, color:V2.muted, cursor:'pointer', fontSize:18, lineHeight:1,
-          }}>x</button>
-        </div>
-        <div style={{ marginTop:12, display:'flex', flexDirection:'column', gap:8 }}>
-          <V2ReasonLine color={V2.ok} label="Why" text={card?.why}/>
-          <V2ReasonLine color={V2.warn} label="Risk" text={card?.risk}/>
-          {card?.dynasty_note && <V2ReasonLine color={V2.muted} label="Dynasty" text={card.dynasty_note}/>}
-        </div>
-        <div style={{
-          marginTop:13, maxHeight:138, overflow:'auto', whiteSpace:'pre-wrap',
-          background:V2.surface2, border:`1px solid ${V2.hairline2}`, borderRadius:14,
-          padding:12, color:V2.body, fontSize:12.5, lineHeight:1.45,
-        }}>{prompt}</div>
-        <div style={{ display:'flex', gap:8, marginTop:13 }}>
-          <button onClick={onAsk} style={{
-            flex:1, background:V2.ink, color:'#fff', border:'none', borderRadius:999,
-            padding:'12px 14px', fontFamily:'inherit', fontSize:13, fontWeight:850,
-            cursor:'pointer',
-          }}>Open in Skipper</button>
-          <button onClick={onClose} style={{
-            flex:'0 0 auto', background:V2.surface2, color:V2.body, border:'none', borderRadius:999,
-            padding:'12px 14px', fontFamily:'inherit', fontSize:13, fontWeight:800,
-            cursor:'pointer',
-          }}>Stay here</button>
-        </div>
       </div>
     </div>
   );
