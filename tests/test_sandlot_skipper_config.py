@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 
 import sandlot_skipper
-from sandlot_api import skipper_options
+from sandlot_api import sandlot_index, skipper_options
 
 
 class SkipperModelConfigTests(unittest.TestCase):
@@ -30,6 +30,14 @@ class SkipperModelConfigTests(unittest.TestCase):
         self.assertEqual(models_by_id["z-ai/glm-5.2"]["short"], "GLM 5.2")
         self.assertNotIn("tencent/hy3-preview:free", model_ids)
         self.assertFalse(any(m.startswith("tencent/") for m in model_ids))
+
+    def test_index_serves_content_hashed_app_bundle(self):
+        response = sandlot_index()
+        body = response.body.decode()
+
+        self.assertIn("app.js?v=", body)
+        self.assertNotIn("app.js?v=frontend-build", body)
+        self.assertEqual(response.headers["cache-control"], "no-store, max-age=0")
 
 
 if __name__ == "__main__":

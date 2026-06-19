@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ from typing import Any
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -36,6 +37,14 @@ FRESH_SNAPSHOT_MINUTES = 18 * 60
 OLD_SNAPSHOT_MINUTES = 36 * 60
 
 app = FastAPI(title="Sandlot", version="0.1.0")
+
+
+class NoCacheStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: dict[str, Any]):
+        response = await super().get_response(path, scope)
+        if path in {"app.js", "index.html", ""}:
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
 
 
 @app.on_event("startup")
@@ -649,4 +658,13 @@ def _require_refresh_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Missing or invalid refresh token")
 
 
-app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="sandlot")
+@app.get("/", include_in_schema=False)
+def sandlot_index() -> HTMLResponse:
+    html = (WEB_DIR / "index.html").read_text()
+    app_js = WEB_DIR / "app.js"
+    digest = hashlib.sha256(app_js.read_bytes()).hexdigest()[:12]
+    html = html.replace("app.js?v=frontend-build", f"app.js?v={digest}")
+    return HTMLResponse(html, headers={"Cache-Control": "no-store, max-age=0"})
+
+
+app.mount("/", NoCacheStaticFiles(directory=str(WEB_DIR), html=True), name="sandlot")
