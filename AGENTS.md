@@ -52,6 +52,11 @@ guessing.
   explicitly confirmed by Zach upstream (e.g., a Telegram yes relayed by his
   agent). Never add autonomous or implicit execution paths.
 - The Town integration is downstream of the structured Attention Queue.
+- `POST /api/actions` is the narrow exception: a Zo Computer
+  machine-to-machine executor only, token-gated with `SANDLOT_ACTIONS_TOKEN`,
+  Postgres advisory-lock guarded, and logged to `action_logs`. Do not expose it
+  as a user-facing feature.
+- The Town integration is downstream of the structured Attention Queue.
 
 ## Frontend Rules
 
@@ -76,6 +81,9 @@ guessing.
   cache by snapshot/input, graceful degradation.
 - Treat current-news/injury enrichment as a separate data layer, not a reason to
   weaken existing IL stash safety.
+- Fantrax write actions must have code-level safety constraints: no automatic
+  retries, drop confirmation, IL eligibility checks, roster-size guards,
+  session freshness checks, and transaction logging.
 
 ## Evidence To Report
 
