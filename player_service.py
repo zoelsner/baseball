@@ -392,13 +392,10 @@ def _load_or_generate_take(
 
     try:
         messages = _build_take_messages(snapshot, player_row, payload)
-        # Player-take uses the configured fallback first because short cached
-        # prompts should return quickly. Chat still uses the configured
-        # primary-first order via stream().
         text, model = sandlot_skipper.SkipperClient().complete(
             messages,
             max_tokens=220,
-            model_order=(sandlot_skipper.fallback_model(), sandlot_skipper.primary_model()),
+            model_order=sandlot_skipper.default_model_order(),
         )
         try:
             sandlot_db.set_player_take(fantrax_id, int(snapshot_id), text, model)

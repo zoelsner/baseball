@@ -227,9 +227,10 @@ def skipper_options() -> dict[str, Any]:
     return {
         "default_model": sandlot_skipper.primary_model(),
         "models": [
-            {"id": "moonshotai/kimi-k2", "label": "Kimi K2", "primary": True},
-            {"id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash"},
+            {"id": "deepseek/deepseek-v4-flash", "label": "DeepSeek V4 Flash", "primary": True},
+            {"id": "moonshotai/kimi-k2", "label": "Kimi K2"},
             {"id": "deepseek/deepseek-v4-pro", "label": "DeepSeek V4 Pro"},
+            {"id": "z-ai/glm-5.2", "label": "GLM 5.2"},
         ],
         "reasoning": {
             "default_enabled": False,

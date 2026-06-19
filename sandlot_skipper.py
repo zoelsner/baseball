@@ -1,7 +1,7 @@
 """Skipper chat — roster Q&A grounded in the latest Fantrax snapshot.
 
-Uses OpenRouter's OpenAI-compatible API. Kimi (Moonshot) is the primary model;
-DeepSeek V4 Flash is the fallback. The `for model in model_order: try ...
+Uses OpenRouter's OpenAI-compatible API. DeepSeek V4 Flash is the primary
+model; Kimi (Moonshot) is the fallback. The `for model in model_order: try ...
 except: continue` loop in `SkipperClient.stream` retries the next model on any
 exception during streaming — pre-stream, mid-stream, or empty stream. Partial
 tokens from a failed primary may already be on the wire when the fallback
@@ -29,15 +29,13 @@ import sandlot_data_quality
 log = logging.getLogger(__name__)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-PRIMARY_MODEL = "moonshotai/kimi-k2"
-# Keep the fallback on a current, low-cost non-Tencent model. The retired
-# `tencent/hy3-preview:free` id caused every fallback-first short prompt to
-# fail before trying Kimi.
-FALLBACK_MODEL = "deepseek/deepseek-v4-flash"
+PRIMARY_MODEL = "deepseek/deepseek-v4-flash"
+FALLBACK_MODEL = "moonshotai/kimi-k2"
 ALLOWED_CHAT_MODELS = (
     PRIMARY_MODEL,
     FALLBACK_MODEL,
     "deepseek/deepseek-v4-pro",
+    "z-ai/glm-5.2",
 )
 ALLOWED_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 
@@ -770,11 +768,8 @@ class SkipperClient:
     ) -> tuple[str, str]:
         """Return a single completion plus the model id, using the stream fallback order.
 
-        Pass `model_order` to override which model is tried first. The player
-        take and trade-grade paths use fallback-first because Kimi's
-        first-token latency on a cold prompt can push those compact prompts
-        over a noticeable threshold. Defaults to the environment-configured
-        primary/fallback order.
+        Pass `model_order` to override which model is tried first. Defaults to
+        the environment-configured primary/fallback order.
         """
         failures: list[str] = []
         extra_body = _reasoning_extra_body(reasoning_effort)
