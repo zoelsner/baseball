@@ -47,7 +47,7 @@ Builds on V1's working foundation: FastAPI + Postgres + cookie-backed Fantrax sc
 
 | Path | Purpose |
 |---|---|
-| `sandlot_skipper.py` | OpenRouter client wrapper (Kimi → DeepSeek fallback), tier detection, context formatter, system prompt, message builder, streaming generator |
+| `sandlot_skipper.py` | OpenRouter client wrapper (DeepSeek V4 Flash → Kimi fallback), tier detection, context formatter, system prompt, message builder, streaming generator |
 
 (no new frontend files — wire existing `V2Skipper` page in `v2-pages.jsx`)
 
@@ -76,7 +76,7 @@ Builds on V1's working foundation: FastAPI + Postgres + cookie-backed Fantrax sc
 
 1. **DB schema** — add `chat_sessions`, `chat_messages` to `sandlot_db.init_schema()`. Add helper functions. Verify by running `init_schema()` against Railway DB.
 2. **Scraper change** — modify `collect_all()` to include `all_team_rosters`. Run a manual refresh; confirm snapshot has 12 team rosters. Verify size + duration acceptable (~12s, ~40KB).
-3. **Skipper module** — `sandlot_skipper.py` with: `SkipperClient` class (OpenRouter client with Kimi→DeepSeek fallback), `detect_tier()`, `build_context()`, `SYSTEM_PROMPT` constant, `build_messages()`, `stream_response()` generator.
+3. **Skipper module** — `sandlot_skipper.py` with: `SkipperClient` class (OpenRouter client with DeepSeek V4 Flash→Kimi fallback), `detect_tier()`, `build_context()`, `SYSTEM_PROMPT` constant, `build_messages()`, `stream_response()` generator.
 4. **API endpoints** — wire `GET/POST/DELETE /api/skipper/messages` in `sandlot_api.py`. Use `StreamingResponse` for SSE. Append messages to DB at start (user) and end (assistant). Include tier + model in DB row for debugging.
 5. **Frontend wiring** — replace the mock state in `V2Skipper` with real fetch calls + SSE consumer.
 6. **Local end-to-end test** — `uvicorn` against Railway DB. Open Skipper tab. Test tier 2 ("who's my best SP?"), tier 3 ("how does my pitching compare to the league?"), persistence (reload → history shows). Test fallback (set `OPENROUTER_API_KEY=invalid` and verify DeepSeek path takes over).
@@ -122,7 +122,7 @@ SELECT tier, model, count(*) FROM chat_messages WHERE role='assistant' GROUP BY 
 ## Open Questions for Implementation
 
 - **Exact OpenRouter model IDs.** Verify at impl time:
-  - Kimi: likely `moonshotai/kimi-k2` or `moonshotai/moonshot-v1-128k`
-  - DeepSeek fallback: `deepseek/deepseek-v4-flash`
+  - DeepSeek primary: `deepseek/deepseek-v4-flash`
+  - Kimi fallback: `moonshotai/kimi-k2`
   - Use OpenRouter's `/v1/models` endpoint to confirm.
 - **System prompt voice.** Default draft: neutral, grounded, refuses to speculate beyond snapshot data. V1 = "neutral helpful assistant," not "strategist".
