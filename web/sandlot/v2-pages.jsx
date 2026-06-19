@@ -90,6 +90,41 @@ function v2EmptyModel() {
   };
 }
 
+function v2NormalizeSkipperOptions(payload) {
+  const models = Array.isArray(payload?.models)
+    ? payload.models
+        .filter(m => m?.id)
+        .map(m => ({
+          id: String(m.id),
+          label: String(m.label || m.id),
+          short: String(m.short || m.label || m.id),
+        }))
+    : [];
+  return {
+    defaultModel: payload?.default_model || V2_SKIPPER_DEFAULT_MODEL,
+    models: models.length ? models : V2_SKIPPER_MODELS,
+  };
+}
+
+function v2BuildSwapSkipperPrompt(card) {
+  const add = card?.add || {};
+  const out = card?.move_out || {};
+  const chips = (card?.evidence_chips || []).join(', ') || 'none';
+  const net = v2Signed(card?.net_delta, 1);
+  return [
+    'Help me pressure-test this waiver swap before I touch Fantrax.',
+    '',
+    `Proposed swap: add ${add.name || 'Unknown free agent'} (${add.positions || 'UT'}${add.team ? `, ${add.team}` : ''}) and move out ${out.name || 'Unknown roster player'} (${out.positions || 'UT'}${out.team ? `, ${out.team}` : ''}).`,
+    `Estimated delta: ${net} FP/G. Confidence: ${card?.confidence || 'Medium'}.`,
+    `Evidence chips: ${chips}.`,
+    card?.why ? `Why Sandlot likes it: ${card.why}` : null,
+    card?.risk ? `Risk: ${card.risk}` : null,
+    card?.dynasty_note ? `Dynasty note: ${card.dynasty_note}` : null,
+    '',
+    'Use the latest roster snapshot. Tell me what data you trust, what you do not trust, what I should manually verify in Fantrax, and whether this is still worth doing.',
+  ].filter(Boolean).join('\n');
+}
+
 // Shared mapper so user roster + per-team roster stay byte-identical.
 function v2NormalizeRosterRow(p, idx) {
   const positions = Array.isArray(p.all_positions) && p.all_positions.length
@@ -300,6 +335,7 @@ function V2App({ initial }) {
   const [authed, setAuthed] = React.useState(initial?.auth ? false : true);
   const [model, setModel] = React.useState(v2EmptyModel);
   const [syncState, setSyncState] = React.useState({ state:'loading', label:'loading', error:null, notice:null });
+  const [skipperDraft, setSkipperDraft] = React.useState(null);
 
   const setPage = React.useCallback((next) => {
     if (next !== 'league') setLeagueTeam(null);
@@ -364,6 +400,12 @@ function V2App({ initial }) {
     setDetail(id);
   }, []);
 
+  const continueInSkipper = React.useCallback((prompt) => {
+    if (!prompt) return;
+    setSkipperDraft({ id: Date.now(), text: prompt });
+    setPage('skipper');
+  }, []);
+
   if (!authed) return <V2Auth onSignIn={()=>setAuthed(true)}/>;
 
   const pages = {
@@ -372,9 +414,9 @@ function V2App({ initial }) {
     league:  leagueTeam
       ? <V2TeamRoster teamId={leagueTeam.id} teamMeta={leagueTeam} onBack={()=>setLeagueTeam(null)} onPlayer={setDetail}/>
       : <V2League model={model} onOpenTeam={setLeagueTeam} onOpenTrade={()=>setPage('trade')}/>,
-    fa:      <V2FreeAgents onOpenPlayer={openPlayer}/>,
+    fa:      <V2FreeAgents onOpenPlayer={openPlayer} onAskSkipper={continueInSkipper}/>,
     trade:   <V2TradeGrader model={model}/>,
-    skipper: <V2Skipper model={model} sync={syncState} onOpenPlayer={openPlayer}/>,
+    skipper: <V2Skipper model={model} sync={syncState} onOpenPlayer={openPlayer} draft={skipperDraft}/>,
     settings:<V2Settings model={model} sync={syncState} onRefresh={refreshSnapshot} onSignOut={()=>setAuthed(false)}/>,
   };
 
@@ -1509,7 +1551,7 @@ function V2TeamRow({ team, onOpen }) {
 }
 
 // ── /free-agents ───────────────────────────────────────────────
-function V2FreeAgents({ onOpenPlayer }) {
+function V2FreeAgents({ onOpenPlayer, onAskSkipper }) {
   const [filter, setFilter] = React.useState('ALL');
   const [state, setState] = React.useState({ status:'loading', payload:null, error:null });
 
@@ -1582,7 +1624,7 @@ function V2FreeAgents({ onOpenPlayer }) {
         <V2WaiverState eyebrow="No cards" title="Nothing in this filter" body="Try All, or refresh after Fantrax updates the free-agent pool." compact />
       )}
       {list.map(card => (
-        <V2WaiverSwapCard key={card.id} card={card} onOpenPlayer={onOpenPlayer}/>
+        <V2WaiverSwapCard key={card.id} card={card} onOpenPlayer={onOpenPlayer} onAskSkipper={onAskSkipper}/>
       ))}
     </div>
   );
@@ -1601,11 +1643,13 @@ function V2WaiverState({ eyebrow, title, body, tone='accent', compact=false }) {
   );
 }
 
-function V2WaiverSwapCard({ card, onOpenPlayer }) {
+function V2WaiverSwapCard({ card, onOpenPlayer, onAskSkipper }) {
   const add = card.add || {};
   const out = card.move_out || {};
   const conf = v2ConfidenceStyle(card.confidence);
   const net = v2Signed(card.net_delta, 1);
+  const [contextOpen, setContextOpen] = React.useState(false);
+  const skipperPrompt = React.useMemo(() => v2BuildSwapSkipperPrompt(card), [card]);
   return (
     <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, overflow:'hidden' }}>
       <div style={{ padding:'14px 16px 12px', display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
@@ -1641,17 +1685,86 @@ function V2WaiverSwapCard({ card, onOpenPlayer }) {
         {card.dynasty_note && <V2ReasonLine color={V2.muted} label="Dynasty" text={card.dynasty_note}/>}
       </div>
 
-      <div style={{ borderTop:`1px solid ${V2.hairline2}`, padding:'12px 16px', display:'flex', gap:8 }}>
+      <div style={{ borderTop:`1px solid ${V2.hairline2}`, padding:'12px 16px', display:'flex', gap:8, flexWrap:'wrap' }}>
         <button onClick={()=>onOpenPlayer?.(add.id)} disabled={!onOpenPlayer || !add.id} style={{
-          flex:1, background:V2.ink, color:'#fff', border:'none', padding:'11px 14px',
+          flex:'1 1 130px', background:V2.ink, color:'#fff', border:'none', padding:'11px 14px',
           borderRadius:999, fontSize:12.5, fontWeight:800, cursor:onOpenPlayer && add.id ? 'pointer' : 'default',
           fontFamily:'inherit',
         }}>Review swap</button>
+        <button onClick={()=>setContextOpen(true)} style={{
+          flex:'1 1 150px', display:'flex', alignItems:'center', justifyContent:'center', gap:7,
+          background:V2.accentSoft, color:V2.accent, border:'none', padding:'11px 14px',
+          borderRadius:999, fontSize:12.5, fontWeight:800, cursor:'pointer', fontFamily:'inherit',
+        }}>{Icons.chat(V2.accent, 14)} Continue in Skipper</button>
         <button onClick={()=>onOpenPlayer?.(out.id)} disabled={!onOpenPlayer || !out.id} style={{
           flex:'0 0 auto', background:V2.surface2, color:V2.body, border:'none', padding:'11px 13px',
           borderRadius:999, fontSize:12, fontWeight:800, cursor:onOpenPlayer && out.id ? 'pointer' : 'default',
           fontFamily:'inherit',
         }}>Roster player</button>
+      </div>
+      {contextOpen && (
+        <V2SwapContextModal
+          card={card}
+          prompt={skipperPrompt}
+          onClose={()=>setContextOpen(false)}
+          onAsk={()=>{
+            setContextOpen(false);
+            onAskSkipper?.(skipperPrompt);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function V2SwapContextModal({ card, prompt, onClose, onAsk }) {
+  const add = card?.add || {};
+  const out = card?.move_out || {};
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Swap context for Skipper" style={{
+      position:'fixed', inset:0, zIndex:30, background:'rgba(15, 23, 42, 0.34)',
+      display:'flex', alignItems:'flex-end', padding:12,
+    }}>
+      <button aria-label="Close swap context" onClick={onClose} style={{ position:'absolute', inset:0, border:'none', background:'transparent', cursor:'pointer' }}/>
+      <div style={{
+        position:'relative', width:'100%', background:V2.surface, color:V2.ink,
+        border:`1px solid ${V2.hairline}`, borderRadius:22, padding:16,
+        boxShadow:'0 18px 50px rgba(15,23,42,0.22)',
+      }}>
+        <div style={{ display:'flex', justifyContent:'space-between', gap:12, alignItems:'flex-start' }}>
+          <div>
+            <V2Eyebrow color={V2.accent}>Skipper context</V2Eyebrow>
+            <div style={{ marginTop:7, fontFamily:V2.fontDisplay, fontSize:19, fontWeight:750, lineHeight:1.12 }}>
+              {add.name || 'Free agent'} for {out.name || 'roster player'}
+            </div>
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{
+            width:30, height:30, borderRadius:'50%', border:`1px solid ${V2.hairline}`,
+            background:V2.surface2, color:V2.muted, cursor:'pointer', fontSize:18, lineHeight:1,
+          }}>x</button>
+        </div>
+        <div style={{ marginTop:12, display:'flex', flexDirection:'column', gap:8 }}>
+          <V2ReasonLine color={V2.ok} label="Why" text={card?.why}/>
+          <V2ReasonLine color={V2.warn} label="Risk" text={card?.risk}/>
+          {card?.dynasty_note && <V2ReasonLine color={V2.muted} label="Dynasty" text={card.dynasty_note}/>}
+        </div>
+        <div style={{
+          marginTop:13, maxHeight:138, overflow:'auto', whiteSpace:'pre-wrap',
+          background:V2.surface2, border:`1px solid ${V2.hairline2}`, borderRadius:14,
+          padding:12, color:V2.body, fontSize:12.5, lineHeight:1.45,
+        }}>{prompt}</div>
+        <div style={{ display:'flex', gap:8, marginTop:13 }}>
+          <button onClick={onAsk} style={{
+            flex:1, background:V2.ink, color:'#fff', border:'none', borderRadius:999,
+            padding:'12px 14px', fontFamily:'inherit', fontSize:13, fontWeight:850,
+            cursor:'pointer',
+          }}>Open in Skipper</button>
+          <button onClick={onClose} style={{
+            flex:'0 0 auto', background:V2.surface2, color:V2.body, border:'none', borderRadius:999,
+            padding:'12px 14px', fontFamily:'inherit', fontSize:13, fontWeight:800,
+            cursor:'pointer',
+          }}>Stay here</button>
+        </div>
       </div>
     </div>
   );
@@ -2981,13 +3094,17 @@ function V2MatchupProjectionCard({ matchup, dataQuality }) {
 }
 
 // ── /skipper ───────────────────────────────────────────────────
-function V2Skipper({ model, sync, onOpenPlayer }) {
+function V2Skipper({ model, sync, onOpenPlayer, draft }) {
   const prompts = ['Weekly matchup assessment', 'Deep matchup analysis', 'Best waiver swap to review?', 'Where am I weakest?', 'Who is my best 2B?'];
   const [msgs, setMsgs] = React.useState([]);
   const [input, setInput] = React.useState('');
   const [streaming, setStreaming] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [brief, setBrief] = React.useState({ status:'loading', data:null, error:null });
+  const [modelOptions, setModelOptions] = React.useState({
+    defaultModel: V2_SKIPPER_DEFAULT_MODEL,
+    models: V2_SKIPPER_MODELS,
+  });
   const [chatModel, setChatModel] = React.useState(V2_SKIPPER_DEFAULT_MODEL);
   const [reasoning, setReasoning] = React.useState(false);
   const scrollRef = React.useRef(null);
@@ -3004,7 +3121,7 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
     (text) => v2RenderSkipperMarkdown(text, playerNameIndex, fallbackRe, onOpenPlayer),
     [playerNameIndex, fallbackRe, onOpenPlayer],
   );
-  const activeModel = V2_SKIPPER_MODELS.find(m => m.id === chatModel) || V2_SKIPPER_MODELS[0];
+  const activeModel = modelOptions.models.find(m => m.id === chatModel) || modelOptions.models[0] || V2_SKIPPER_MODELS[0];
 
   const updateChatModel = React.useCallback((next) => {
     setChatModel(next);
@@ -3013,6 +3130,24 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
   const updateReasoning = React.useCallback((next) => {
     setReasoning(next);
   }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch('/api/skipper/options')
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`options ${r.status}`)))
+      .then(data => {
+        if (cancelled) return;
+        const options = v2NormalizeSkipperOptions(data);
+        setModelOptions(options);
+        setChatModel(current => options.models.some(m => m.id === current) ? current : options.defaultModel);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  React.useEffect(() => {
+    if (draft?.text) setInput(draft.text);
+  }, [draft?.id]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -3164,10 +3299,10 @@ function V2Skipper({ model, sync, onOpenPlayer }) {
             <span style={{ fontSize:10.5, fontWeight:800, color:V2.muted, letterSpacing:'0.06em', textTransform:'uppercase' }}>Model</span>
             <select value={chatModel} onChange={e=>updateChatModel(e.target.value)} disabled={streaming} style={{
               border:'none', background:'transparent', color:V2.ink, outline:'none',
-              fontFamily:'inherit', fontSize:12, fontWeight:800, maxWidth:120,
+              fontFamily:'inherit', fontSize:12, fontWeight:800, minWidth:168, maxWidth:230,
               opacity: streaming ? 0.65 : 1,
             }}>
-              {V2_SKIPPER_MODELS.map(m => <option key={m.id} value={m.id}>{m.short}</option>)}
+              {modelOptions.models.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
             </select>
           </label>
           <button type="button" onClick={()=>updateReasoning(!reasoning)} disabled={streaming} title="Use OpenRouter reasoning for this model" style={{
