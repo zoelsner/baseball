@@ -57,6 +57,8 @@ class WaiverSwapCandidateTests(unittest.TestCase):
         self.assertIn("watch-list", card["why"])
         self.assertIn("scouting lead", card["risk"])
         self.assertIn("_cells inferred FP/G", card["evidence_chips"])
+        self.assertFalse(card["add"]["execution_ready"])
+        self.assertEqual(card["add"]["stat_provenance"]["source_type"], "inferred_cells")
 
 
 if __name__ == "__main__":

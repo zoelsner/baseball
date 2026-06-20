@@ -48,6 +48,7 @@ GRADE_SYSTEM_PROMPT = """You explain a deterministic fantasy baseball trade grad
 Rules:
 - Use only the supplied JSON. Do not invent injuries, news, lineups, or stats.
 - Do not change the letter grade, deltas, or fairness — only explain them.
+- If value_confidence is low, say the FP/G delta is not trustworthy as trade-value evidence.
 - Do not recommend Fantrax write actions (accept, decline, counter, send).
 - Output ONE sentence under 32 words. No markdown, no bullets, no preamble.
 - Cite at least one player name and at least one supplied number."""
@@ -97,9 +98,11 @@ def grade_offer(
         )
 
     deltas = _compute_deltas(give_players, get_players)
+    value_confidence = _value_confidence(give_players, get_players)
     counter_result = _build_counter_result(
         snapshot_row=snapshot_row,
         data_quality=data_quality,
+        value_confidence=value_confidence,
         give_ids=give_ids,
         get_ids=get_ids,
         give_players=give_players,
@@ -107,7 +110,7 @@ def grade_offer(
         deltas=deltas,
     )
     subject_key = _subject_key(give_ids, get_ids)
-    context = _grade_prompt_context(snapshot_row, give_players, get_players, deltas)
+    context = _grade_prompt_context(snapshot_row, give_players, get_players, deltas, value_confidence)
     input_hash = _hash_context(context)
 
     rationale, model, cached = _load_or_generate_rationale(
@@ -130,6 +133,8 @@ def grade_offer(
         "my_get_fppg": deltas["my_get_fppg"],
         "my_give": [_slim_player(p) for p in give_players],
         "my_get": [_slim_player(p) for p in get_players],
+        "data_quality": data_quality,
+        "value_confidence": value_confidence,
         "rationale": rationale,
         "counters": counter_result["counters"],
         "my_weakest_position": counter_result["my_weakest_position"],
@@ -218,6 +223,7 @@ def _build_counter_result(
     *,
     snapshot_row: dict[str, Any],
     data_quality: dict[str, Any],
+    value_confidence: dict[str, Any],
     give_ids: list[str],
     get_ids: list[str],
     give_players: list[dict[str, Any]],
@@ -229,6 +235,11 @@ def _build_counter_result(
     my_weak_positions = _weak_positions(my_rows)
     my_weakest_position = my_weak_positions[0] if my_weak_positions else None
 
+    if value_confidence.get("level") == "low":
+        return _counter_result(
+            my_weakest_position,
+            "Counter guidance paused: trade value depends on inferred or missing FP/G.",
+        )
     if not data_quality.get("recommendations_ready"):
         return _counter_result(
             my_weakest_position,
@@ -466,8 +477,56 @@ def _age_delta(
     return round(sum(get_ages) / len(get_ages) - sum(give_ages) / len(give_ages), 1)
 
 
+def _value_confidence(
+    give_players: list[dict[str, Any]],
+    get_players: list[dict[str, Any]],
+) -> dict[str, Any]:
+    give = [_player_provenance_summary(p) for p in give_players]
+    get = [_player_provenance_summary(p) for p in get_players]
+    all_players = [*give, *get]
+    blocking = [
+        p for p in all_players
+        if p.get("source_type") in {"inferred_cells", "missing"}
+    ]
+    avg_context = [p for p in all_players if p.get("source_type") == "avg_score_context"]
+    if blocking:
+        level = "low"
+        trusted = False
+        warning = "Trade FP/G delta depends on inferred or missing Fantrax values; treat this as a scouting lead, not trade-value evidence."
+    elif avg_context:
+        level = "medium"
+        trusted = True
+        warning = "At least one FP/G value comes from Avg with score context; verify before treating the delta as dynasty value."
+    else:
+        level = "high"
+        trusted = True
+        warning = None
+    return {
+        "level": level,
+        "trusted_for_value": trusted,
+        "warning": warning,
+        "give": give,
+        "get": get,
+        "unreliable_players": blocking,
+    }
+
+
+def _player_provenance_summary(row: dict[str, Any]) -> dict[str, Any]:
+    provenance = sandlot_data_quality.stat_provenance(row)
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "source_type": provenance.get("source_type"),
+        "source": provenance.get("source"),
+        "label": provenance.get("label"),
+        "value": provenance.get("value"),
+        "trusted": provenance.get("trusted"),
+    }
+
+
 def _fppg(row: dict[str, Any]) -> float:
-    return _number(row.get("fppg")) or 0.0
+    provenance = sandlot_data_quality.stat_provenance(row)
+    return _number(provenance.get("value")) or 0.0
 
 
 def _age(row: dict[str, Any]) -> float | None:
@@ -525,13 +584,15 @@ def _number(value: Any) -> float | None:
 
 
 def _slim_player(row: dict[str, Any]) -> dict[str, Any]:
+    provenance = sandlot_data_quality.stat_provenance(row)
     return {
         "id": row.get("id"),
         "name": row.get("name"),
         "slot": row.get("slot"),
         "positions": row.get("positions"),
         "team": row.get("team"),
-        "fppg": _number(row.get("fppg")),
+        "fppg": _number(provenance.get("value")),
+        "stat_provenance": provenance,
         "age": _number(row.get("age")),
         "injury": row.get("injury"),
     }
@@ -552,6 +613,7 @@ def _grade_prompt_context(
     give_players: list[dict[str, Any]],
     get_players: list[dict[str, Any]],
     deltas: dict[str, Any],
+    value_confidence: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "snapshot_id": snapshot_row.get("id"),
@@ -565,6 +627,8 @@ def _grade_prompt_context(
         "age_delta": deltas["age_delta"],
         "my_give_fppg": deltas["my_give_fppg"],
         "my_get_fppg": deltas["my_get_fppg"],
+        "value_confidence": value_confidence,
+        "instruction": "Treat inferred or missing FP/G as unreliable; do not present the FP/G delta as trade-value evidence when value_confidence is low.",
     }
 
 

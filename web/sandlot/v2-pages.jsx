@@ -1895,6 +1895,9 @@ function V2TradeGradeCard({ result }) {
   const myDelta = Number(result.my_delta) || 0;
   const theirDelta = Number(result.their_delta) || 0;
   const ageDelta = result.age_delta;
+  const valueConfidence = result.value_confidence || {};
+  const valueWarning = valueConfidence.warning;
+  const valueLevel = valueConfidence.level ? String(valueConfidence.level).toUpperCase() : null;
   const fmt = (n) => `${n >= 0 ? '+' : ''}${Number(n).toFixed(1)}`;
   return (
     <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
@@ -1909,6 +1912,11 @@ function V2TradeGradeCard({ result }) {
           {result.my_weakest_position ? (
             <div style={{ marginTop:10, display:'inline-flex', alignItems:'center', gap:6, background:V2.warnSoft, color:V2.warn, borderRadius:999, padding:'5px 9px', fontSize:10.5, fontWeight:900, letterSpacing:'0.04em', textTransform:'uppercase' }}>
               Weakest: {result.my_weakest_position}
+            </div>
+          ) : null}
+          {valueLevel ? (
+            <div style={{ marginTop:8, display:'inline-flex', alignItems:'center', gap:6, background:valueConfidence.trusted_for_value ? V2.surface2 : V2.warnSoft, color:valueConfidence.trusted_for_value ? V2.muted : V2.warn, borderRadius:999, padding:'5px 9px', fontSize:10.5, fontWeight:900, letterSpacing:'0.04em', textTransform:'uppercase' }}>
+              Value confidence: {valueLevel}
             </div>
           ) : null}
         </div>
@@ -1936,6 +1944,12 @@ function V2TradeGradeCard({ result }) {
           },
         ]}/>
       </div>
+
+      {valueWarning ? (
+        <div style={{ marginTop:14, background:V2.warnSoft, borderLeft:`2px solid ${V2.warn}`, borderRadius:'4px 12px 12px 4px', padding:'10px 12px', color:V2.body, fontSize:12.5, lineHeight:1.45 }}>
+          {valueWarning}
+        </div>
+      ) : null}
 
       {result.rationale ? (
         <div style={{ marginTop:14, background:V2.surface2, borderRadius:12, padding:12, display:'flex', gap:10 }}>

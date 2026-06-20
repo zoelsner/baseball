@@ -94,6 +94,7 @@ Rules:
 - Markdown allowed for short lists or **emphasis**. Avoid headers and tables for chat-length replies. When you use a bulleted list, put each "- " marker on its own line (no inline " - " separators).
 - The user's team rows are flagged with `is_me: true`. Other teams (when present) are tier 3 context.
 - If asked about strategy, trade grading, or anything beyond what the data shows, say what you can from the snapshot and note that deeper analysis is a separate feature.
+- Every player may include `stat_provenance`. Treat `_cells inferred FP/G` and missing FP/G as unreliable; call that out instead of leaning on those numbers.
 - When you name a player from the snapshot, you can optionally wrap them as [[Full Name|id]] using the row's `id` field — this turns the name into a tappable link. Skip this if you don't have an exact id; the UI auto-links full names anyway.
 
 Be brief by default — most answers are 1-4 sentences. When the user explicitly asks for depth (e.g. "deep", "thorough", "in-depth", "analysis", "slot by slot"), expand into a structured breakdown using bulleted markdown: lead with a one-sentence read, then 4-8 bullets covering opponent threats, your edges, injury / streak factors, and any specific players to start or sit. Stay grounded in the snapshot."""
@@ -153,13 +154,15 @@ def detect_tier(prompt: str, snapshot: dict[str, Any]) -> int:
 
 def _slim_player(p: dict[str, Any]) -> dict[str, Any]:
     """Strip the verbose `raw` field; keep what the model actually needs."""
+    provenance = sandlot_data_quality.stat_provenance(p)
     return {
         "id": p.get("id"),
         "name": p.get("name"),
         "slot": p.get("slot"),
         "positions": p.get("positions"),
         "team": p.get("team"),
-        "fppg": p.get("fppg"),
+        "fppg": provenance.get("value"),
+        "stat_provenance": provenance,
         "fpts": p.get("fpts"),
         "age": p.get("age"),
         "injury": p.get("injury"),
