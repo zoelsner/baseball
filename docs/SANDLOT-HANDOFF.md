@@ -116,7 +116,7 @@ To ship the tab reduction: merge **#61 first**, then retarget/merge **#62**.
 |---|---|---|
 | `sandlot_api.py` | 510 | FastAPI app, all 12 routes, `_snapshot_payload()` (flattens snapshot for frontend), `_player_index()` |
 | `sandlot_db.py` | 595 | Postgres layer. `init_schema()`, snapshots (JSONB), `ai_briefs` cache, `get_ai_brief` / `set_ai_brief` |
-| `sandlot_skipper.py` | 619 | `SkipperClient` — OpenRouter SSE chat. Model-order helpers: `default_model_order()` (DeepSeek V4 Flash first), `primary_model()` / `fallback_model()` |
+| `sandlot_skipper.py` | 619 | `SkipperClient` — OpenRouter SSE chat. Model-order helpers: `reasoning_model_order()` (GLM 5.2 first for Skipper/value reasoning), `summary_model_order()` (DeepSeek V4 Flash first for player summaries) |
 | `sandlot_waivers.py` | 880 | Waiver-swap engine (cached-AI). Protects IL stashes from drops |
 | `sandlot_trades.py` | 362 | Trade grading (cached-AI) |
 | `sandlot_matchup.py` | ~1100 | Deterministic matchup projection (baseline, drivers, lineup-move simulation, ranked actions) |

@@ -53,8 +53,9 @@ Open `.env` and fill in:
 - `EMAIL_FROM` — your Gmail address
 - `EMAIL_TO` — where the report should go (usually the same Gmail)
 - `GMAIL_APP_PASSWORD` — the 16-char App Password from step 2
-- `OPENROUTER_API_KEY` — optional for Sandlot Skipper chat and cached player-card takes
-- `SANDLOT_AI_MODEL_PRIMARY` / `SANDLOT_AI_MODEL_FALLBACK` — optional OpenRouter model overrides for Skipper and cached waiver explanations
+- `OPENROUTER_API_KEY` — optional for Sandlot Skipper chat, cached value reasoning, and cached player-card takes
+- `SANDLOT_AI_MODEL_PRIMARY` / `SANDLOT_AI_MODEL_FALLBACK` — optional OpenRouter model overrides for lightweight player summaries
+- `SANDLOT_AI_MODEL_REASONING` — optional OpenRouter model override for Skipper chat and cached value/move reasoning; defaults to `z-ai/glm-5.2`
 
 ### 4. Install Python dependencies
 

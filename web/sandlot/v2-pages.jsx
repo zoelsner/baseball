@@ -41,12 +41,12 @@ const V2 = {
 };
 
 const V2_SKIPPER_MODELS = [
+  { id:'z-ai/glm-5.2', label:'GLM 5.2', short:'GLM 5.2' },
   { id:'deepseek/deepseek-v4-flash', label:'DeepSeek V4 Flash', short:'DS Flash' },
   { id:'moonshotai/kimi-k2', label:'Kimi K2', short:'Kimi' },
   { id:'deepseek/deepseek-v4-pro', label:'DeepSeek V4 Pro', short:'DS Pro' },
-  { id:'z-ai/glm-5.2', label:'GLM 5.2', short:'GLM 5.2' },
 ];
-const V2_SKIPPER_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash';
+const V2_SKIPPER_DEFAULT_MODEL = 'z-ai/glm-5.2';
 const V2_INACTIVE_SLOTS = ['BN', 'BE', 'BENCH', 'IL', 'IR', 'RES', 'RESERVE', 'MIN', 'MINORS'];
 const V2_BENCH_SLOTS = ['BN', 'BE', 'BENCH', 'RES', 'RESERVE', 'MIN', 'MINORS'];
 

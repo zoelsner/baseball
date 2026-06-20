@@ -395,7 +395,7 @@ def _load_or_generate_take(
         text, model = sandlot_skipper.SkipperClient().complete(
             messages,
             max_tokens=220,
-            model_order=sandlot_skipper.default_model_order(),
+            model_order=sandlot_skipper.summary_model_order(),
         )
         try:
             sandlot_db.set_player_take(fantrax_id, int(snapshot_id), text, model)
