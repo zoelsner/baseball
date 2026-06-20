@@ -1,7 +1,8 @@
 """Skipper chat — roster Q&A grounded in the latest Fantrax snapshot.
 
-Uses OpenRouter's OpenAI-compatible API. DeepSeek V4 Flash is the primary
-model; Kimi (Moonshot) is the fallback. The `for model in model_order: try ...
+Uses OpenRouter's OpenAI-compatible API. GLM is the default reasoning model;
+DeepSeek V4 Flash remains the lightweight summary model and Kimi (Moonshot) is
+the fallback. The `for model in model_order: try ...
 except: continue` loop in `SkipperClient.stream` retries the next model on any
 exception during streaming — pre-stream, mid-stream, or empty stream. Partial
 tokens from a failed primary may already be on the wire when the fallback
@@ -31,11 +32,12 @@ log = logging.getLogger(__name__)
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 PRIMARY_MODEL = "deepseek/deepseek-v4-flash"
 FALLBACK_MODEL = "moonshotai/kimi-k2"
+REASONING_MODEL = "z-ai/glm-5.2"
 ALLOWED_CHAT_MODELS = (
+    REASONING_MODEL,
     PRIMARY_MODEL,
     FALLBACK_MODEL,
     "deepseek/deepseek-v4-pro",
-    "z-ai/glm-5.2",
 )
 ALLOWED_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
 
@@ -107,23 +109,35 @@ def fallback_model() -> str:
     return os.environ.get("SANDLOT_AI_MODEL_FALLBACK", FALLBACK_MODEL).strip() or FALLBACK_MODEL
 
 
+def reasoning_model() -> str:
+    return os.environ.get("SANDLOT_AI_MODEL_REASONING", REASONING_MODEL).strip() or REASONING_MODEL
+
+
 def default_model_order() -> tuple[str, str]:
     return (primary_model(), fallback_model())
 
 
+def summary_model_order() -> tuple[str, str]:
+    return default_model_order()
+
+
+def reasoning_model_order() -> tuple[str, ...]:
+    return tuple(dict.fromkeys((reasoning_model(), primary_model(), fallback_model())))
+
+
 def allowed_chat_models() -> tuple[str, ...]:
-    configured = (primary_model(), fallback_model(), *ALLOWED_CHAT_MODELS)
+    configured = (reasoning_model(), primary_model(), fallback_model(), *ALLOWED_CHAT_MODELS)
     return tuple(dict.fromkeys(m for m in configured if m))
 
 
 def model_order(selected_model: str | None = None) -> tuple[str, ...]:
-    """Selected model first; Kimi remains the default primary fallback."""
+    """Selected model first; otherwise use the value-reasoning model order."""
     allowed = allowed_chat_models()
     selected = (selected_model or "").strip()
     ordered = []
     if selected in allowed:
         ordered.append(selected)
-    ordered.extend(default_model_order())
+    ordered.extend(reasoning_model_order())
     return tuple(dict.fromkeys(m for m in ordered if m))
 
 

@@ -250,7 +250,7 @@ def warm_latest_waiver_ai(snapshot_id: int | None = None, limit: int = CARD_LIMI
                 raw, model = client.complete(
                     _swap_messages(context),
                     max_tokens=130,
-                    model_order=sandlot_skipper.default_model_order(),
+                    model_order=sandlot_skipper.reasoning_model_order(),
                 )
                 parsed = _parse_swap_ai(raw)
                 text = json.dumps(parsed, ensure_ascii=True, sort_keys=True)
@@ -270,7 +270,7 @@ def warm_latest_waiver_ai(snapshot_id: int | None = None, limit: int = CARD_LIMI
                 text, model = client.complete(
                     _refresh_messages(refresh_context),
                     max_tokens=260,
-                    model_order=sandlot_skipper.default_model_order(),
+                    model_order=sandlot_skipper.reasoning_model_order(),
                 )
                 sandlot_db.set_ai_brief(sid, BRIEF_TYPE_REFRESH, REFRESH_SUBJECT, text.strip(), model, refresh_hash)
                 generated += 1
