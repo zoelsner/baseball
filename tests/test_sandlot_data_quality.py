@@ -101,6 +101,36 @@ class SnapshotDataQualityTests(unittest.TestCase):
         self.assertEqual(quality["fppg"]["covered_players"], 1)
         self.assertFalse(quality["projection_ready"])
 
+    def test_inferred_cells_fppg_is_not_recommendations_ready(self):
+        snapshot = good_snapshot()
+        row = snapshot["roster"]["rows"][0]
+        row.pop("fppg")
+        row["stats"] = {"_cells": ["688", "", "27", "140.0", "12.1", "12%"]}
+
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+        self.assertEqual(quality["fppg"]["covered_players"], 2)
+        self.assertEqual(quality["stat_provenance"]["state"], "partial")
+        self.assertEqual(quality["stat_provenance"]["counts"]["inferred_cells"], 1)
+        self.assertFalse(quality["projection_ready"])
+        self.assertFalse(quality["recommendations_ready"])
+
+    def test_free_agent_stat_provenance_counts_cells_inferred_rows(self):
+        snapshot = good_snapshot()
+        snapshot["free_agents"] = {
+            "players": [
+                {"id": "fa1", "name": "Labeled FA", "stats": {"FP/G": 3.3}},
+                {"id": "fa2", "name": "Cells FA", "stats": {"_cells": ["688", "", "27", "140.0", "12.1", "12%"]}},
+                {"id": "fa3", "name": "Missing FA", "stats": {}},
+            ]
+        }
+
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+        self.assertEqual(quality["free_agent_stat_provenance"]["counts"]["labeled_fpg"], 1)
+        self.assertEqual(quality["free_agent_stat_provenance"]["counts"]["inferred_cells"], 1)
+        self.assertEqual(quality["free_agent_stat_provenance"]["counts"]["missing"], 1)
+
     def test_missing_position_marks_recommendations_not_ready(self):
         snapshot = good_snapshot()
         snapshot["roster"]["rows"][0].pop("positions")

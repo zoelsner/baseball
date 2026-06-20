@@ -289,6 +289,7 @@ def _add_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
     fpg, source, true_fpg = _extract_add_fpg(stats)
     if fpg is None:
         return None
+    provenance = sandlot_data_quality.stat_provenance(row)
     tokens = _position_tokens(row)
     return {
         "id": str(row.get("id") or _slug(row.get("name") or "free-agent")),
@@ -300,6 +301,7 @@ def _add_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
         "fpg": round(fpg, 2),
         "score_source": source,
         "true_fpg": true_fpg,
+        "stat_provenance": provenance,
         "raw": row,
     }
 
@@ -428,6 +430,8 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
             "age": add["age"],
             "fpg": round(float(add["fpg"]), 1),
             "score_source": add["score_source"],
+            "stat_provenance": add["stat_provenance"],
+            "execution_ready": bool(add["true_fpg"]),
         },
         "move_out": {
             "id": move["id"],

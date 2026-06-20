@@ -9,17 +9,21 @@ def future_game(day=14):
     return {"date": f"2026-05-{day:02d}"}
 
 
-def player(pid, name, *, slot, positions, fppg, team="T", age=28):
-    return {
+def player(pid, name, *, slot, positions, fppg=2.0, team="T", age=28, stats=None):
+    row = {
         "id": pid,
         "name": name,
         "slot": slot,
         "positions": positions,
         "team": team,
-        "fppg": fppg,
         "age": age,
         "future_games": [future_game()],
     }
+    if fppg is not None:
+        row["fppg"] = fppg
+    if stats is not None:
+        row["stats"] = stats
+    return row
 
 
 def trade_snapshot():
@@ -98,6 +102,34 @@ class TradeCounterTests(unittest.TestCase):
         self.assertEqual(result["my_delta"], -0.5)
         self.assertEqual(result["counters"], [])
         self.assertIn("Counter guidance paused", result["no_counter_reason"])
+
+    def test_trade_grade_flags_cells_inferred_value_confidence(self):
+        snapshot = trade_snapshot()
+        snapshot["data"]["all_team_rosters"]["opp"]["rows"][0] = player(
+            "o1",
+            "Their Outfielder",
+            slot="OF",
+            positions="OF",
+            fppg=None,
+            team="OPP",
+            age=30,
+            stats={"_cells": ["688", "", "27", "140.0", "12.1", "12%"]},
+        )
+
+        with patch.object(
+            sandlot_trades,
+            "_load_or_generate_rationale",
+            return_value=("Deterministic grade rationale.", "", False),
+        ):
+            result = sandlot_trades.grade_offer(snapshot, ["m1"], ["o1"])
+
+        self.assertEqual(result["my_delta"], 10.1)
+        self.assertEqual(result["value_confidence"]["level"], "low")
+        self.assertFalse(result["value_confidence"]["trusted_for_value"])
+        self.assertIn("scouting lead", result["value_confidence"]["warning"])
+        self.assertEqual(result["my_get"][0]["stat_provenance"]["source_type"], "inferred_cells")
+        self.assertEqual(result["counters"], [])
+        self.assertIn("inferred or missing FP/G", result["no_counter_reason"])
 
     def test_counter_rationale_cache_uses_hashed_counter_subject(self):
         counters = [{
