@@ -267,3 +267,27 @@ to the center of the bottom nav, verify the app path, review, and commit.
   text.
 - Local smoke against the same server mounts the app but fails its no-console
   assertion because `/api/snapshot/latest` returns 503 without `DATABASE_URL`.
+
+---
+
+## 11. In-flight progress: make-interfaces-feel-better skill trial
+
+**Goal (2026-06-21):** try the newly installed
+`make-interfaces-feel-better` skill on Sandlot with a focused polish pass for
+the recently touched bottom nav and waiver Trust notes surfaces, then rebuild,
+verify, review, and commit separately.
+
+**Loop notes:**
+- Skill installed at workspace level:
+  `.agents/skills/make-interfaces-feel-better`.
+- Applying only low-risk principles that fit the current inline-style UI:
+  root font smoothing, transform-only press feedback, minimum hit areas, pretty
+  text wrapping, and more deliberate nested Trust notes surface treatment.
+
+**Verification status:**
+- `npm run build:sandlot` passes and regenerated `web/sandlot/app.js`.
+- Local Playwright against `http://127.0.0.1:8765` passes for the mocked waiver
+  card flow.
+- Browser style probe confirms bottom-nav buttons have 44px minimum hit areas,
+  waiver action buttons have 40px minimum hit areas, the press transition is
+  transform-only, and the Trust notes inset ring/radius are applied.

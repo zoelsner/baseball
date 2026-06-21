@@ -10,8 +10,21 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Source+Serif+4:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <style>
   html, body { margin:0; padding:0; height:100%; background:#0b0c0e; }
+  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
   * { box-sizing: border-box; }
-  body { font-family: 'Inter', system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; }
+  body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+  button { -webkit-tap-highlight-color: transparent; }
+  button:not(:disabled) {
+    transition-property: transform;
+    transition-duration: 120ms;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+  button:not(:disabled):active { transform: scale(0.96); }
+
+  @media (prefers-reduced-motion: reduce) {
+    button:not(:disabled) { transition-duration: 0ms; }
+    button:not(:disabled):active { transform: none; }
+  }
 
   /* Mobile: full-bleed app */
   #stage { width:100%; height:100%; display:flex; align-items:center; justify-content:center; }

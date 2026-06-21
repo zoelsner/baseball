@@ -502,6 +502,7 @@ function V2TabBar({ page, setPage }) {
             flex:1, background:'none', border:'none', padding:'8px 4px',
             display:'flex', flexDirection:'column', alignItems:'center', gap:5,
             color: active ? V2.ink : V2.muted, cursor:'pointer', fontFamily:'inherit',
+            minHeight:44,
           }}>
             {it.icon(active ? V2.ink : V2.muted, 17)}
             <div style={{ fontSize:9.5, fontWeight: active ? 700 : 500 }}>{it.label}</div>
@@ -1637,8 +1638,8 @@ function V2WaiverState({ eyebrow, title, body, tone='accent', compact=false }) {
     <div style={{ padding:compact?'0':'4px 16px 32px' }}>
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:compact?14:18 }}>
         <V2Eyebrow color={color}>{eyebrow}</V2Eyebrow>
-        <div style={{ fontSize:compact?16:20, fontWeight:700, fontFamily:V2.fontDisplay, marginTop:8 }}>{title}</div>
-        <div style={{ fontSize:13, color:V2.muted, lineHeight:1.5, marginTop:6 }}>{body}</div>
+        <div style={{ fontSize:compact?16:20, fontWeight:700, fontFamily:V2.fontDisplay, marginTop:8, textWrap:'balance' }}>{title}</div>
+        <div style={{ fontSize:13, color:V2.muted, lineHeight:1.5, marginTop:6, textWrap:'pretty' }}>{body}</div>
       </div>
     </div>
   );
@@ -1683,10 +1684,10 @@ function V2WaiverSwapCard({ card, onOpenPlayer, onAskSkipper }) {
         <V2ReasonLine color={V2.warn} label="Risk" text={card.risk}/>
         {card.dynasty_note && <V2ReasonLine color={V2.muted} label="Dynasty" text={card.dynasty_note}/>}
         {card.confidence_reasons?.length > 0 && (
-          <div style={{ background:V2.surface2, borderRadius:12, padding:'10px 11px', display:'flex', flexDirection:'column', gap:6 }}>
+          <div style={{ background:V2.surface2, borderRadius:13, padding:'11px 12px', display:'flex', flexDirection:'column', gap:7, boxShadow:'inset 0 0 0 1px rgba(15, 23, 42, 0.05)' }}>
             <V2Eyebrow color={V2.muted}>Trust notes</V2Eyebrow>
             {card.confidence_reasons.slice(0,3).map((reason, i) => (
-              <div key={i} style={{ fontSize:11.8, color:V2.body, lineHeight:1.4, fontWeight:650 }}>
+              <div key={i} style={{ fontSize:11.8, color:V2.body, lineHeight:1.45, fontWeight:650, textWrap:'pretty' }}>
                 {reason}
               </div>
             ))}
@@ -1698,17 +1699,17 @@ function V2WaiverSwapCard({ card, onOpenPlayer, onAskSkipper }) {
         <button onClick={()=>onOpenPlayer?.(add.id)} disabled={!onOpenPlayer || !add.id} style={{
           flex:'1 1 130px', background:V2.ink, color:'#fff', border:'none', padding:'11px 14px',
           borderRadius:999, fontSize:12.5, fontWeight:800, cursor:onOpenPlayer && add.id ? 'pointer' : 'default',
-          fontFamily:'inherit',
+          fontFamily:'inherit', minHeight:40,
         }}>Review swap</button>
         <button onClick={()=>onAskSkipper?.(v2BuildSwapSkipperPrompt(card))} style={{
           flex:'1 1 150px', display:'flex', alignItems:'center', justifyContent:'center', gap:7,
           background:V2.accentSoft, color:V2.accent, border:'none', padding:'11px 14px',
-          borderRadius:999, fontSize:12.5, fontWeight:800, cursor:'pointer', fontFamily:'inherit',
+          borderRadius:999, fontSize:12.5, fontWeight:800, cursor:'pointer', fontFamily:'inherit', minHeight:40,
         }}>{Icons.chat(V2.accent, 14)} Continue in Skipper</button>
         <button onClick={()=>onOpenPlayer?.(out.id)} disabled={!onOpenPlayer || !out.id} style={{
           flex:'0 0 auto', background:V2.surface2, color:V2.body, border:'none', padding:'11px 13px',
           borderRadius:999, fontSize:12, fontWeight:800, cursor:onOpenPlayer && out.id ? 'pointer' : 'default',
-          fontFamily:'inherit',
+          fontFamily:'inherit', minHeight:40,
         }}>Roster player</button>
       </div>
     </div>
@@ -1735,7 +1736,7 @@ function V2ReasonLine({ color, label, text }) {
   return (
     <div style={{ display:'flex', gap:9, alignItems:'flex-start' }}>
       <div style={{ width:6, height:6, borderRadius:'50%', background:color, marginTop:7, flexShrink:0 }}/>
-      <div style={{ fontSize:12.8, color:V2.body, lineHeight:1.5 }}>
+      <div style={{ fontSize:12.8, color:V2.body, lineHeight:1.5, textWrap:'pretty' }}>
         <span style={{ color, fontWeight:800 }}>{label}. </span>{text}
       </div>
     </div>
