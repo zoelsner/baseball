@@ -38,6 +38,11 @@ ALLOWED_CHAT_MODELS = (
     "z-ai/glm-5.2",
 )
 ALLOWED_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
+WEB_SEARCH_TOOL_TYPE = "openrouter:web_search"
+WEB_SEARCH_MAX_RESULTS = 4
+WEB_SEARCH_MAX_TOTAL_RESULTS = 8
+TRUE_VALUES = {"1", "true", "yes", "on"}
+FALSE_VALUES = {"0", "false", "no", "off"}
 
 # Keywords that escalate to tier 3 (load every team's roster). Kept short so
 # we err toward tier 2 — tier 3 is ~10x larger context.
@@ -98,6 +103,18 @@ Rules:
 
 Be brief by default — most answers are 1-4 sentences. When the user explicitly asks for depth (e.g. "deep", "thorough", "in-depth", "analysis", "slot by slot"), expand into a structured breakdown using bulleted markdown: lead with a one-sentence read, then 4-8 bullets covering opponent threats, your edges, injury / streak factors, and any specific players to start or sit. Stay grounded in the snapshot."""
 
+WEB_FALLBACK_PROMPT = """Web fallback is enabled for this request.
+
+Use the web_search tool only when the snapshot lacks requested public MLB data, such as a player not present in the snapshot, free-agent season stats, recent performance, injury/news context, age, team, or role. Do not search when the snapshot already answers the question.
+
+Keep Fantrax snapshot data authoritative for league-specific facts: roster slot, roster ownership, free-agent availability, Sandlot/Fantrax FP/G, projected deltas, matchup score, and waiver-card confidence. Web results may supplement those gaps but must not override them.
+
+When you use web results, make the source boundary clear:
+- State what came from the snapshot.
+- State what came from the web.
+- Include source names or links for web-backed claims.
+- If web results do not verify the missing fact, say that plainly and keep the recommendation conservative."""
+
 
 def primary_model() -> str:
     return os.environ.get("SANDLOT_AI_MODEL_PRIMARY", PRIMARY_MODEL).strip() or PRIMARY_MODEL
@@ -134,6 +151,48 @@ def normalize_reasoning_effort(reasoning_effort: str | None) -> str | None:
     if effort in ALLOWED_REASONING_EFFORTS:
         return effort
     return "medium"
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    val = raw.strip().lower()
+    if val in TRUE_VALUES:
+        return True
+    if val in FALSE_VALUES:
+        return False
+    return default
+
+
+def web_search_available() -> bool:
+    if _env_bool("SANDLOT_SKIPPER_WEB_SEARCH_DISABLED", default=False):
+        return False
+    return _env_bool("SANDLOT_SKIPPER_WEB_SEARCH_AVAILABLE", default=True)
+
+
+def web_search_default_enabled() -> bool:
+    """Default to on, but keep availability and default state separate."""
+    if not web_search_available():
+        return False
+    return _env_bool("SANDLOT_SKIPPER_WEB_SEARCH_DEFAULT_ENABLED", default=True)
+
+
+def web_search_tool() -> dict[str, Any]:
+    return {
+        "type": WEB_SEARCH_TOOL_TYPE,
+        "parameters": {
+            "engine": "auto",
+            "max_results": WEB_SEARCH_MAX_RESULTS,
+            "max_total_results": WEB_SEARCH_MAX_TOTAL_RESULTS,
+            "search_context_size": "low",
+            "excluded_domains": ["reddit.com"],
+        },
+    }
+
+
+def web_search_allowed(requested: bool) -> bool:
+    return bool(requested) and web_search_available()
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +721,8 @@ def build_messages(
     history: list[dict[str, Any]],
     user_msg: str,
     context_block: str,
+    *,
+    web_search: bool = False,
 ) -> list[dict[str, str]]:
     """Compose the final request payload.
 
@@ -672,6 +733,8 @@ def build_messages(
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "system", "content": context_block},
     ]
+    if web_search:
+        msgs.append({"role": "system", "content": WEB_FALLBACK_PROMPT})
     for row in history:
         role = row.get("role")
         content = row.get("content")
@@ -712,7 +775,8 @@ class SkipperClient:
         *,
         model_order: tuple[str, ...] | None = None,
         reasoning_effort: str | None = None,
-    ) -> Iterator[tuple[str, str]]:
+        web_search: bool = False,
+    ) -> Iterator[tuple[str, Any]]:
         """Yield ('token', text) chunks plus a final ('model', model_id) once.
 
         Tries the environment-configured primary model first. On *any* exception
@@ -726,19 +790,29 @@ class SkipperClient:
         """
         failures: list[str] = []
         extra_body = _reasoning_extra_body(reasoning_effort)
+        web_tool_attempted = False
         for model in (model_order or default_model_order()):
             try:
+                attach_web_tool = web_search and not web_tool_attempted
                 kwargs = {
                     "model": model,
                     "messages": messages,
                     "stream": True,
                     "temperature": 0.3,
                 }
+                if attach_web_tool:
+                    kwargs["tools"] = [web_search_tool()]
+                    web_tool_attempted = True
                 if extra_body:
                     kwargs["extra_body"] = extra_body
                 stream = self.client.chat.completions.create(**kwargs)
                 yielded_any = False
                 for chunk in stream:
+                    for source in _extract_url_citations(chunk):
+                        yield ("source", source)
+                    requests = _extract_web_search_requests(chunk)
+                    if requests:
+                        yield ("web_search_requests", requests)
                     try:
                         delta = chunk.choices[0].delta
                     except (AttributeError, IndexError):
@@ -754,7 +828,12 @@ class SkipperClient:
                 log.warning("Skipper model %s returned no tokens; trying fallback", model)
             except Exception as e:
                 failures.append(f"{model}: {type(e).__name__}: {e}")
-                log.warning("Skipper model %s failed: %s; trying fallback", model, e)
+                log.warning(
+                    "Skipper model %s failed%s: %s; trying fallback",
+                    model,
+                    " with web search tool" if attach_web_tool else "",
+                    e,
+                )
                 continue
         raise RuntimeError("All Skipper models failed: " + " | ".join(failures))
 
@@ -765,6 +844,7 @@ class SkipperClient:
         max_tokens: int = 220,
         model_order: tuple[str, ...] | None = None,
         reasoning_effort: str | None = None,
+        web_search: bool = False,
     ) -> tuple[str, str]:
         """Return a single completion plus the model id, using the stream fallback order.
 
@@ -773,8 +853,10 @@ class SkipperClient:
         """
         failures: list[str] = []
         extra_body = _reasoning_extra_body(reasoning_effort)
+        web_tool_attempted = False
         for model in (model_order or default_model_order()):
             try:
+                attach_web_tool = web_search and not web_tool_attempted
                 kwargs = {
                     "model": model,
                     "messages": messages,
@@ -782,6 +864,9 @@ class SkipperClient:
                     "temperature": 0.3,
                     "max_tokens": max_tokens,
                 }
+                if attach_web_tool:
+                    kwargs["tools"] = [web_search_tool()]
+                    web_tool_attempted = True
                 if extra_body:
                     kwargs["extra_body"] = extra_body
                 response = self.client.chat.completions.create(**kwargs)
@@ -796,7 +881,12 @@ class SkipperClient:
                 log.warning("Skipper model %s returned no text; trying fallback", model)
             except Exception as e:
                 failures.append(f"{model}: {type(e).__name__}: {e}")
-                log.warning("Skipper model %s failed: %s; trying fallback", model, e)
+                log.warning(
+                    "Skipper model %s failed%s: %s; trying fallback",
+                    model,
+                    " with web search tool" if attach_web_tool else "",
+                    e,
+                )
                 continue
         raise RuntimeError("All Skipper models failed: " + " | ".join(failures))
 
@@ -806,3 +896,48 @@ def _reasoning_extra_body(reasoning_effort: str | None) -> dict[str, Any] | None
     if not effort:
         return None
     return {"reasoning": {"effort": effort, "exclude": True}}
+
+
+def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _extract_url_citations(obj: Any) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+
+    def collect_annotations(container: Any) -> None:
+        annotations = _obj_get(container, "annotations") or []
+        for ann in annotations:
+            if _obj_get(ann, "type") != "url_citation":
+                continue
+            citation = _obj_get(ann, "url_citation") or {}
+            url = _obj_get(citation, "url")
+            if not url:
+                continue
+            sources.append({
+                "url": url,
+                "title": _obj_get(citation, "title") or url,
+                "content": _obj_get(citation, "content") or "",
+                "start_index": _obj_get(citation, "start_index"),
+                "end_index": _obj_get(citation, "end_index"),
+            })
+
+    collect_annotations(obj)
+    for choice in _obj_get(obj, "choices") or []:
+        collect_annotations(choice)
+        collect_annotations(_obj_get(choice, "delta") or {})
+        collect_annotations(_obj_get(choice, "message") or {})
+    return sources
+
+
+def _extract_web_search_requests(obj: Any) -> int | None:
+    usage = _obj_get(obj, "usage") or {}
+    server_tool_use = _obj_get(usage, "server_tool_use") or {}
+    requests = _obj_get(server_tool_use, "web_search_requests")
+    try:
+        parsed = int(requests)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None

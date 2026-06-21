@@ -26,7 +26,6 @@ import sandlot_matchup
 import sandlot_skipper
 import sandlot_trades
 import sandlot_waivers
-from sandlot_refresh import run_refresh
 
 log = logging.getLogger(__name__)
 
@@ -131,6 +130,8 @@ def attention_queue() -> dict[str, Any]:
 
 @app.post("/api/refresh")
 def refresh(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    from sandlot_refresh import run_refresh
+
     _require_refresh_token(request)
     result = run_refresh(source="manual")
     row = sandlot_db.latest_successful_snapshot()
@@ -229,6 +230,7 @@ class SkipperMessageIn(BaseModel):
     model: str | None = Field(default=None, max_length=120)
     reasoning: bool = False
     reasoning_effort: str | None = Field(default=None, max_length=20)
+    web_search: bool = True
 
 
 @app.get("/api/skipper/options")
@@ -245,6 +247,11 @@ def skipper_options() -> dict[str, Any]:
             "default_enabled": False,
             "default_effort": "medium",
             "efforts": ["minimal", "low", "medium", "high"],
+        },
+        "web_search": {
+            "available": sandlot_skipper.web_search_available(),
+            "default_enabled": sandlot_skipper.web_search_default_enabled(),
+            "tool": sandlot_skipper.WEB_SEARCH_TOOL_TYPE,
         },
     }
 
@@ -362,9 +369,10 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
 
     snapshot = _snapshot_payload(snapshot_row)
     tier = sandlot_skipper.detect_tier(user_text, snapshot)
+    use_web_search = sandlot_skipper.web_search_allowed(payload.web_search)
     context_block = sandlot_skipper.build_context(tier, snapshot, prompt=user_text)
     history = sandlot_db.list_chat_messages(session_id)
-    messages = sandlot_skipper.build_messages(history, user_text, context_block)
+    messages = sandlot_skipper.build_messages(history, user_text, context_block, web_search=use_web_search)
     deterministic_reply = sandlot_skipper.deterministic_reply(user_text, snapshot)
     selected_model = payload.model
     model_order = sandlot_skipper.model_order(selected_model)
@@ -390,6 +398,7 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
                 "model": "deterministic",
                 "selected_model": selected_model,
                 "reasoning": bool(reasoning_effort),
+                "web_search": False,
             })
             return
 
@@ -401,17 +410,29 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
             return
 
         assistant_buf: list[str] = []
+        sources_by_url: dict[str, dict[str, Any]] = {}
+        web_search_requests = 0
         used_model: str | None = None
         try:
             for kind, payload_text in client.stream(
                 messages,
                 model_order=model_order,
                 reasoning_effort=reasoning_effort,
+                web_search=use_web_search,
             ):
                 if kind == "token":
                     assistant_buf.append(payload_text)
                 elif kind == "model":
                     used_model = payload_text
+                elif kind == "source" and isinstance(payload_text, dict):
+                    url = str(payload_text.get("url") or "")
+                    if url and url not in sources_by_url:
+                        sources_by_url[url] = payload_text
+                elif kind == "web_search_requests":
+                    try:
+                        web_search_requests = max(web_search_requests, int(payload_text))
+                    except (TypeError, ValueError):
+                        pass
         except Exception as exc:
             log.exception("Skipper stream failed")
             yield _sse({"type": "error", "message": str(exc)})
@@ -426,12 +447,18 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
                 )
             except Exception as exc:
                 log.exception("Failed to persist assistant message")
+        sources = list(sources_by_url.values())
+        if sources:
+            yield _sse({"type": "sources", "sources": sources})
         yield _sse({
             "type": "done",
             "tier": tier,
             "model": used_model,
             "selected_model": selected_model,
             "reasoning": bool(reasoning_effort),
+            "web_search_requested": use_web_search,
+            "web_search": bool(sources or web_search_requests),
+            "web_search_requests": web_search_requests,
         })
 
     return StreamingResponse(

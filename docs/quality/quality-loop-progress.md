@@ -11,6 +11,33 @@
 - Noted Phase 2 watchlist items while inventorying:
   bottom nav order versus desired Skipper placement, hidden Settings reachability,
   and the Trade grade CTA visual disabled affordance.
+- Added a Second-Opinion Gate to the loop: before API/data-model/security/model
+  tool-calling design hardens, run `claude -p` with a skeptical senior-review
+  prompt and record accepted/rejected findings.
+- Added reusable prompt template `docs/quality/second-opinion-gate.md` so the
+  gate applies to future features, refactors, APIs, model tools, migrations,
+  and architecture changes.
+- Added a trial prompt for this project at
+  `docs/quality/second-opinion/skipper-web-fallback-2026-06-21.md`.
+
+## Second-Opinion Gate Notes
+
+- 2026-06-21: Attempted to locate `claude` for the Skipper web-search fallback
+  API/tool-calling design. No `claude` binary was available on PATH or in the
+  usual local install paths from this Codex shell, so the external gate has not
+  run yet.
+- Until `claude -p` is available, use the same prompt as an internal red-team
+  review and mark the design as internally reviewed only.
+- 2026-06-21: Installed/authenticated Claude Code on the machine and ran the
+  external gate for Skipper web fallback with `~/.local/bin/claude -p`.
+  Result captured in
+  `docs/quality/second-opinion/skipper-web-fallback-2026-06-21-result.md`.
+  Accepted findings changed the design to render real URL citation sources,
+  split web-search availability/default state, avoid duplicate web-tool spend
+  on fallback retries, and add tests for those behaviors.
+- 2026-06-21: Implemented the Skipper nav move and Skipper web fallback after
+  the second-opinion gate. Updated tracker rows `APP-004` and `SKP-009` with
+  local unit/browser evidence.
 
 ## Next Loop Phase
 

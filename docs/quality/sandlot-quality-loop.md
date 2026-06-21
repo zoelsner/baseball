@@ -51,6 +51,33 @@ For each feature, record:
 Do not invent new requirements in this phase. Expected behavior comes from the
 code, docs, and existing tests.
 
+### Second-Opinion Gate
+
+Before implementing a new API contract, data model, auth/security boundary,
+migration, model tool-calling flow, or cross-module architecture, get an
+independent skeptical review with `claude -p`.
+
+Use this command shape:
+
+```text
+claude -p "$(cat docs/quality/second-opinion-gate.md)"
+```
+
+Copy `docs/quality/second-opinion-gate.md` to a task-specific prompt when the
+design needs concrete codebase context, then run `claude -p` on that file.
+
+Do not send secrets, tokens, cookies, private production data, or unnecessary
+proprietary context to the reviewer. Record the gate in the progress log or PR:
+
+- whether `claude -p` ran
+- reviewer findings accepted
+- reviewer findings rejected and why
+- design changes made before implementation
+
+If `claude -p` is unavailable, record that explicitly and run the same prompt as
+an internal red-team review before continuing. Do not describe the design as
+externally reviewed until the command actually runs.
+
 ### Phase 2: Test Every Story
 
 Test each row against the real app where possible. Use:

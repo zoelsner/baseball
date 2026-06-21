@@ -100,9 +100,14 @@ function v2NormalizeSkipperOptions(payload) {
           short: String(m.short || m.label || m.id),
         }))
     : [];
+  const webSearch = payload?.web_search || {};
   return {
     defaultModel: payload?.default_model || V2_SKIPPER_DEFAULT_MODEL,
     models: models.length ? models : V2_SKIPPER_MODELS,
+    webSearch: {
+      defaultEnabled: webSearch.default_enabled !== false,
+      available: webSearch.available !== false,
+    },
   };
 }
 
@@ -488,9 +493,9 @@ function V2TabBar({ page, setPage }) {
   const items = [
     { id:'today',  label:'Today',   icon:Icons.home },
     { id:'roster', label:'Roster',  icon:Icons.list },
+    { id:'skipper',label:'Skipper', icon:Icons.sparkle },
     { id:'fa',     label:'Adds',    icon:Icons.spark },
     { id:'league', label:'League',  icon:Icons.diamond },
-    { id:'skipper',label:'Skipper', icon:Icons.sparkle },
   ];
   return (
     <div style={{ display:'flex', borderTop:`1px solid ${V2.hairline}`, background:V2.surface, paddingBottom:18, paddingTop:8 }}>
@@ -3038,9 +3043,11 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
   const [modelOptions, setModelOptions] = React.useState({
     defaultModel: V2_SKIPPER_DEFAULT_MODEL,
     models: V2_SKIPPER_MODELS,
+    webSearch: { defaultEnabled:true, available:true },
   });
   const [chatModel, setChatModel] = React.useState(V2_SKIPPER_DEFAULT_MODEL);
   const [reasoning, setReasoning] = React.useState(false);
+  const [webFallback, setWebFallback] = React.useState(true);
   const scrollRef = React.useRef(null);
 
   const playerNameIndex = React.useMemo(
@@ -3056,6 +3063,8 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
     [playerNameIndex, fallbackRe, onOpenPlayer],
   );
   const activeModel = modelOptions.models.find(m => m.id === chatModel) || modelOptions.models[0] || V2_SKIPPER_MODELS[0];
+  const webSearchAvailable = modelOptions.webSearch?.available !== false;
+  const webSearchEnabled = webSearchAvailable && webFallback;
 
   const updateChatModel = React.useCallback((next) => {
     setChatModel(next);
@@ -3074,6 +3083,7 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
         const options = v2NormalizeSkipperOptions(data);
         setModelOptions(options);
         setChatModel(current => options.models.some(m => m.id === current) ? current : options.defaultModel);
+        setWebFallback(options.webSearch.defaultEnabled && options.webSearch.available);
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -3146,6 +3156,7 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
           model: chatModel,
           reasoning,
           reasoning_effort: reasoning ? 'medium' : null,
+          web_search: webSearchEnabled,
         }),
       });
       if (!resp.ok || !resp.body) {
@@ -3175,6 +3186,21 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
               const next = m.slice();
               const last = next[next.length - 1];
               next[next.length - 1] = { ...last, text: (last.text || '') + evt.text };
+              return next;
+            });
+          } else if (evt.type === 'sources' && Array.isArray(evt.sources)) {
+            setMsgs(m => {
+              if (!m.length) return m;
+              const next = m.slice();
+              const last = next[next.length - 1] || {};
+              const seen = new Set((last.sources || []).map(s => s.url).filter(Boolean));
+              const sources = [...(last.sources || [])];
+              for (const source of evt.sources) {
+                if (!source?.url || seen.has(source.url)) continue;
+                seen.add(source.url);
+                sources.push(source);
+              }
+              next[next.length - 1] = { ...last, sources };
               return next;
             });
           } else if (evt.type === 'error') {
@@ -3244,12 +3270,23 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
             border:`1px solid ${reasoning ? V2.accent : V2.hairline}`,
             background:reasoning ? V2.accentSoft : V2.surface,
             color:reasoning ? V2.accent : V2.body,
-            borderRadius:999, padding:'7px 11px', cursor:streaming ? 'not-allowed' : 'pointer',
+            borderRadius:999, minHeight:40, padding:'8px 12px', cursor:streaming ? 'not-allowed' : 'pointer',
             opacity:streaming ? 0.65 : 1, fontFamily:'inherit',
           }}>
             <span style={{ width:7, height:7, borderRadius:'50%', background:reasoning ? V2.accent : V2.muted }}/>
             <span style={{ fontSize:11.5, fontWeight:800 }}>Reasoning {reasoning ? 'on' : 'off'}</span>
           </button>
+          {webSearchAvailable && <button type="button" aria-pressed={webSearchEnabled} onClick={()=>setWebFallback(v=>!v)} disabled={streaming} title="Allow Skipper to search public web sources when snapshot data is missing" style={{
+            flexShrink:0, display:'flex', alignItems:'center', gap:7,
+            border:`1px solid ${webSearchEnabled ? V2.accent : V2.hairline}`,
+            background:webSearchEnabled ? V2.accentSoft : V2.surface,
+            color:webSearchEnabled ? V2.accent : V2.body,
+            borderRadius:999, minHeight:40, padding:'8px 12px', cursor:streaming ? 'not-allowed' : 'pointer',
+            opacity:streaming ? 0.65 : 1, fontFamily:'inherit',
+          }}>
+            <span style={{ width:7, height:7, borderRadius:'50%', background:webSearchEnabled ? V2.accent : V2.muted }}/>
+            <span style={{ fontSize:11.5, fontWeight:800 }}>Web fallback {webSearchEnabled ? 'on' : 'off'}</span>
+          </button>}
           <div style={{ flexShrink:0, color:V2.muted, fontSize:10.5, fontWeight:700 }}>
             {activeModel.label}
           </div>
@@ -3347,6 +3384,28 @@ function V2Bubble({ m, renderText, matchup, dataQuality }) {
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, color:V2.ink, padding:'10px 13px', borderRadius:'14px 14px 14px 4px', fontSize:13.5, maxWidth:'92%', lineHeight:1.5 }}>
         {showProjectionCard && <V2MatchupProjectionCard matchup={matchup} dataQuality={dataQuality}/>}
         {body}
+        <V2WebSources sources={m.sources}/>
+      </div>
+    </div>
+  );
+}
+
+function V2WebSources({ sources }) {
+  const list = (sources || []).filter(s => s?.url).slice(0, 4);
+  if (!list.length) return null;
+  return (
+    <div style={{ marginTop:10, paddingTop:9, borderTop:`1px solid ${V2.hairline2}` }}>
+      <div style={{ fontSize:10, color:V2.muted, fontWeight:900, letterSpacing:'0.08em', textTransform:'uppercase' }}>Web sources</div>
+      <div style={{ marginTop:6, display:'flex', flexDirection:'column', gap:5 }}>
+        {list.map((source, index) => (
+          <a key={`${source.url}-${index}`} href={source.url} target="_blank" rel="noreferrer" style={{
+            display:'block', color:V2.accent, fontSize:12, lineHeight:1.3,
+            fontWeight:800, textDecoration:'none', overflow:'hidden', textOverflow:'ellipsis',
+            whiteSpace:'nowrap',
+          }}>
+            {source.title || source.url}
+          </a>
+        ))}
       </div>
     </div>
   );
