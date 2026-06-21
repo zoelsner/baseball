@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-11** (after the first manual executor test run).
+> Last updated: **2026-06-21** (after Attention Queue swap-flow plan review).
 
 ## Where things stand
 
@@ -9,14 +9,24 @@
 - **Executor [PR #63](https://github.com/zoelsner/baseball/pull/63) (draft):** reviewed, rebased onto main, CI green. First manual test run (2026-06-10): **all five deterministic guards PASS against prod, zero unintended writes** — but the Selenium layer failed safe (`player_row_not_found`) and needs a click-flow rewrite against the real Fantrax DOM. The DOM map (row anchor = headshot URL `hs{player_id}_`, two-click `lineup-btn` slot model, `remove`/`swap_horiz` icon actions) is in the PR comments.
 - **Blocker — [#67](https://github.com/zoelsner/baseball/issues/67):** snapshot `slot` is the player's *position*, not their lineup slot (raw scrape never had it). Attention queue / roster health / waiver IL-protection all compute on wrong slots. Live truth as of 2026-06-10: Skubal + Woodruff already IR-stashed; **only Judge is IR in an active slot**; Condon/Montes are in dynasty `Min` slots (protected prospects).
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
+- **Attention swap-flow plan (2026-06-21):** Claude Opus/xhigh reviewed the
+  proposed one-click swap loop and found #67 is a content blocker, not merely an
+  execution blocker. First safe slice is now: fix/gate real lineup-slot
+  reliability, then render a lineup-only replacement swap card from the existing
+  `/api/attention` replacement item. Waiver/add-drop recommendations stay off
+  until #67 and add/drop guards land.
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 
 1. **Fix #67** — find the real lineup-slot source (check fantraxapi for ignored roster sections/status; else read `lineup-btn` text from the roster DOM during the existing scrape session). Treat `Min` as reserved alongside IL/IR everywhere. Cloud-friendly work.
-2. **Rework #63's Selenium flows** against the DOM map on the PR. Add the hard guard: refuse `drop_player` for `Min`/IL-slot players. Cloud-friendly to write; not to test.
-3. **Re-run write scenarios (3/5/6/7b) locally, headful, with Zach watching.** Judge is the real IL-move target. Local-only — needs Mac + Fantrax creds.
-4. **Set Railway tokens**, verify 503→401 behavior by curl.
-5. **Merge #63, wire Zo** — phase 1 vocabulary only (`move_to_il`, `change_slot`). One real end-to-end loop (queue → Telegram → yes → executed → `action_logs` row) closes #66.
+2. **Build the lineup-only Attention Queue swap card** — after #67 is fixed or
+   a reliable slot-quality gate exists, enrich the existing `replacement` item
+   with out -> in context, deterministic outlook, blocked/proposal state, and safe
+   "Propose swap" / "Deep research" CTAs. Do not surface waiver add/drop here.
+3. **Rework #63's Selenium flows** against the DOM map on the PR. Add the hard guard: refuse `drop_player` for `Min`/IL-slot players. Cloud-friendly to write; not to test.
+4. **Re-run write scenarios (3/5/6/7b) locally, headful, with Zach watching.** Judge is the real IL-move target. Local-only — needs Mac + Fantrax creds.
+5. **Set Railway tokens**, verify 503→401 behavior by curl.
+6. **Merge #63, wire Zo** — phase 1 vocabulary only (`move_to_il`, `change_slot`). One real end-to-end loop (queue → Telegram → yes → executed → `action_logs` row) closes #66.
 
 ## Safety rules (non-negotiable — full text on [#66](https://github.com/zoelsner/baseball/issues/66#issuecomment-4695871271))
 

@@ -52,6 +52,16 @@
   `feature/skipper-web-trust-visuals`. Accepted two request-change findings:
   web-off should not downgrade pure snapshot answers, and supplemental-only
   sources should warn without sharing the broken-answer red state.
+- 2026-06-21: Wrote the Attention Queue swap execution loop/plan in
+  `docs/quality/second-opinion/attention-swap-execution-plan-2026-06-21.md`
+  and ran the plan through `~/.local/bin/claude -p --model opus --effort
+  xhigh`. Result captured in
+  `docs/quality/second-opinion/attention-swap-execution-plan-2026-06-21-result.md`.
+- 2026-06-21: Accepted Claude's plan-review finding that #67 is a
+  recommendation-content blocker, not merely an execution blocker. The next
+  safe slice is now slot reliability/gating first, then a lineup-only
+  replacement swap card from `/api/attention`; waiver/add-drop recommendations
+  remain deferred.
 
 ## Next Loop Phase
 
