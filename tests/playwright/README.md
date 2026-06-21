@@ -14,6 +14,7 @@ npx playwright install chromium
 
 ```bash
 npm test                # headless mobile (iPhone 14)
+npm run test:pr-smoke   # local mocked PR smoke against SANDLOT_URL
 npm run test:headed     # see the browser
 npm run test:ui         # Playwright UI mode for picking/inspecting tests
 ```
@@ -25,6 +26,14 @@ SANDLOT_URL=https://staging.example.up.railway.app npm test
 ```
 
 The default points at the production Railway URL configured in `playwright.config.ts`.
+
+## PR smoke
+
+`specs/pr-smoke.spec.ts` is intentionally local and mocked. CI serves the
+branch-built `web/sandlot` bundle with `python3 -m http.server`, routes API
+calls in Playwright, and verifies the Adds → Skipper handoff without requiring
+Railway, Postgres, or Fantrax credentials. It also writes screenshots to
+`tests/playwright/artifacts/` so reviewers can inspect the changed UI state.
 
 ## How tests are structured
 

@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   python-import-smoke:
@@ -38,6 +38,16 @@ jobs:
           "
       - name: Run Python unit tests
         run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "### Python import smoke"
+            echo "- Base: \`${{ github.base_ref || 'n/a' }}\`"
+            echo "- Head: \`${{ github.head_ref || github.ref_name }}\`"
+            echo "- Python: 3.11"
+            echo "- Checks: Sandlot module imports and \`unittest discover\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   frontend-build:
     name: Frontend build
@@ -54,3 +64,13 @@ jobs:
         run: npm run build:sandlot
       - name: Verify committed app bundle is current
         run: git diff --exit-code web/sandlot/app.js
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "### Frontend build"
+            echo "- Base: \`${{ github.base_ref || 'n/a' }}\`"
+            echo "- Head: \`${{ github.head_ref || github.ref_name }}\`"
+            echo "- Node: 20"
+            echo "- Checks: \`npm ci\`, \`npm run build:sandlot\`, committed bundle freshness"
+          } >> "$GITHUB_STEP_SUMMARY"
