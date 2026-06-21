@@ -5,6 +5,7 @@
   "description": "Playwright end-to-end tests for Sandlot V1 (Railway).",
   "scripts": {
     "test": "playwright test",
+    "test:pr-smoke": "playwright test specs/pr-smoke.spec.ts --project=mobile",
     "test:headed": "playwright test --headed",
     "test:ui": "playwright test --ui",
     "report": "playwright show-report"

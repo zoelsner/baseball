@@ -1,0 +1,97 @@
+name: PR UI Smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  local-ui-smoke:
+    name: Local mocked UI smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            tests/playwright/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build Sandlot frontend
+        run: npm run build:sandlot
+
+      - name: Verify committed app bundle is current
+        run: git diff --exit-code web/sandlot/app.js
+
+      - name: Install Playwright deps
+        working-directory: tests/playwright
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ hashFiles('tests/playwright/package-lock.json') }}
+
+      - name: Install chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        working-directory: tests/playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Start static branch bundle
+        run: |
+          python3 -m http.server 8765 --directory web/sandlot > /tmp/sandlot-static.log 2>&1 &
+          echo "$!" > /tmp/sandlot-static.pid
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:8765/ >/dev/null; then
+              echo "Static Sandlot bundle is serving"
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/sandlot-static.log
+          exit 1
+
+      - name: Run mocked PR smoke
+        working-directory: tests/playwright
+        env:
+          CI: "true"
+          SANDLOT_URL: http://127.0.0.1:8765
+        run: npm run test:pr-smoke
+
+      - name: Upload PR smoke screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-ui-smoke-screenshots
+          path: tests/playwright/artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-ui-smoke-report
+          path: tests/playwright/playwright-report
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "### PR UI smoke"
+            echo "- Base: \`${{ github.base_ref || 'n/a' }}\`"
+            echo "- Head: \`${{ github.head_ref || github.ref_name }}\`"
+            echo "- Target: local static branch bundle at \`http://127.0.0.1:8765\`"
+            echo "- Checks: frontend build freshness and mocked Adds → Skipper browser flow"
+            echo "- Screenshot artifact: \`pr-ui-smoke-screenshots\`"
+          } >> "$GITHUB_STEP_SUMMARY"
