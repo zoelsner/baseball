@@ -55,16 +55,18 @@ code, docs, and existing tests.
 
 Before implementing a new API contract, data model, auth/security boundary,
 migration, model tool-calling flow, or cross-module architecture, get an
-independent skeptical review with `claude -p`.
+independent skeptical review with `claude -p`, explicitly pinned to Opus with
+extra-high effort.
 
 Use this command shape:
 
 ```text
-claude -p "$(cat docs/quality/second-opinion-gate.md)"
+claude -p --model opus --effort xhigh "$(cat docs/quality/second-opinion-gate.md)"
 ```
 
 Copy `docs/quality/second-opinion-gate.md` to a task-specific prompt when the
-design needs concrete codebase context, then run `claude -p` on that file.
+design needs concrete codebase context, then run the same pinned command on
+that file.
 
 Do not send secrets, tokens, cookies, private production data, or unnecessary
 proprietary context to the reviewer. Record the gate in the progress log or PR:

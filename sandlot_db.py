@@ -116,8 +116,15 @@ def init_schema() -> None:
               role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
               content TEXT NOT NULL,
               tier INTEGER,
-              model TEXT
+              model TEXT,
+              metadata JSONB NOT NULL DEFAULT '{}'::jsonb
             )
+            """
+        )
+        conn.execute(
+            """
+            ALTER TABLE chat_messages
+              ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb
             """
         )
         conn.execute(
@@ -440,7 +447,7 @@ def list_chat_messages(session_id: int) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT id, session_id, created_at, role, content, tier, model
+            SELECT id, session_id, created_at, role, content, tier, model, metadata
             FROM chat_messages
             WHERE session_id = %s
             ORDER BY created_at ASC, id ASC
@@ -457,15 +464,16 @@ def append_chat_message(
     *,
     tier: int | None = None,
     model: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> int:
     with connect() as conn:
         row = conn.execute(
             """
-            INSERT INTO chat_messages (session_id, role, content, tier, model)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO chat_messages (session_id, role, content, tier, model, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (session_id, role, content, tier, model),
+            (session_id, role, content, tier, model, Jsonb(metadata or {})),
         ).fetchone()
     return int(row["id"])
 

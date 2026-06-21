@@ -62,9 +62,9 @@ test.describe('Skipper web fallback', () => {
         body: [
           'data: {"type":"token","text":"ack"}',
           '',
-          'data: {"type":"sources","sources":[{"url":"https://www.mlb.com/player/martin-perez-527048","title":"Martin Perez Stats"}]}',
+          'data: {"type":"sources","sources":[{"url":"https://www.mlb.com/player/martin-perez-527048","title":"Martin Perez Stats","domain":"mlb.com","trust":"trusted","source_name":"MLB.com"}]}',
           '',
-          'data: {"type":"done","model":"test","web_search_requested":true,"web_search":true,"web_search_requests":1}',
+          'data: {"type":"done","model":"test","confidence":{"level":"mixed","label":"Verify first","reason":"Public context has trusted sources, but Fantrax-specific facts still come from the snapshot.","web_search":true,"sources":{"total":1,"trusted":1,"supplemental":0}},"web_search_requested":true,"web_search_allowed":true,"web_search":true,"web_search_requests":1}',
           '',
           '',
         ].join('\n'),
@@ -82,8 +82,9 @@ test.describe('Skipper web fallback', () => {
     await input.press('Enter');
     await expect.poll(() => posts.length).toBe(1);
     expect(posts[0].web_search).toBe(true);
+    await expect(page.locator('[aria-label="Skipper read quality: Verify first"]')).toBeVisible();
     await expect(page.getByText('Web sources')).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Martin Perez Stats' })).toHaveAttribute('href', 'https://www.mlb.com/player/martin-perez-527048');
+    await expect(page.getByRole('link', { name: /Martin Perez Stats.*Trusted/i })).toHaveAttribute('href', 'https://www.mlb.com/player/martin-perez-527048');
 
     await page.getByRole('button', { name: /Web fallback on/i }).click();
     await expect(page.getByRole('button', { name: /Web fallback off/i })).toBeVisible();
@@ -92,6 +93,73 @@ test.describe('Skipper web fallback', () => {
     await input.press('Enter');
     await expect.poll(() => posts.length).toBe(2);
     expect(posts[1].web_search).toBe(false);
+  });
+
+  test('restores read quality and trusted sources from Skipper history metadata', async ({ page }) => {
+    await page.route('**/api/snapshot/latest', async route => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(snapshot) });
+    });
+    await page.route('**/api/skipper/options', async route => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          default_model: 'deepseek/deepseek-v4-flash',
+          models: [{ id: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash', short: 'DS Flash' }],
+          reasoning: { default_enabled: false, default_effort: 'medium', efforts: ['medium'] },
+          web_search: { available: true, default_enabled: true, tool: 'openrouter:web_search' },
+        }),
+      });
+    });
+    await page.route('**/api/waiver-swaps/latest', async route => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ cards: [], brief: { state: 'missing' }, message: 'No swaps.' }),
+      });
+    });
+    await page.route('**/api/skipper/messages', async route => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          session_id: 1,
+          messages: [
+            {
+              id: 1,
+              role: 'assistant',
+              content: 'Perez needs Fantrax verification before any move.',
+              metadata: {
+                confidence: {
+                  level: 'mixed',
+                  label: 'Verify first',
+                  reason: 'Public context has trusted sources, but Fantrax-specific facts still come from the snapshot.',
+                  web_search: true,
+                  sources: { total: 1, trusted: 1, supplemental: 0 },
+                },
+                sources: [
+                  {
+                    url: 'https://www.mlb.com/player/martin-perez-527048',
+                    title: 'Martin Perez Stats',
+                    domain: 'mlb.com',
+                    trust: 'trusted',
+                    source_name: 'MLB.com',
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      });
+    });
+
+    await page.goto('/');
+    await waitForAppMount(page);
+    await gotoTab(page, 'Skipper');
+
+    await expect(page.locator('[aria-label="Skipper read quality: Verify first"]')).toBeVisible();
+    await expect(page.getByText('1 trusted source')).toBeVisible();
+    await expect(page.getByRole('link', { name: /Martin Perez Stats.*Trusted/i })).toBeVisible();
   });
 
   test('hides the web fallback toggle when the server disables web search', async ({ page }) => {

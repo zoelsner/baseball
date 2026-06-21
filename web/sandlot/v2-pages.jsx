@@ -111,6 +111,21 @@ function v2NormalizeSkipperOptions(payload) {
   };
 }
 
+function v2NormalizeSkipperMetadata(message) {
+  const metadata = message?.metadata && typeof message.metadata === 'object' ? message.metadata : {};
+  const sources = Array.isArray(metadata.sources)
+    ? metadata.sources
+    : Array.isArray(message?.sources)
+      ? message.sources
+      : [];
+  const confidence = metadata.confidence && typeof metadata.confidence === 'object'
+    ? metadata.confidence
+    : message?.confidence && typeof message.confidence === 'object'
+      ? message.confidence
+      : null;
+  return { sources, confidence };
+}
+
 function v2BuildSwapSkipperPrompt(card) {
   const add = card?.add || {};
   const out = card?.move_out || {};
@@ -3119,10 +3134,15 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
         if (cancelled) return;
         const loaded = (data.messages || [])
           .filter(m => !(m.role === 'assistant' && v2IsBrokenSkipperReply(m.content)))
-          .map(m => ({
-            role: m.role === 'assistant' ? 'ai' : m.role,
-            text: m.content,
-          }));
+          .map(m => {
+            const metadata = v2NormalizeSkipperMetadata(m);
+            return {
+              role: m.role === 'assistant' ? 'ai' : m.role,
+              text: m.content,
+              sources: metadata.sources,
+              confidence: metadata.confidence,
+            };
+          });
         setMsgs(loaded);
       })
       .catch(e => { if (!cancelled) setError(`Couldn't load history: ${e.message}`); });
@@ -3201,6 +3221,15 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
                 sources.push(source);
               }
               next[next.length - 1] = { ...last, sources };
+              return next;
+            });
+          } else if (evt.type === 'done') {
+            setMsgs(m => {
+              if (!m.length || !evt.confidence) return m;
+              const next = m.slice();
+              const last = next[next.length - 1] || {};
+              if (last.role !== 'ai') return m;
+              next[next.length - 1] = { ...last, confidence: evt.confidence };
               return next;
             });
           } else if (evt.type === 'error') {
@@ -3383,8 +3412,55 @@ function V2Bubble({ m, renderText, matchup, dataQuality }) {
     <div style={{ display:'flex', marginBottom:10 }}>
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, color:V2.ink, padding:'10px 13px', borderRadius:'14px 14px 14px 4px', fontSize:13.5, maxWidth:'92%', lineHeight:1.5 }}>
         {showProjectionCard && <V2MatchupProjectionCard matchup={matchup} dataQuality={dataQuality}/>}
+        <V2ReadQuality confidence={m.confidence}/>
         {body}
         <V2WebSources sources={m.sources}/>
+      </div>
+    </div>
+  );
+}
+
+function V2ReadQuality({ confidence }) {
+  if (!confidence?.level) return null;
+  const level = String(confidence.level || '').toLowerCase();
+  const palette = level === 'good'
+    ? { fg:V2.ok, bg:V2.okSoft, label:confidence.label || 'Good read' }
+    : level === 'risky'
+      ? { fg:V2.bad, bg:V2.badSoft, label:confidence.label || 'Risky read' }
+      : { fg:V2.warn, bg:V2.warnSoft, label:confidence.label || 'Verify first' };
+  const sources = confidence.sources || {};
+  const trusted = Number(sources.trusted || 0);
+  const supplemental = Number(sources.supplemental || 0);
+  const sourceText = trusted > 0
+    ? `${trusted} trusted source${trusted === 1 ? '' : 's'}`
+    : supplemental > 0
+      ? `${supplemental} supplemental source${supplemental === 1 ? '' : 's'}`
+      : confidence.web_search
+        ? 'No trusted sources'
+        : 'Snapshot only';
+  return (
+    <div aria-label={`Skipper read quality: ${palette.label}`} style={{
+      display:'flex', alignItems:'flex-start', gap:8, marginBottom:9,
+      padding:'7px 8px', borderRadius:12, background:palette.bg,
+      color:palette.fg, boxShadow:'0 0 0 1px rgba(0,0,0,0.04)',
+    }}>
+      <span style={{
+        width:8, height:8, borderRadius:'50%', background:palette.fg,
+        flex:'0 0 auto', marginTop:5,
+      }}/>
+      <div style={{ minWidth:0, flex:1 }}>
+        <div style={{
+          display:'flex', alignItems:'baseline', gap:7, flexWrap:'wrap',
+          fontSize:11.5, fontWeight:900, lineHeight:1.2,
+        }}>
+          <span>{palette.label}</span>
+          <span style={{ fontSize:10.5, fontWeight:800, color:V2.body }}>{sourceText}</span>
+        </div>
+        {confidence.reason && (
+          <div style={{ marginTop:2, color:V2.body, fontSize:11.5, lineHeight:1.35, fontWeight:650 }}>
+            {confidence.reason}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -3399,11 +3475,16 @@ function V2WebSources({ sources }) {
       <div style={{ marginTop:6, display:'flex', flexDirection:'column', gap:5 }}>
         {list.map((source, index) => (
           <a key={`${source.url}-${index}`} href={source.url} target="_blank" rel="noreferrer" style={{
-            display:'block', color:V2.accent, fontSize:12, lineHeight:1.3,
-            fontWeight:800, textDecoration:'none', overflow:'hidden', textOverflow:'ellipsis',
-            whiteSpace:'nowrap',
+            display:'flex', alignItems:'baseline', gap:6, color:V2.accent, fontSize:12, lineHeight:1.3,
+            fontWeight:800, textDecoration:'none', minWidth:0,
           }}>
-            {source.title || source.url}
+            <span style={{ minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{source.title || source.source_name || source.url}</span>
+            <span style={{
+              flexShrink:0, color:source.trust === 'trusted' ? V2.ok : V2.muted,
+              fontSize:10.5, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.04em',
+            }}>
+              {source.trust === 'trusted' ? 'Trusted' : 'Supplemental'}
+            </span>
           </a>
         ))}
       </div>

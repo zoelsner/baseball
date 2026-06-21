@@ -38,6 +38,16 @@
 - 2026-06-21: Implemented the Skipper nav move and Skipper web fallback after
   the second-opinion gate. Updated tracker rows `APP-004` and `SKP-009` with
   local unit/browser evidence.
+- 2026-06-21: Added the next Skipper hardening loop for roster optimization:
+  trusted/supplemental citation metadata, persisted chat metadata, structural
+  read-quality badges, and live/history UI rendering. Reran the second-opinion
+  gate explicitly pinned to Claude Opus with `--effort xhigh`; accepted findings
+  fixed confidence logic so it depends on actual web usage rather than tool
+  permission, made deterministic reads respect degraded projection data, and
+  narrowed web-search intent keywords. Updated tracker row `SKP-010`.
+- Future product direction captured from Zach: one-click roster-change/swap
+  preparation can build on the same trust metadata, but trade execution should
+  remain a separate, deeper research workflow with much stricter specificity.
 
 ## Next Loop Phase
 

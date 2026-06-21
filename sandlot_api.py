@@ -272,6 +272,7 @@ def skipper_history() -> dict[str, Any]:
                 "content": r.get("content"),
                 "tier": r.get("tier"),
                 "model": r.get("model"),
+                "metadata": r.get("metadata") or {},
                 "created_at": r.get("created_at"),
             }
             for r in rows
@@ -369,11 +370,17 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
 
     snapshot = _snapshot_payload(snapshot_row)
     tier = sandlot_skipper.detect_tier(user_text, snapshot)
-    use_web_search = sandlot_skipper.web_search_allowed(payload.web_search)
+    deterministic_reply = sandlot_skipper.deterministic_reply(user_text, snapshot)
+    web_decision = sandlot_skipper.web_search_decision(
+        user_text,
+        snapshot,
+        requested=payload.web_search,
+        deterministic=bool(deterministic_reply),
+    )
+    use_web_search = bool(web_decision.get("allowed"))
     context_block = sandlot_skipper.build_context(tier, snapshot, prompt=user_text)
     history = sandlot_db.list_chat_messages(session_id)
     messages = sandlot_skipper.build_messages(history, user_text, context_block, web_search=use_web_search)
-    deterministic_reply = sandlot_skipper.deterministic_reply(user_text, snapshot)
     selected_model = payload.model
     model_order = sandlot_skipper.model_order(selected_model)
     reasoning_effort = sandlot_skipper.normalize_reasoning_effort(
@@ -385,9 +392,33 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
 
     def event_stream():
         if deterministic_reply:
+            confidence = sandlot_skipper.assess_reply_quality(
+                deterministic_reply,
+                deterministic=True,
+                data_quality=snapshot.get("data_quality") if isinstance(snapshot.get("data_quality"), dict) else {},
+                web_decision=web_decision,
+                sources=[],
+                web_search_requests=0,
+            )
+            metadata = {
+                "sources": [],
+                "confidence": confidence,
+                "web_search_decision": web_decision,
+                "web_search": {
+                    "requested": bool(payload.web_search),
+                    "allowed": False,
+                    "used": False,
+                    "requests": 0,
+                },
+            }
             try:
                 sandlot_db.append_chat_message(
-                    session_id, "assistant", deterministic_reply, tier=tier, model="deterministic"
+                    session_id,
+                    "assistant",
+                    deterministic_reply,
+                    tier=tier,
+                    model="deterministic",
+                    metadata=metadata,
                 )
             except Exception:
                 log.exception("Failed to persist deterministic assistant message")
@@ -398,7 +429,12 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
                 "model": "deterministic",
                 "selected_model": selected_model,
                 "reasoning": bool(reasoning_effort),
+                "confidence": confidence,
+                "web_search_decision": web_decision,
+                "web_search_requested": bool(payload.web_search),
+                "web_search_allowed": False,
                 "web_search": False,
+                "web_search_requests": 0,
             })
             return
 
@@ -441,22 +477,44 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
         full = sandlot_skipper.repair_reply("".join(assistant_buf), user_text, snapshot)
         if full:
             yield _sse({"type": "token", "text": full})
+        sources = sandlot_skipper.classify_sources(list(sources_by_url.values()))
+        confidence = sandlot_skipper.assess_reply_quality(
+            full,
+            data_quality=snapshot.get("data_quality") if isinstance(snapshot.get("data_quality"), dict) else {},
+            web_decision=web_decision,
+            sources=sources,
+            web_search_requests=web_search_requests,
+        )
+        if sources:
+            yield _sse({"type": "sources", "sources": sources})
+        if full:
+            metadata = {
+                "sources": sources,
+                "confidence": confidence,
+                "web_search_decision": web_decision,
+                "web_search": {
+                    "requested": bool(payload.web_search),
+                    "allowed": use_web_search,
+                    "used": bool(sources or web_search_requests),
+                    "requests": web_search_requests,
+                },
+            }
             try:
                 sandlot_db.append_chat_message(
-                    session_id, "assistant", full, tier=tier, model=used_model
+                    session_id, "assistant", full, tier=tier, model=used_model, metadata=metadata
                 )
             except Exception as exc:
                 log.exception("Failed to persist assistant message")
-        sources = list(sources_by_url.values())
-        if sources:
-            yield _sse({"type": "sources", "sources": sources})
         yield _sse({
             "type": "done",
             "tier": tier,
             "model": used_model,
             "selected_model": selected_model,
             "reasoning": bool(reasoning_effort),
-            "web_search_requested": use_web_search,
+            "confidence": confidence,
+            "web_search_decision": web_decision,
+            "web_search_requested": bool(payload.web_search),
+            "web_search_allowed": use_web_search,
             "web_search": bool(sources or web_search_requests),
             "web_search_requests": web_search_requests,
         })

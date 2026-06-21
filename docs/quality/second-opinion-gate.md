@@ -7,7 +7,7 @@ high-blast-radius refactor.
 Run from the repo root:
 
 ```bash
-claude -p "$(cat docs/quality/second-opinion-gate.md)"
+claude -p --model opus --effort xhigh "$(cat docs/quality/second-opinion-gate.md)"
 ```
 
 For real work, copy this file to a task-specific prompt and replace the

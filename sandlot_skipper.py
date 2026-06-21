@@ -20,7 +20,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import unicodedata
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 from openai import OpenAI
 
@@ -43,6 +46,42 @@ WEB_SEARCH_MAX_RESULTS = 4
 WEB_SEARCH_MAX_TOTAL_RESULTS = 8
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
+TRUSTED_SOURCE_DOMAINS = (
+    "mlb.com",
+    "espn.com",
+    "baseball-reference.com",
+    "fangraphs.com",
+    "cbssports.com",
+    "rotowire.com",
+)
+SOURCE_NAME_BY_DOMAIN = {
+    "mlb.com": "MLB.com",
+    "espn.com": "ESPN",
+    "baseball-reference.com": "Baseball-Reference",
+    "fangraphs.com": "FanGraphs",
+    "cbssports.com": "CBS Sports",
+    "rotowire.com": "Rotowire",
+}
+PUBLIC_CONTEXT_KEYWORDS = (
+    "web", "search", "source", "verify", "confirm", "public",
+    "age", "born", "contract", "free agent",
+    "news", "injury", "injured", "recent", "last 30",
+    "mlb.com", "espn", "baseball-reference", "fangraphs", "cbs", "rotowire",
+)
+WAIVER_CONTEXT_KEYWORDS = (
+    "waiver", "free agent", "add ", "drop ", "swap", "pickup", "pick up",
+    "available", "claim", "wire",
+)
+NAME_CANDIDATE_RE = re.compile(
+    r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'.-]+(?:\s+(?:[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'.-]+|de|da|del|van|von|la)){1,3}\b"
+)
+NAME_CANDIDATE_STOPWORDS = {
+    "best waiver", "deep matchup", "weekly matchup", "fantrax", "sandlot",
+    "skipper", "what i", "what you", "what should", "use the", "tell me",
+    "help me", "proposed swap", "estimated delta", "evidence chips",
+    "dynasty note", "latest roster", "web context", "web sources",
+    "current matchup", "period", "source names",
+}
 
 # Keywords that escalate to tier 3 (load every team's roster). Kept short so
 # we err toward tier 2 — tier 3 is ~10x larger context.
@@ -108,6 +147,8 @@ WEB_FALLBACK_PROMPT = """Web fallback is enabled for this request.
 Use the web_search tool only when the snapshot lacks requested public MLB data, such as a player not present in the snapshot, free-agent season stats, recent performance, injury/news context, age, team, or role. Do not search when the snapshot already answers the question.
 
 Keep Fantrax snapshot data authoritative for league-specific facts: roster slot, roster ownership, free-agent availability, Sandlot/Fantrax FP/G, projected deltas, matchup score, and waiver-card confidence. Web results may supplement those gaps but must not override them.
+
+Prefer high-signal baseball sources: MLB.com, ESPN, Baseball-Reference, FanGraphs, CBS Sports, and Rotowire. Treat thin fantasy SEO pages as supplemental only. Only name a source brand when you used that source directly; otherwise say "public web results."
 
 When you use web results, make the source boundary clear:
 - State what came from the snapshot.
@@ -193,6 +234,250 @@ def web_search_tool() -> dict[str, Any]:
 
 def web_search_allowed(requested: bool) -> bool:
     return bool(requested) and web_search_available()
+
+
+def web_search_decision(
+    user_text: str,
+    snapshot: dict[str, Any],
+    *,
+    requested: bool,
+    deterministic: bool = False,
+) -> dict[str, Any]:
+    """Decide whether this request may attach OpenRouter's web tool.
+
+    The model prompt still says "snapshot first"; this server gate is a cost
+    and trust guard. It only opens the tool for clear missing-data/public-context
+    signals so a degraded snapshot does not accidentally make every chat turn a
+    paid web-search turn.
+    """
+    prompt = user_text or ""
+    base = {
+        "requested": bool(requested),
+        "available": web_search_available(),
+        "allowed": False,
+        "reason": "snapshot_sufficient",
+        "missing_players": [],
+        "signals": [],
+    }
+    if not requested:
+        return {**base, "reason": "disabled_by_user"}
+    if not base["available"]:
+        return {**base, "reason": "disabled_by_server"}
+    if deterministic:
+        return {**base, "reason": "deterministic_snapshot_reply"}
+
+    lower = prompt.lower()
+    signals: list[str] = []
+    available = _available_data(snapshot)
+    known_names = _snapshot_player_name_set(snapshot)
+    candidates = _name_candidates(prompt)
+    missing_players = [name for name in candidates if _normalize_name(name) not in known_names]
+    public_context = any(kw in lower for kw in PUBLIC_CONTEXT_KEYWORDS)
+    waiver_context = any(kw in lower for kw in WAIVER_CONTEXT_KEYWORDS)
+
+    if public_context:
+        signals.append("public_context_requested")
+    if waiver_context:
+        signals.append("waiver_context_requested")
+    if missing_players:
+        signals.append("named_player_missing_from_snapshot")
+    if not available.get("free_agents"):
+        signals.append("free_agents_missing")
+    if not available.get("player_index"):
+        signals.append("player_index_missing")
+
+    if missing_players and (public_context or waiver_context):
+        return {
+            **base,
+            "allowed": True,
+            "reason": "missing_named_player",
+            "missing_players": missing_players[:6],
+            "signals": signals,
+        }
+    if public_context and candidates:
+        return {
+            **base,
+            "allowed": True,
+            "reason": "public_context_requested",
+            "missing_players": missing_players[:6],
+            "signals": signals,
+        }
+    if waiver_context and missing_players and not available.get("free_agents"):
+        return {
+            **base,
+            "allowed": True,
+            "reason": "missing_free_agent_data",
+            "missing_players": missing_players[:6],
+            "signals": signals,
+        }
+    return {**base, "reason": "snapshot_sufficient", "missing_players": missing_players[:6], "signals": signals}
+
+
+def classify_source(source: dict[str, Any]) -> dict[str, Any]:
+    """Attach normalized trust metadata to one captured URL citation."""
+    out = dict(source or {})
+    domain = source_domain(str(out.get("url") or ""))
+    trusted_base = _trusted_source_base(domain)
+    content = " ".join(str(out.get("content") or "").split())
+    if content:
+        out["content"] = content[:280]
+    else:
+        out.pop("content", None)
+    out["domain"] = domain
+    out["trust"] = "trusted" if trusted_base else "supplemental"
+    out["source_name"] = SOURCE_NAME_BY_DOMAIN.get(trusted_base or "", _source_name_from_domain(domain))
+    return out
+
+
+def classify_sources(sources: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    seen_urls: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for source in sources or []:
+        url = str((source or {}).get("url") or "")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        out.append(classify_source(source))
+    return out
+
+
+def source_summary(sources: list[dict[str, Any]] | None) -> dict[str, Any]:
+    classified = classify_sources(sources)
+    trusted_domains = sorted({s["domain"] for s in classified if s.get("trust") == "trusted" and s.get("domain")})
+    supplemental_domains = sorted({s["domain"] for s in classified if s.get("trust") != "trusted" and s.get("domain")})
+    return {
+        "total": len(classified),
+        "trusted": len(trusted_domains),
+        "supplemental": len(supplemental_domains),
+        "trusted_domains": trusted_domains,
+        "supplemental_domains": supplemental_domains,
+    }
+
+
+def assess_reply_quality(
+    reply: str,
+    *,
+    deterministic: bool = False,
+    data_quality: dict[str, Any] | None = None,
+    web_decision: dict[str, Any] | None = None,
+    sources: list[dict[str, Any]] | None = None,
+    web_search_requests: int = 0,
+) -> dict[str, Any]:
+    """Return a structural UI quality badge for a Skipper answer."""
+    decision = web_decision or {}
+    quality = data_quality if isinstance(data_quality, dict) else {}
+    summary = source_summary(sources)
+    reason = str(decision.get("reason") or "")
+    used_web = bool(summary["total"] or web_search_requests)
+    if not (reply or "").strip() or is_broken_reply(reply):
+        level = "risky"
+        label = "Risky read"
+        note = "Skipper did not produce a reliable answer."
+    elif deterministic and quality.get("projection_ready") is False:
+        level = "mixed"
+        label = "Limited snapshot"
+        note = "This deterministic read used the score because projection data is incomplete."
+    elif deterministic:
+        level = "good"
+        label = "Snapshot read"
+        note = "This answer came from deterministic snapshot data."
+    elif used_web and summary["trusted"] > 0:
+        level = "mixed"
+        label = "Verify first"
+        note = "Public context has trusted sources, but Fantrax-specific facts still come from the snapshot."
+    elif used_web:
+        level = "risky"
+        label = "Thin sourcing"
+        note = "Web fallback ran without a trusted captured source."
+    elif reason in {"disabled_by_user", "disabled_by_server"}:
+        level = "mixed"
+        label = "Snapshot only"
+        note = "Web fallback was off, so missing public context may need manual verification."
+    else:
+        level = "good"
+        label = "Snapshot read"
+        note = "The answer stayed on snapshot data."
+    return {
+        "level": level,
+        "label": label,
+        "reason": note,
+        "web_search": used_web,
+        "web_reason": reason,
+        "sources": summary,
+    }
+
+
+def source_domain(url: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower().split("@")[-1].split(":")[0]
+    for prefix in ("www.", "m."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    return host
+
+
+def _trusted_source_base(domain: str) -> str | None:
+    for base in TRUSTED_SOURCE_DOMAINS:
+        if domain == base or domain.endswith("." + base):
+            return base
+    return None
+
+
+def _source_name_from_domain(domain: str) -> str:
+    if not domain:
+        return "Web source"
+    root = domain.split(".")[0]
+    return root.replace("-", " ").title()
+
+
+def _snapshot_player_name_set(snapshot: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+
+    def add_rows(rows: Any) -> None:
+        for row in rows or []:
+            if isinstance(row, dict) and row.get("name"):
+                names.add(_normalize_name(str(row.get("name"))))
+
+    index = snapshot.get("player_index")
+    if isinstance(index, list):
+        add_rows(index)
+    roster = snapshot.get("roster")
+    if isinstance(roster, dict):
+        add_rows(roster.get("rows"))
+    elif isinstance(roster, list):
+        add_rows(roster)
+    for team in (snapshot.get("all_team_rosters") or {}).values():
+        if isinstance(team, dict):
+            add_rows(team.get("rows"))
+    free_agents = snapshot.get("free_agents")
+    if isinstance(free_agents, dict):
+        add_rows(free_agents.get("players"))
+    return names
+
+
+def _name_candidates(text: str) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in NAME_CANDIDATE_RE.findall(text or ""):
+        candidate = match.strip(" .,:;()[]{}")
+        normalized = _normalize_name(candidate)
+        if not normalized or normalized in seen:
+            continue
+        if len(normalized.split()) < 2:
+            continue
+        if normalized in NAME_CANDIDATE_STOPWORDS:
+            continue
+        if any(normalized.startswith(prefix + " ") for prefix in NAME_CANDIDATE_STOPWORDS):
+            continue
+        seen.add(normalized)
+        out.append(candidate)
+    return out
+
+
+def _normalize_name(value: str) -> str:
+    asciiish = unicodedata.normalize("NFKD", value)
+    asciiish = "".join(ch for ch in asciiish if not unicodedata.combining(ch))
+    return " ".join(re.sub(r"[^a-zA-Z0-9]+", " ", asciiish).lower().split())
 
 
 # ---------------------------------------------------------------------------
@@ -916,13 +1201,13 @@ def _extract_url_citations(obj: Any) -> list[dict[str, Any]]:
             url = _obj_get(citation, "url")
             if not url:
                 continue
-            sources.append({
+            sources.append(classify_source({
                 "url": url,
                 "title": _obj_get(citation, "title") or url,
                 "content": _obj_get(citation, "content") or "",
                 "start_index": _obj_get(citation, "start_index"),
                 "end_index": _obj_get(citation, "end_index"),
-            })
+            }))
 
     collect_annotations(obj)
     for choice in _obj_get(obj, "choices") or []:
