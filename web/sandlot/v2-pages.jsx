@@ -117,6 +117,7 @@ function v2BuildSwapSkipperPrompt(card) {
     `Proposed swap: add ${add.name || 'Unknown free agent'} (${add.positions || 'UT'}${add.team ? `, ${add.team}` : ''}) and move out ${out.name || 'Unknown roster player'} (${out.positions || 'UT'}${out.team ? `, ${out.team}` : ''}).`,
     `Estimated delta: ${net} FP/G. Confidence: ${card?.confidence || 'Medium'}.`,
     `Evidence chips: ${chips}.`,
+    card?.confidence_reasons?.length ? `Trust notes: ${card.confidence_reasons.join(' ')}` : null,
     card?.why ? `Why Sandlot likes it: ${card.why}` : null,
     card?.risk ? `Risk: ${card.risk}` : null,
     card?.dynasty_note ? `Dynasty note: ${card.dynasty_note}` : null,
@@ -488,9 +489,9 @@ function V2TabBar({ page, setPage }) {
   const items = [
     { id:'today',  label:'Today',   icon:Icons.home },
     { id:'roster', label:'Roster',  icon:Icons.list },
+    { id:'skipper',label:'Skipper', icon:Icons.sparkle },
     { id:'fa',     label:'Adds',    icon:Icons.spark },
     { id:'league', label:'League',  icon:Icons.diamond },
-    { id:'skipper',label:'Skipper', icon:Icons.sparkle },
   ];
   return (
     <div style={{ display:'flex', borderTop:`1px solid ${V2.hairline}`, background:V2.surface, paddingBottom:18, paddingTop:8 }}>
@@ -1681,6 +1682,16 @@ function V2WaiverSwapCard({ card, onOpenPlayer, onAskSkipper }) {
         <V2ReasonLine color={V2.ok} label="Why" text={card.why}/>
         <V2ReasonLine color={V2.warn} label="Risk" text={card.risk}/>
         {card.dynasty_note && <V2ReasonLine color={V2.muted} label="Dynasty" text={card.dynasty_note}/>}
+        {card.confidence_reasons?.length > 0 && (
+          <div style={{ background:V2.surface2, borderRadius:12, padding:'10px 11px', display:'flex', flexDirection:'column', gap:6 }}>
+            <V2Eyebrow color={V2.muted}>Trust notes</V2Eyebrow>
+            {card.confidence_reasons.slice(0,3).map((reason, i) => (
+              <div key={i} style={{ fontSize:11.8, color:V2.body, lineHeight:1.4, fontWeight:650 }}>
+                {reason}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div style={{ borderTop:`1px solid ${V2.hairline2}`, padding:'12px 16px', display:'flex', gap:8, flexWrap:'wrap' }}>

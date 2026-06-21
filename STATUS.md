@@ -1,10 +1,15 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-11** (after the first manual executor test run).
+> Last updated: **2026-06-21** (after snapshot-scoped Skipper + waiver trust notes work).
 
 ## Where things stand
 
+- **2026-06-21 app polish branch:** Skipper chat/history is scoped to the
+  latest successful snapshot, waiver cards now show user-facing Trust notes for
+  inferred FP/G and keeper-age uncertainty, and the bottom nav order is Today /
+  Roster / Skipper / Adds / League. This is read-only app/UI work and does not
+  change executor write paths.
 - **`GET /api/attention` is live** ([#64](https://github.com/zoelsner/baseball/issues/64) / [PR #65](https://github.com/zoelsner/baseball/pull/65), merged + deployed). Returns the ordered queue with ready-to-submit `POST /api/actions` payloads. E2E spec validates it daily.
 - **Executor [PR #63](https://github.com/zoelsner/baseball/pull/63) (draft):** reviewed, rebased onto main, CI green. First manual test run (2026-06-10): **all five deterministic guards PASS against prod, zero unintended writes** — but the Selenium layer failed safe (`player_row_not_found`) and needs a click-flow rewrite against the real Fantrax DOM. The DOM map (row anchor = headshot URL `hs{player_id}_`, two-click `lineup-btn` slot model, `remove`/`swap_horiz` icon actions) is in the PR comments.
 - **Blocker — [#67](https://github.com/zoelsner/baseball/issues/67):** snapshot `slot` is the player's *position*, not their lineup slot (raw scrape never had it). Attention queue / roster health / waiver IL-protection all compute on wrong slots. Live truth as of 2026-06-10: Skubal + Woodruff already IR-stashed; **only Judge is IR in an active slot**; Condon/Montes are in dynasty `Min` slots (protected prospects).

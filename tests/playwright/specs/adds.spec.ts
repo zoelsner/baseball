@@ -46,10 +46,11 @@ test.describe('Adds (waiver swaps) page', () => {
       add: { id: 'fa-1', name: 'Brandon Young', positions: 'SP', team: 'BAL' },
       move_out: { id: 'roster-1', name: 'Bryan Hudson', positions: 'RP', team: 'MIL' },
       fills_position: 'SP',
-      evidence_chips: ['_cells inferred FP/G', 'Dynasty check'],
-      why: 'Brandon Young is a watch-list fit, but the FP/G edge is unverified.',
-      risk: 'The FP/G source is inferred from unlabeled Fantrax cells.',
-      dynasty_note: 'Check dynasty context before moving Bryan Hudson out.',
+      evidence_chips: ['Estimated FP/G', 'Keeper check'],
+      confidence_reasons: ['FP/G is estimated from the Fantrax row; verify the number before acting.'],
+      why: 'Brandon Young is a watch-list fit, but the FP/G edge needs manual verification.',
+      risk: "Brandon Young's FP/G is estimated from the Fantrax row; verify the scoring value and role before treating this as actionable.",
+      dynasty_note: 'Keeper age is missing; verify dynasty value before moving Bryan Hudson out.',
     };
 
     await page.route('**/api/waiver-swaps/latest', async route => {
@@ -66,7 +67,20 @@ test.describe('Adds (waiver swaps) page', () => {
 
     await page.goto('/');
     await waitForAppMount(page);
+
+    const tabLabels = await page
+      .getByRole('button')
+      .evaluateAll(buttons =>
+        buttons
+          .map(button => button.textContent?.trim() || '')
+          .filter(label => ['Today', 'Roster', 'Skipper', 'Adds', 'League'].includes(label)),
+      );
+    expect(tabLabels.slice(-5)).toEqual(['Today', 'Roster', 'Skipper', 'Adds', 'League']);
+
     await gotoTab(page, 'Adds');
+
+    await expect(page.getByText('Trust notes', { exact: true })).toBeVisible();
+    await expect(page.getByText(topCard.confidence_reasons[0], { exact: true })).toBeVisible();
 
     const addName = topCard?.add?.name;
     const outName = topCard?.move_out?.name;

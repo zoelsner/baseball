@@ -427,7 +427,8 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
             "positions": add["positions"],
             "age": add["age"],
             "fpg": round(float(add["fpg"]), 1),
-            "score_source": add["score_source"],
+            "score_source": _score_source_label(add["score_source"], bool(add["true_fpg"])),
+            "score_verified": bool(add["true_fpg"]),
         },
         "move_out": {
             "id": move["id"],
@@ -444,6 +445,7 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
         "fills_position": fills_position,
         "fit": fit,
         "confidence": confidence,
+        "confidence_reasons": _confidence_reasons(add, move, fit, weak_fit, dynasty_note),
         "why": _deterministic_why(add_name, move_name, net_delta, fills_position, fit, move, bool(add["true_fpg"])),
         "risk": _deterministic_risk(add, move, fit),
         "dynasty_note": dynasty_note,
@@ -491,7 +493,7 @@ def _extract_add_fpg(stats: dict[str, Any]) -> tuple[float | None, str | None, b
 
     inferred = _infer_fpg_from_cells(stats.get("_cells"))
     if inferred is not None:
-        return inferred, "_cells inferred FP/G", False
+        return inferred, "estimated_fpg_from_row", False
     return None, None, False
 
 
@@ -671,7 +673,7 @@ def _number(value: Any) -> float | None:
 def _dynasty_note(move: dict[str, Any]) -> tuple[str, float]:
     age = move.get("age")
     if age is None:
-        return "Age unavailable; check dynasty context before moving him out.", -0.5
+        return "Keeper age is missing; verify dynasty value before moving him out.", -0.5
     if int(age) <= 24:
         return f"{move['name']} is age {age}; treat this as a soft dynasty warning, not an automatic drop.", -1.0
     return "No major dynasty concern from age alone.", 0.0
@@ -714,10 +716,43 @@ def _evidence_chips(
     if move["status_issue"]:
         chips.append(str(move["injury"] or "Status issue"))
     if not add["true_fpg"]:
-        chips.append(str(add["score_source"] or "Estimated FP/G"))
-    if "Age unavailable" in dynasty_note or "soft dynasty warning" in dynasty_note:
-        chips.append("Dynasty check")
+        chips.append("Estimated FP/G")
+    if "Keeper age is missing" in dynasty_note or "soft dynasty warning" in dynasty_note:
+        chips.append("Keeper check")
     return chips[:6]
+
+
+def _score_source_label(source: str | None, true_fpg: bool) -> str:
+    if not source:
+        return "FP/G"
+    if not true_fpg:
+        return "Estimated FP/G"
+    return str(source)
+
+
+def _confidence_reasons(
+    add: dict[str, Any],
+    move: dict[str, Any],
+    fit: str,
+    weak_fit: list[str],
+    dynasty_note: str,
+) -> list[str]:
+    reasons: list[str] = []
+    if add["true_fpg"]:
+        reasons.append("Fantrax labels this as a per-game scoring value.")
+    else:
+        reasons.append("FP/G is estimated from the Fantrax row; verify the number before acting.")
+    if fit == "direct":
+        reasons.append("Position fit is direct.")
+    elif weak_fit:
+        reasons.append("Position fit addresses a weak roster area, but is not a clean one-for-one match.")
+    else:
+        reasons.append("Position fit is loose.")
+    if "Keeper age is missing" in dynasty_note:
+        reasons.append("Keeper age is missing for the move-out player.")
+    elif "soft dynasty warning" in dynasty_note:
+        reasons.append("Move-out player is young enough to require a keeper check.")
+    return reasons[:3]
 
 
 def _deterministic_why(
@@ -731,7 +766,7 @@ def _deterministic_why(
 ) -> str:
     fit_text = f" at {fills_position}" if fills_position else ""
     if not true_fpg:
-        return f"{add_name} is a watch-list fit over {move_name}{fit_text}, but the FP/G edge is unverified."
+        return f"{add_name} is a watch-list fit over {move_name}{fit_text}, but the FP/G edge needs manual verification."
     if move["status_issue"]:
         return f"{add_name} is {_format_delta(net_delta)} FP/G over {move_name}{fit_text}, and {move_name} carries a status flag."
     if move["is_bench"]:
@@ -743,7 +778,7 @@ def _deterministic_why(
 
 def _deterministic_risk(add: dict[str, Any], move: dict[str, Any], fit: str) -> str:
     if not add["true_fpg"]:
-        return f"{add['name']}'s FP/G is inferred from unlabeled Fantrax cells; treat this as a scouting lead, not trade-value evidence."
+        return f"{add['name']}'s FP/G is estimated from the Fantrax row; verify the scoring value and role before treating this as actionable."
     if fit == "loose":
         return "Position fit is loose, so this is a roster-shape review rather than a clean one-for-one replacement."
     if move.get("age") is None or (isinstance(move.get("age"), int) and move["age"] <= 24):

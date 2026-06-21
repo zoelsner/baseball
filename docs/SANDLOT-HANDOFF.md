@@ -235,3 +235,35 @@ chat polish (markdown, model controls, matchup context).
 - Run tests locally: `.venv/bin/python -m unittest discover -s tests -p "test_*.py"`.
 - Non-trivial work → branch `<type>/<issue#>-<slug>`, PR, squash-merge. `gh` is
   authed as `zoelsner` for `zoelsner/baseball`.
+
+---
+
+## 10. In-flight progress: snapshot-safe Skipper + trust notes
+
+**Goal (2026-06-21):** scope Skipper chat/history to the current successful
+snapshot so stale matchup reads do not survive a refresh, replace raw waiver
+confidence/inference labels with user-facing trust notes, move the Skipper tab
+to the center of the bottom nav, verify the app path, review, and commit.
+
+**Implemented:**
+- `chat_messages` now carries `snapshot_id`, with schema migration and an index
+  for per-session/per-snapshot history reads.
+- Skipper history and send routes now read and write chat rows for the latest
+  successful snapshot, and return the snapshot id to the frontend.
+- Waiver swap cards now expose `confidence_reasons`, user-facing score-source
+  labels, and safer copy for inferred FP/G and missing keeper age.
+- Adds UI now shows a compact Trust notes block and sends those trust notes
+  into the Skipper prompt.
+- Bottom nav order is now Today, Roster, Skipper, Adds, League.
+
+**Verification status:**
+- `git diff --check` passes.
+- Full Python unittest discovery passes in the local venv: 100 tests, with 1
+  skipped legacy `fantraxapi.objs.game` compatibility test because the installed
+  PyPI package no longer exposes that class.
+- `npm run build:sandlot` passes and regenerated `web/sandlot/app.js`.
+- Local Playwright against `http://127.0.0.1:8765` passes for the mocked waiver
+  card flow: nav order, Trust notes rendering, Continue in Skipper, and draft
+  text.
+- Local smoke against the same server mounts the app but fails its no-console
+  assertion because `/api/snapshot/latest` returns 503 without `DATABASE_URL`.

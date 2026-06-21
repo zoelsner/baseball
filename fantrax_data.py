@@ -17,7 +17,19 @@ from typing import Any
 
 import requests
 from fantraxapi import FantraxAPI
-from fantraxapi import api as _fantrax_api
+
+try:
+    from fantraxapi import api as _fantrax_api
+except ImportError:
+    class _FantraxApiCompat:
+        @staticmethod
+        def get_pending_transactions(api: FantraxAPI) -> dict[str, Any]:
+            if hasattr(api, "_request"):
+                # Current PyPI fantraxapi exposes only the object parser publicly.
+                return api._request("getPendingTransactions")  # noqa: SLF001
+            raise AttributeError("fantraxapi raw pending-transactions endpoint is unavailable")
+
+    _fantrax_api = _FantraxApiCompat()
 
 log = logging.getLogger(__name__)
 

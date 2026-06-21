@@ -253,14 +253,22 @@ def skipper_options() -> dict[str, Any]:
 def skipper_history() -> dict[str, Any]:
     try:
         session_id = sandlot_db.get_or_create_default_session()
-        rows = sandlot_db.list_chat_messages(session_id)
+        snapshot_row = sandlot_db.latest_successful_snapshot()
+        current_snapshot_id = (
+            int(snapshot_row.get("id"))
+            if snapshot_row and snapshot_row.get("id") is not None
+            else None
+        )
+        rows = sandlot_db.list_chat_messages(session_id, snapshot_id=current_snapshot_id)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
     return jsonable_encoder({
         "session_id": session_id,
+        "snapshot_id": current_snapshot_id,
         "messages": [
             {
                 "id": r.get("id"),
+                "snapshot_id": r.get("snapshot_id"),
                 "role": r.get("role"),
                 "content": r.get("content"),
                 "tier": r.get("tier"),
@@ -361,9 +369,10 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
         raise HTTPException(status_code=409, detail="No Fantrax snapshot yet — run a refresh first")
 
     snapshot = _snapshot_payload(snapshot_row)
+    snapshot_id = int(snapshot_row.get("id")) if snapshot_row.get("id") is not None else None
     tier = sandlot_skipper.detect_tier(user_text, snapshot)
     context_block = sandlot_skipper.build_context(tier, snapshot, prompt=user_text)
-    history = sandlot_db.list_chat_messages(session_id)
+    history = sandlot_db.list_chat_messages(session_id, snapshot_id=snapshot_id)
     messages = sandlot_skipper.build_messages(history, user_text, context_block)
     deterministic_reply = sandlot_skipper.deterministic_reply(user_text, snapshot)
     selected_model = payload.model
@@ -372,14 +381,19 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
         payload.reasoning_effort if payload.reasoning else None
     )
 
-    sandlot_db.append_chat_message(session_id, "user", user_text)
+    sandlot_db.append_chat_message(session_id, "user", user_text, snapshot_id=snapshot_id)
     _log_skipper_projection_surfaces(snapshot_row, user_text, snapshot)
 
     def event_stream():
         if deterministic_reply:
             try:
                 sandlot_db.append_chat_message(
-                    session_id, "assistant", deterministic_reply, tier=tier, model="deterministic"
+                    session_id,
+                    "assistant",
+                    deterministic_reply,
+                    snapshot_id=snapshot_id,
+                    tier=tier,
+                    model="deterministic",
                 )
             except Exception:
                 log.exception("Failed to persist deterministic assistant message")
@@ -422,7 +436,7 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
             yield _sse({"type": "token", "text": full})
             try:
                 sandlot_db.append_chat_message(
-                    session_id, "assistant", full, tier=tier, model=used_model
+                    session_id, "assistant", full, snapshot_id=snapshot_id, tier=tier, model=used_model
                 )
             except Exception as exc:
                 log.exception("Failed to persist assistant message")

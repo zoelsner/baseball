@@ -112,6 +112,7 @@ def init_schema() -> None:
             CREATE TABLE IF NOT EXISTS chat_messages (
               id BIGSERIAL PRIMARY KEY,
               session_id BIGINT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+              snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL,
               created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
               role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
               content TEXT NOT NULL,
@@ -122,8 +123,20 @@ def init_schema() -> None:
         )
         conn.execute(
             """
+            ALTER TABLE chat_messages
+              ADD COLUMN IF NOT EXISTS snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL
+            """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS chat_messages_session_created_idx
             ON chat_messages (session_id, created_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS chat_messages_session_snapshot_created_idx
+            ON chat_messages (session_id, snapshot_id, created_at)
             """
         )
         conn.execute(
@@ -436,17 +449,29 @@ def get_or_create_default_session() -> int:
     return int(row["id"])
 
 
-def list_chat_messages(session_id: int) -> list[dict[str, Any]]:
+def list_chat_messages(session_id: int, snapshot_id: int | None = None) -> list[dict[str, Any]]:
     with connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, session_id, created_at, role, content, tier, model
-            FROM chat_messages
-            WHERE session_id = %s
-            ORDER BY created_at ASC, id ASC
-            """,
-            (session_id,),
-        ).fetchall()
+        if snapshot_id is None:
+            rows = conn.execute(
+                """
+                SELECT id, session_id, snapshot_id, created_at, role, content, tier, model
+                FROM chat_messages
+                WHERE session_id = %s
+                ORDER BY created_at ASC, id ASC
+                """,
+                (session_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, session_id, snapshot_id, created_at, role, content, tier, model
+                FROM chat_messages
+                WHERE session_id = %s
+                  AND snapshot_id = %s
+                ORDER BY created_at ASC, id ASC
+                """,
+                (session_id, snapshot_id),
+            ).fetchall()
     return list(rows)
 
 
@@ -455,17 +480,18 @@ def append_chat_message(
     role: str,
     content: str,
     *,
+    snapshot_id: int | None = None,
     tier: int | None = None,
     model: str | None = None,
 ) -> int:
     with connect() as conn:
         row = conn.execute(
             """
-            INSERT INTO chat_messages (session_id, role, content, tier, model)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO chat_messages (session_id, snapshot_id, role, content, tier, model)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING id
             """,
-            (session_id, role, content, tier, model),
+            (session_id, snapshot_id, role, content, tier, model),
         ).fetchone()
     return int(row["id"])
 
