@@ -259,10 +259,6 @@ def web_search_decision(
         "missing_players": [],
         "signals": [],
     }
-    if not requested:
-        return {**base, "reason": "disabled_by_user"}
-    if not base["available"]:
-        return {**base, "reason": "disabled_by_server"}
     if deterministic:
         return {**base, "reason": "deterministic_snapshot_reply"}
 
@@ -286,6 +282,20 @@ def web_search_decision(
     if not available.get("player_index"):
         signals.append("player_index_missing")
 
+    if not requested:
+        return {
+            **base,
+            "reason": "disabled_by_user",
+            "missing_players": missing_players[:6],
+            "signals": signals,
+        }
+    if not base["available"]:
+        return {
+            **base,
+            "reason": "disabled_by_server",
+            "missing_players": missing_players[:6],
+            "signals": signals,
+        }
     if missing_players and (public_context or waiver_context):
         return {
             **base,
@@ -368,6 +378,7 @@ def assess_reply_quality(
     quality = data_quality if isinstance(data_quality, dict) else {}
     summary = source_summary(sources)
     reason = str(decision.get("reason") or "")
+    signals = set(decision.get("signals") or [])
     used_web = bool(summary["total"] or web_search_requests)
     if not (reply or "").strip() or is_broken_reply(reply):
         level = "risky"
@@ -386,10 +397,19 @@ def assess_reply_quality(
         label = "Verify first"
         note = "Public context has trusted sources, but Fantrax-specific facts still come from the snapshot."
     elif used_web:
-        level = "risky"
-        label = "Thin sourcing"
-        note = "Web fallback ran without a trusted captured source."
-    elif reason in {"disabled_by_user", "disabled_by_server"}:
+        if summary["supplemental"] > 0:
+            level = "mixed"
+            label = "Supplemental sources"
+            note = "Public context has only supplemental captured sources, so verify before acting."
+        else:
+            level = "risky"
+            label = "Thin sourcing"
+            note = "Web fallback ran without a trusted captured source."
+    elif reason in {"disabled_by_user", "disabled_by_server"} and signals.intersection({
+        "named_player_missing_from_snapshot",
+        "public_context_requested",
+        "waiver_context_requested",
+    }):
         level = "mixed"
         label = "Snapshot only"
         note = "Web fallback was off, so missing public context may need manual verification."

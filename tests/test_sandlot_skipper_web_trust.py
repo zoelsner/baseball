@@ -60,6 +60,18 @@ class SkipperWebTrustTests(unittest.TestCase):
         self.assertFalse(decision["allowed"])
         self.assertIn("player_index_missing", decision["signals"])
 
+    def test_web_search_decision_disabled_user_still_reports_missing_data_signals(self):
+        decision = sandlot_skipper.web_search_decision(
+            "Can web verify Martin Perez?",
+            snapshot(),
+            requested=False,
+        )
+
+        self.assertFalse(decision["allowed"])
+        self.assertEqual(decision["reason"], "disabled_by_user")
+        self.assertIn("named_player_missing_from_snapshot", decision["signals"])
+        self.assertEqual(decision["missing_players"], ["Martin Perez"])
+
     def test_source_classification_marks_trusted_domains_and_trims_content(self):
         trusted = sandlot_skipper.classify_source({
             "url": "https://m.espn.com/mlb/player/_/id/31098/martin-perez",
@@ -97,11 +109,22 @@ class SkipperWebTrustTests(unittest.TestCase):
         self.assertEqual(quality["level"], "good")
         self.assertEqual(quality["label"], "Snapshot read")
 
-    def test_quality_flags_web_usage_without_trusted_sources(self):
+    def test_quality_marks_supplemental_only_sources_as_caution(self):
         quality = sandlot_skipper.assess_reply_quality(
             "Public web says something.",
             web_decision={"allowed": True, "reason": "missing_named_player"},
             sources=[{"url": "https://example.com/player"}],
+            web_search_requests=1,
+        )
+
+        self.assertEqual(quality["level"], "mixed")
+        self.assertEqual(quality["label"], "Supplemental sources")
+
+    def test_quality_flags_web_usage_without_captured_sources(self):
+        quality = sandlot_skipper.assess_reply_quality(
+            "Public web says something.",
+            web_decision={"allowed": True, "reason": "missing_named_player"},
+            sources=[],
             web_search_requests=1,
         )
 
@@ -129,6 +152,32 @@ class SkipperWebTrustTests(unittest.TestCase):
 
         self.assertEqual(quality["level"], "mixed")
         self.assertEqual(quality["label"], "Limited snapshot")
+
+    def test_quality_disabled_web_does_not_downgrade_snapshot_sufficient_answer(self):
+        quality = sandlot_skipper.assess_reply_quality(
+            "Your record is 6-4.",
+            web_decision={"allowed": False, "reason": "disabled_by_user", "signals": []},
+            sources=[],
+            web_search_requests=0,
+        )
+
+        self.assertEqual(quality["level"], "good")
+        self.assertEqual(quality["label"], "Snapshot read")
+
+    def test_quality_disabled_web_cautions_when_external_context_was_requested(self):
+        quality = sandlot_skipper.assess_reply_quality(
+            "I cannot verify Martin Perez with web fallback off.",
+            web_decision={
+                "allowed": False,
+                "reason": "disabled_by_user",
+                "signals": ["public_context_requested", "named_player_missing_from_snapshot"],
+            },
+            sources=[],
+            web_search_requests=0,
+        )
+
+        self.assertEqual(quality["level"], "mixed")
+        self.assertEqual(quality["label"], "Snapshot only")
 
     def test_skipper_sse_persists_metadata_and_done_confidence(self):
         class FakeSkipperClient:

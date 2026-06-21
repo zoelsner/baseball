@@ -48,6 +48,10 @@
 - Future product direction captured from Zach: one-click roster-change/swap
   preparation can build on the same trust metadata, but trade execution should
   remain a separate, deeper research workflow with much stricter specificity.
+- 2026-06-21: Ran a post-implementation Claude Opus/xhigh review of
+  `feature/skipper-web-trust-visuals`. Accepted two request-change findings:
+  web-off should not downgrade pure snapshot answers, and supplemental-only
+  sources should warn without sharing the broken-answer red state.
 
 ## Next Loop Phase
 
