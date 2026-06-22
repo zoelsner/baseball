@@ -67,6 +67,15 @@
   existing macOS git credential helper with the GitHub REST API to open draft
   PR [#81](https://github.com/zoelsner/baseball/pull/81) and safety issue
   [#82](https://github.com/zoelsner/baseball/issues/82).
+- 2026-06-22: Queried production read-only APIs for snapshot `209`
+  (`2026-06-22T13:02:23Z`). The live Attention Queue still emitted a
+  replacement action chain (`Daniel Schneemann -> OF; Brooks Lee -> 3B;
+  TJ Friedl -> RES`) even though production slot provenance showed
+  `position_fallback` for 20/37 roster rows, including active lineup rows.
+  Feeding those production rows into this branch's local data-quality gate
+  returned `lineup_recommendations_ready=False` and
+  `add_drop_recommendations_ready=False`, proving PR #81 blocks that unsafe
+  recommendation class until real active-slot extraction lands.
 
 ## Next Loop Phase
 
