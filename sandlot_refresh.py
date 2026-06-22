@@ -63,8 +63,12 @@ def _run_refresh_unlocked(source: str, started: float) -> RefreshResult:
         snapshot = fantrax_data.collect_all(session, league_id, team_id)
         snapshot = _maybe_apply_dom_slot_proof(snapshot, cookies, league_id, team_id)
         duration_ms = int((time.perf_counter() - started) * 1000)
-        errors = [str(e) for e in (snapshot.get("errors") or [])]
-        status = "failed" if _looks_like_failed_auth(snapshot) else "success"
+        section_errors = [str(e) for e in (snapshot.get("errors") or [])]
+        failure_errors = _refresh_failure_errors(snapshot, section_errors)
+        errors = _unique_errors([*section_errors, *failure_errors])
+        if errors != section_errors:
+            snapshot = {**snapshot, "errors": errors}
+        status = "failed" if failure_errors else "success"
 
         if status == "success" and cookies:
             sandlot_db.upsert_fantrax_cookies(cookies, source=cookie_source)
@@ -312,3 +316,33 @@ def _looks_like_failed_auth(snapshot: dict[str, Any]) -> bool:
     if any(token in joined_errors for token in ("401", "403", "unauthor", "forbidden", "login", "session")):
         return True
     return snapshot.get("team_name") is None
+
+
+def _refresh_failure_errors(snapshot: dict[str, Any], section_errors: list[str] | None = None) -> list[str]:
+    errors = section_errors if section_errors is not None else [str(e) for e in (snapshot.get("errors") or [])]
+    failures: list[str] = []
+    if _looks_like_failed_auth(snapshot):
+        failures.append("Fantrax auth/session appears invalid")
+    failures.extend(error for error in errors if error.lower().startswith("roster:"))
+
+    roster = snapshot.get("roster")
+    rows = roster.get("rows") if isinstance(roster, dict) else None
+    valid_rows = [
+        row for row in (rows or [])
+        if isinstance(row, dict) and row.get("id") and not row.get("error")
+    ]
+    if not valid_rows:
+        failures.append("No my-roster rows in snapshot")
+    return _unique_errors(failures)
+
+
+def _unique_errors(errors: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for error in errors:
+        text = str(error or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out

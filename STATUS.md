@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (after Hot Swaps Today slice).
+> Last updated: **2026-06-22** (production roster scrape fix in progress).
 
 ## Where things stand
 
@@ -105,6 +105,18 @@
   the remaining queue items. Browser smoke against a mocked local snapshot
   verified the rendered order, OUT/IN card, blocked `Propose swap`, and
   `Ask Skipper` handoff prompt. No new write path was enabled.
+- **Production roster scrape fix:** production snapshot `213` on Railway was
+  fresh but unusable: `/api/snapshot/latest` normalized to `roster: []` and
+  stored `errors: ["roster: 'Roster' object has no attribute 'positions'"]`.
+  Branch `fix/production-roster-scrape` makes `getTeamRosterInfo` raw payloads
+  the primary roster parser for my roster and all-team rosters, bypassing the
+  fragile upstream object parser, and marks refreshes `failed` when my-roster
+  rows are missing or the roster section errors. Hot Swaps remain read-only and
+  slot-provenance fail-closed. Local verification so far: focused scraper /
+  refresh / recommendation tests passed (`65 tests`), full Python suite passed
+  (`160 tests`), import smoke passed, `git diff --check` passed, and direct
+  `esbuild` rebuild passed. Deployment and Railway production verification are
+  still pending.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.
 

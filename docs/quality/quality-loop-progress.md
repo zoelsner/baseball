@@ -364,6 +364,20 @@
   `Propose swap blocked`, and seeds Skipper with the exact swap prompt.
   Local Playwright CLI is still unavailable in this checkout, so the updated
   Playwright spec is expected to run in GitHub Actions after push.
+- 2026-06-22: Started production scrape recovery on
+  `fix/production-roster-scrape` after Railway showed #83 deployed but
+  snapshot `213` promoted as `success` with `roster: []` and
+  `errors: ["roster: 'Roster' object has no attribute 'positions'"]`.
+  Implemented raw-first `getTeamRosterInfo` roster normalization for my roster
+  and all-team rosters, bypassing fragile upstream `Roster` / `RosterRow` /
+  `Player` construction when raw data is available. Added a refresh promotion
+  guard so missing valid my-roster rows or roster section errors mark the
+  refresh `failed` with existing `errors[]`, preventing empty roster snapshots
+  from becoming latest successful data. No Fantrax, Zo, add/drop, trade, or
+  executor write path was enabled. Verification so far: focused scraper /
+  refresh / recommendation tests passed (`65 tests`), full Python suite passed
+  (`160 tests`), import smoke passed, `git diff --check` passed, and direct
+  `esbuild` rebuild passed. Railway deployment verification is pending.
 
 ## Next Loop Phase
 

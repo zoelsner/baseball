@@ -131,6 +131,52 @@ class ProjectionLoggingTests(unittest.TestCase):
         self.assertEqual(record["predicted_margin"], 3.0)
         self.assertIn("drivers", record)
 
+    def test_refresh_marks_empty_my_roster_snapshot_failed(self):
+        snapshot = projection_ready_snapshot()
+        snapshot["roster"] = {"rows": []}
+        snapshot["errors"] = ["roster: 'Roster' object has no attribute 'positions'"]
+        insert_snapshot = Mock(return_value=123)
+        finish_refresh = Mock()
+        upsert = Mock()
+        prune = Mock()
+
+        with patch.dict(
+            sandlot_refresh.os.environ,
+            {"FANTRAX_LEAGUE_ID": "league", "FANTRAX_TEAM_ID": "me"},
+            clear=False,
+        ), patch.object(sandlot_refresh.sandlot_db, "init_schema"), patch.object(
+            sandlot_refresh, "_refresh_lock", return_value=fake_refresh_lock(True)
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "create_refresh_run", return_value=7
+        ), patch.object(
+            sandlot_refresh, "_session_from_available_cookies", return_value=(object(), None, "test")
+        ), patch.object(
+            sandlot_refresh.fantrax_data, "collect_all", return_value=snapshot
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "insert_snapshot", insert_snapshot
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "finish_refresh_run", finish_refresh
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "prune_successful_snapshots", prune
+        ), patch.object(
+            sandlot_refresh.sandlot_db, "upsert_projection_log", upsert
+        ):
+            result = sandlot_refresh.run_refresh(source="cron")
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, "failed")
+        self.assertIn("roster: 'Roster' object has no attribute 'positions'", result.errors)
+        self.assertIn("No my-roster rows in snapshot", result.errors)
+        self.assertEqual(result.snapshot["errors"], result.errors)
+        insert_snapshot.assert_called_once()
+        self.assertEqual(insert_snapshot.call_args.kwargs["status"], "failed")
+        self.assertEqual(insert_snapshot.call_args.kwargs["errors"], result.errors)
+        finish_refresh.assert_called_once()
+        self.assertEqual(finish_refresh.call_args.kwargs["status"], "failed")
+        self.assertIn("Roster", finish_refresh.call_args.kwargs["error"])
+        upsert.assert_not_called()
+        prune.assert_not_called()
+
     def test_dom_slot_proof_can_enrich_refresh_snapshot_when_enabled(self):
         snapshot = projection_ready_snapshot()
         snapshot["roster"]["rows"] = [

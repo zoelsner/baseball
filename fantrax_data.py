@@ -62,30 +62,43 @@ if _fantrax_api is None:
     _fantrax_api = _FantraxApiCompat()
 
 
+class _RawRoster:
+    """Minimal roster wrapper for raw getTeamRosterInfo payloads."""
+
+    def __init__(self, api: Any, team_id: str, data: dict[str, Any]) -> None:
+        self._api = api
+        self.team_id = team_id
+        self._data = data or {}
+        self.rows = []
+        self.active = _status_total_from_data(self._data, {"ACTIVE"}, "total")
+        self.active_max = _status_total_from_data(self._data, {"ACTIVE"}, "max")
+        self.reserve = _status_total_from_data(self._data, {"RES", "BN"}, "total")
+        self.reserve_max = _status_total_from_data(self._data, {"RES", "BN"}, "max")
+        self.injured = _status_total_from_data(self._data, {"IR", "IL", "INJ", "INJURED"}, "total")
+        self.injured_max = _status_total_from_data(self._data, {"IR", "IL", "INJ", "INJURED"}, "max")
+        self.period_number = _raw_period_value(self._data, "periodNumber", "scoringPeriod", "period")
+        self.period_date = _raw_period_value(self._data, "periodDate", "date")
+
+
 def _team_roster(api: Any, team_id: str) -> Any:
+    raw = _raw_team_roster(api, team_id)
+    if isinstance(raw, dict):
+        return _RawRoster(api, team_id, raw)
+
     if hasattr(api, "team_roster"):
         return api.team_roster(team_id)
     if hasattr(api, "roster_info"):
-        raw = None
-        request = getattr(api, "_request", None)
-        roster = None
-        if callable(request):
-            try:
-                raw = request("getTeamRosterInfo", teamId=team_id)
-                from fantraxapi.objs import Roster
-
-                roster = Roster(api, raw, team_id)
-            except Exception as e:
-                log.debug("Could not construct roster from raw Fantrax response: %s", e)
-        if roster is None:
-            roster = api.roster_info(team_id)
-        if raw is not None and not getattr(roster, "_data", None):
-            try:
-                setattr(roster, "_data", raw)
-            except Exception:
-                pass
-        return roster
+        return api.roster_info(team_id)
     raise AttributeError("FantraxAPI has no team_roster/roster_info method")
+
+
+def _raw_team_roster(api: Any, team_id: str) -> dict[str, Any] | None:
+    try:
+        raw = _raw_request(api, "getTeamRosterInfo", teamId=team_id)
+    except Exception as e:
+        log.debug("Raw getTeamRosterInfo failed for team %s: %s", team_id, e)
+        return None
+    return raw if isinstance(raw, dict) else None
 
 
 def _getattr_any(obj: Any, *names: str, default: Any = None) -> Any:
@@ -405,13 +418,48 @@ def _normalize_slot_label(value: Any) -> str | None:
     return ROSTER_SLOT_ALIASES.get(compact, compact)
 
 
+def _status_totals_from_data(data: dict[str, Any]) -> list[dict[str, Any]]:
+    totals = ((data.get("miscData") or {}).get("statusTotals") or []) if isinstance(data, dict) else []
+    return [item for item in totals if isinstance(item, dict)]
+
+
+def _status_total_from_data(data: dict[str, Any], labels: set[str], key: str) -> Any:
+    for item in _status_totals_from_data(data):
+        label = item.get("shortName") or item.get("name") or item.get("label")
+        if _normalize_slot_label(label) in labels:
+            return item.get(key)
+    return None
+
+
+def _raw_period_value(data: dict[str, Any], *keys: str) -> Any:
+    if not isinstance(data, dict):
+        return None
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, ""):
+            return _raw_scalar_period_value(value)
+    misc = data.get("miscData") if isinstance(data.get("miscData"), dict) else {}
+    for key in keys:
+        value = misc.get(key)
+        if value not in (None, ""):
+            return _raw_scalar_period_value(value)
+    return None
+
+
+def _raw_scalar_period_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key in ("number", "periodNumber", "value", "id", "date", "periodDate"):
+            nested = value.get(key)
+            if nested not in (None, ""):
+                return nested
+        return None
+    return value
+
+
 def _status_lookup(roster: Any) -> dict[str, str]:
     data = getattr(roster, "_data", {}) if roster is not None else {}
-    totals = ((data.get("miscData") or {}).get("statusTotals") or []) if isinstance(data, dict) else []
     lookup: dict[str, str] = {}
-    for item in totals:
-        if not isinstance(item, dict):
-            continue
+    for item in _status_totals_from_data(data):
         label = item.get("shortName") or item.get("name") or item.get("label")
         normalized = _normalize_slot_label(label)
         if not normalized:
@@ -428,15 +476,7 @@ def _status_lookup(roster: Any) -> dict[str, str]:
 
 def _status_total_value(roster: Any, labels: set[str], key: str) -> Any:
     data = getattr(roster, "_data", {}) if roster is not None else {}
-    totals = ((data.get("miscData") or {}).get("statusTotals") or []) if isinstance(data, dict) else []
-    for item in totals:
-        if not isinstance(item, dict):
-            continue
-        label = item.get("shortName") or item.get("name") or item.get("label")
-        normalized = _normalize_slot_label(label)
-        if normalized in labels:
-            return item.get(key)
-    return None
+    return _status_total_from_data(data, labels, key)
 
 
 def _status_value_or_attr(roster: Any, labels: set[str], key: str, attr: str) -> Any:
@@ -503,6 +543,158 @@ def _assigned_slot_overrides(roster: Any) -> dict[str, tuple[str, str]]:
     return overrides
 
 
+def _position_label(api: Any, pos_id: Any) -> str | None:
+    raw = str(pos_id or "").strip()
+    if not raw:
+        return None
+    try:
+        positions = getattr(api, "positions", {}) or {}
+        position = positions.get(raw) if hasattr(positions, "get") else None
+        label = _getattr_any(position, "short_name", "shortName", "name")
+        if label:
+            return str(label)
+    except Exception:
+        pass
+    return raw
+
+
+def _split_positions(value: Any) -> list[str]:
+    if isinstance(value, list):
+        values = value
+    else:
+        values = re.split(r"[,/]", str(value or ""))
+    out: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def _position_labels(api: Any, values: Any) -> list[str]:
+    if isinstance(values, list):
+        labels = [_position_label(api, value) for value in values]
+        return [label for label in labels if label]
+    return _split_positions(values)
+
+
+def _raw_player_positions(api: Any, scorer: dict[str, Any]) -> tuple[str | None, list[str]]:
+    positions = scorer.get("posShortNames") or scorer.get("positions")
+    all_positions = _position_labels(api, scorer.get("posIds") or scorer.get("allPositionIds"))
+    if not all_positions:
+        all_positions = _split_positions(positions)
+    if not positions and all_positions:
+        positions = ",".join(all_positions)
+    return str(positions) if positions else None, all_positions
+
+
+def _raw_fppg(row: dict[str, Any], scorer: dict[str, Any]) -> float | None:
+    for source in (row, scorer):
+        for key in ("fantasyPointsPerGame", "fppg", "fpPerGame", "average"):
+            value = _floatish(source.get(key))
+            if value is not None:
+                return value
+    return _floatish(_cell_content(row, 3))
+
+
+def _raw_fpts(row: dict[str, Any], scorer: dict[str, Any]) -> float | None:
+    for source in (row, scorer):
+        for key in ("totalFantasyPoints", "fantasyPoints", "fpts", "points"):
+            value = _floatish(source.get(key))
+            if value is not None:
+                return value
+    return _floatish(_cell_content(row, 2))
+
+
+def _raw_injury_status(scorer: dict[str, Any]) -> str | None:
+    for key in ("injuryStatus", "status", "playerStatus", "statusShortName"):
+        value = scorer.get(key)
+        if value:
+            normalized = str(value).strip().upper()
+            if normalized in {"DTD", "OUT", "IR", "IL", "INJ", "SUSP"}:
+                return normalized
+    for icon in scorer.get("icons") or []:
+        if not isinstance(icon, dict):
+            continue
+        type_id = str(icon.get("typeId") or icon.get("id") or "").strip()
+        label = str(icon.get("label") or icon.get("name") or icon.get("title") or "").upper()
+        if type_id == "1" or "DTD" in label or "DAY" in label:
+            return "DTD"
+        if type_id == "2" or "OUT" in label:
+            return "OUT"
+        if type_id == "6" or "IL" in label or "IR" in label or "INJ" in label:
+            return "IR"
+        if "SUSP" in label:
+            return "SUSP"
+    return None
+
+
+def _normalize_raw_future_game(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, Any] = {}
+    for key in ("date", "gameDate", "eventDate", "eventId", "opponent", "home", "away", "probable_start"):
+        if key in value and value.get(key) not in (None, ""):
+            out[key] = value.get(key)
+    if not out and value:
+        out = _to_jsonable(value)
+    return out or None
+
+
+def _raw_future_games(row: dict[str, Any]) -> list[dict[str, Any]]:
+    games: list[dict[str, Any]] = []
+    for key in ("future_games", "futureGames", "games", "scheduledGames", "upcomingGames"):
+        value = row.get(key)
+        if isinstance(value, list):
+            for item in value:
+                normalized = _normalize_raw_future_game(item)
+                if normalized:
+                    games.append(normalized)
+    for cell in row.get("cells") or []:
+        if not isinstance(cell, dict) or cell.get("eventId") in (None, ""):
+            continue
+        normalized = _normalize_raw_future_game(cell)
+        if normalized:
+            games.append(normalized)
+    return games
+
+
+def _normalize_roster_raw_row(
+    api: Any,
+    raw_row: dict[str, Any],
+    assigned_slots: dict[str, tuple[str, str]],
+) -> dict[str, Any] | None:
+    scorer = raw_row.get("scorer") if isinstance(raw_row.get("scorer"), dict) else {}
+    player_id = _row_player_id(raw_row)
+    if not player_id:
+        return None
+
+    positions, all_positions = _raw_player_positions(api, scorer)
+    position_short = _position_label(api, raw_row.get("posId")) or (all_positions[0] if all_positions else positions)
+    assigned_slot, slot_source = assigned_slots.get(str(player_id), (None, None))
+    slot = assigned_slot or position_short
+    slot_full = assigned_slot or position_short
+    entry = {
+        "name": scorer.get("name") or scorer.get("fullName") or scorer.get("shortName"),
+        "id": player_id,
+        "team": scorer.get("teamShortName") or scorer.get("teamName"),
+        "positions": positions,
+        "all_positions": all_positions,
+        "slot": slot,
+        "slot_full": slot_full,
+        "slot_source": slot_source or "position_fallback",
+        "fpts": _raw_fpts(raw_row, scorer),
+        "fppg": _raw_fppg(raw_row, scorer),
+        "injury": _raw_injury_status(scorer),
+        "age": None,
+        "raw": _to_jsonable(raw_row),
+    }
+    future_games = _raw_future_games(raw_row)
+    if future_games:
+        entry["future_games"] = future_games
+    return entry
+
+
 def _trusted_slot_override(value: Any) -> tuple[str, str] | None:
     if not isinstance(value, dict):
         return None
@@ -559,36 +751,48 @@ def extract_roster(api: FantraxAPI, team_id: str, slot_overrides: dict[str, dict
     assigned_slots = _assigned_slot_overrides(roster)
 
     rows = []
-    for row in getattr(roster, "rows", []) or []:
-        try:
-            player = getattr(row, "player", None)
-            position = _getattr_any(row, "position", "pos")
-            player_id = getattr(player, "id", None) if player else None
-            position_short = _getattr_any(position, "short_name", "shortName") if position else None
-            position_name = _getattr_any(position, "name") if position else None
-            assigned_slot, slot_source = assigned_slots.get(str(player_id), (None, None))
-            slot = assigned_slot or position_short or position_name
-            slot_full = assigned_slot or position_name
+    raw_rows = _raw_roster_rows(roster)
+    object_rows = getattr(roster, "rows", []) or []
+    if raw_rows and (isinstance(roster, _RawRoster) or not object_rows):
+        for raw_row in raw_rows:
+            try:
+                entry = _normalize_roster_raw_row(api, raw_row, assigned_slots)
+                if entry:
+                    rows.append(entry)
+            except Exception as e:
+                log.warning("Failed to parse raw roster row: %s", e)
+                rows.append({"error": str(e), "raw": _to_jsonable(raw_row)})
+    else:
+        for row in object_rows:
+            try:
+                player = getattr(row, "player", None)
+                position = _getattr_any(row, "position", "pos")
+                player_id = getattr(player, "id", None) if player else None
+                position_short = _getattr_any(position, "short_name", "shortName") if position else None
+                position_name = _getattr_any(position, "name") if position else None
+                assigned_slot, slot_source = assigned_slots.get(str(player_id), (None, None))
+                slot = assigned_slot or position_short or position_name
+                slot_full = assigned_slot or position_name
 
-            entry = {
-                "name": getattr(player, "name", None) if player else None,
-                "id": player_id,
-                "team": getattr(player, "team_short_name", None) or getattr(player, "team_name", None) if player else None,
-                "positions": getattr(player, "pos_short_name", None) if player else None,
-                "all_positions": [_getattr_any(p, "short_name", "shortName") for p in getattr(player, "all_positions", []) or []] if player else [],
-                "slot": slot,
-                "slot_full": slot_full,
-                "slot_source": slot_source or "position_fallback",
-                "fpts": _getattr_any(row, "total_fantasy_points", "fantasy_points", "fpts"),
-                "fppg": _getattr_any(row, "fantasy_points_per_game", "fppg"),
-                "injury": _injury_status(player),
-                "age": None,  # Fantrax doesn't expose age; populated from cache by audit.py
-                "raw": _to_jsonable(row),
-            }
-            rows.append(entry)
-        except Exception as e:
-            log.warning("Failed to parse roster row: %s", e)
-            rows.append({"error": str(e), "raw": _to_jsonable(row)})
+                entry = {
+                    "name": getattr(player, "name", None) if player else None,
+                    "id": player_id,
+                    "team": getattr(player, "team_short_name", None) or getattr(player, "team_name", None) if player else None,
+                    "positions": getattr(player, "pos_short_name", None) if player else None,
+                    "all_positions": [_getattr_any(p, "short_name", "shortName") for p in getattr(player, "all_positions", []) or []] if player else [],
+                    "slot": slot,
+                    "slot_full": slot_full,
+                    "slot_source": slot_source or "position_fallback",
+                    "fpts": _getattr_any(row, "total_fantasy_points", "fantasy_points", "fpts"),
+                    "fppg": _getattr_any(row, "fantasy_points_per_game", "fppg"),
+                    "injury": _injury_status(player),
+                    "age": None,  # Fantrax doesn't expose age; populated from cache by audit.py
+                    "raw": _to_jsonable(row),
+                }
+                rows.append(entry)
+            except Exception as e:
+                log.warning("Failed to parse roster row: %s", e)
+                rows.append({"error": str(e), "raw": _to_jsonable(row)})
 
     roster_data = {
         "rows": rows,

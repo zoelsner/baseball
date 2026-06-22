@@ -31,6 +31,23 @@ class FakeRosterInfoApi:
         return self._roster
 
 
+class RawFirstApi:
+    def __init__(self, raw_by_team):
+        self._raw_by_team = raw_by_team
+        self.raw_requests = []
+        self.team_lookup = {
+            "me": obj(name="Zohann", short="ZOH"),
+            "opp": obj(name="Opponent", short="OPP"),
+        }
+
+    def _request(self, method, **kwargs):
+        self.raw_requests.append((method, kwargs))
+        return self._raw_by_team[kwargs["teamId"]]
+
+    def roster_info(self, _team_id):
+        raise AttributeError("'Roster' object has no attribute 'positions'")
+
+
 class FakePosition:
     def __init__(self, short_name, name=None):
         self.short_name = short_name
@@ -41,6 +58,45 @@ class FakeRowApi:
     positions = {
         "OF": FakePosition("OF", "Outfield"),
         "UT": FakePosition("UT", "Utility"),
+    }
+
+
+def raw_roster_row(player_id, *, name, team="ATL", pos="OF", status="1", fppg="3.5", fpts="21.0"):
+    return {
+        "posId": pos,
+        "statusId": status,
+        "scorer": {
+            "scorerId": player_id,
+            "name": name,
+            "shortName": name,
+            "teamName": team,
+            "teamShortName": team,
+            "posShortNames": pos,
+            "posIdsNoFlex": [pos],
+            "posIds": [pos, "UT"],
+        },
+        "cells": [
+            {"content": ""},
+            {"content": "@DET<br/>7:05 PM ET", "eventId": "evt-1", "date": "2026-06-23"},
+            {"content": fpts},
+            {"content": fppg},
+        ],
+        "futureGames": [{"date": "2026-06-23", "eventId": "evt-1", "opponent": "DET"}],
+    }
+
+
+def raw_roster(*rows):
+    return {
+        "miscData": {
+            "statusTotals": [
+                {"id": "1", "name": "Active", "total": 1, "max": 22},
+                {"id": "2", "name": "Reserve", "shortName": "Res", "total": 1, "max": 7},
+                {"id": "3", "name": "Injured", "shortName": "IR", "total": 0, "max": 3},
+            ],
+            "periodNumber": 14,
+            "periodDate": "2026-06-22",
+        },
+        "tables": [{"rows": list(rows)}],
     }
 
 
@@ -307,7 +363,23 @@ class FantraxRosterSlotTests(unittest.TestCase):
                         {
                             "posId": "OF",
                             "statusId": "2",
-                            "scorer": {"scorerId": "compat-player"},
+                            "scorer": {
+                                "scorerId": "compat-player",
+                                "name": "Compat Player",
+                                "shortName": "Compat Player",
+                                "teamName": "Atlanta",
+                                "teamShortName": "ATL",
+                                "posShortNames": "OF",
+                                "posIdsNoFlex": ["OF"],
+                                "posIds": ["OF", "UT"],
+                                "injuryStatus": "INJ",
+                            },
+                            "cells": [
+                                {"content": ""},
+                                {"content": ""},
+                                {"content": "9.5"},
+                                {"content": "3.5"},
+                            ],
                         }
                     ]
                 }
@@ -318,7 +390,6 @@ class FantraxRosterSlotTests(unittest.TestCase):
         data = fantrax_data.extract_roster(api, "team")
 
         self.assertEqual(api.raw_request, ("getTeamRosterInfo", {"teamId": "team"}))
-        self.assertEqual(getattr(roster, "_data"), raw)
         self.assertEqual(data["rows"][0]["slot"], "RES")
         self.assertEqual(data["rows"][0]["slot_source"], "raw.statusId")
         self.assertEqual(data["rows"][0]["fppg"], 3.5)
@@ -329,6 +400,44 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(data["reserve_max"], 7)
         self.assertEqual(data["injured"], 0)
         self.assertEqual(data["injured_max"], 3)
+
+    def test_raw_roster_payload_bypasses_broken_upstream_object_parser(self):
+        api = RawFirstApi({
+            "me": raw_roster(
+                raw_roster_row("starter", name="Raw Starter", pos="OF", status="1", fppg="4.25", fpts="42.5"),
+                raw_roster_row("bench", name="Raw Bench", pos="SP", status="2", fppg="3.1", fpts="31.0"),
+            ),
+        })
+
+        data = fantrax_data.extract_roster(api, "me")
+
+        self.assertEqual(api.raw_requests, [("getTeamRosterInfo", {"teamId": "me"})])
+        self.assertEqual(len(data["rows"]), 2)
+        self.assertEqual(data["rows"][0]["name"], "Raw Starter")
+        self.assertEqual(data["rows"][0]["positions"], "OF")
+        self.assertEqual(data["rows"][0]["all_positions"], ["OF", "UT"])
+        self.assertEqual(data["rows"][0]["slot"], "OF")
+        self.assertEqual(data["rows"][0]["slot_source"], "position_fallback")
+        self.assertEqual(data["rows"][0]["fppg"], 4.25)
+        self.assertEqual(data["rows"][0]["fpts"], 42.5)
+        self.assertEqual(data["rows"][0]["future_games"][0]["eventId"], "evt-1")
+        self.assertEqual(data["rows"][1]["slot"], "RES")
+        self.assertEqual(data["rows"][1]["slot_source"], "raw.statusId")
+        self.assertEqual(data["reserve"], 1)
+        self.assertEqual(data["reserve_max"], 7)
+
+    def test_all_team_rosters_use_raw_first_roster_parser(self):
+        api = RawFirstApi({
+            "me": raw_roster(raw_roster_row("my-player", name="My Player", pos="OF", status="1")),
+            "opp": raw_roster(raw_roster_row("opp-player", name="Opp Player", pos="SS", status="1")),
+        })
+
+        data = fantrax_data.extract_all_team_rosters(api, "me")
+
+        self.assertEqual(data["me"]["rows"][0]["name"], "My Player")
+        self.assertEqual(data["me"]["is_me"], True)
+        self.assertEqual(data["opp"]["rows"][0]["name"], "Opp Player")
+        self.assertEqual(data["opp"]["is_me"], False)
 
     def test_current_roster_row_patch_tolerates_missing_game_time_parts(self):
         row = RosterRow(FakeRowApi(), {
