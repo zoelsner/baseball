@@ -337,6 +337,12 @@
   enabled. Verification: focused recommendation/attention/data-quality tests
   passed (`42 tests`), full Python suite passed (`155 tests`), direct
   `esbuild` rebuild passed, and `git diff --check` passed.
+- 2026-06-22: Promoted the read-only hot-swap proposal contract to the
+  Attention Queue item level as `item.proposal`, while preserving the nested
+  `replacement.proposal` for card rendering. The frontend queue builder mirrors
+  that shape and the card now prefers the item-level proposal when present.
+  This gives the future confirmation/executor slice a stable proposal handle
+  without enabling any writes.
 
 ## Next Loop Phase
 

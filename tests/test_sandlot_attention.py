@@ -45,6 +45,20 @@ def today_page_recommendations(chain=None):
                 "action": {"chain": chain},
                 "replacement_card": {
                     "type": "lineup_hot_swap",
+                    "proposal": {
+                        "id": "lineup-swap:corner:bench-bat:UT",
+                        "type": "lineup_swap",
+                        "status": "blocked",
+                        "writes_enabled": False,
+                        "confirmation_required": True,
+                        "summary": "Move Cold Corner out and Bench Bat in.",
+                        "safety_checks": [
+                            {"key": "trusted_slots", "label": "Trusted slot data", "state": "passed"},
+                            {"key": "lineup_only", "label": "Lineup-only move", "state": "passed"},
+                            {"key": "protected_players", "label": "Protected players excluded", "state": "passed"},
+                            {"key": "executor_ready", "label": "Execution safety", "state": "blocked"},
+                        ],
+                    },
                     "move_in": {
                         "id": "bench-bat",
                         "name": "Bench Bat",
@@ -274,6 +288,13 @@ class AttentionActionPayloadTests(unittest.TestCase):
         self.assertEqual(replacement["actions"], [])
         self.assertEqual(replacement["blocked_action"]["state"], "blocked")
         self.assertEqual(replacement["blocked_action"]["label"], "Propose swap")
+        self.assertEqual(replacement["proposal"]["id"], "lineup-swap:corner:bench-bat:UT")
+        self.assertEqual(replacement["proposal"]["status"], "blocked")
+        self.assertFalse(replacement["proposal"]["writes_enabled"])
+        self.assertEqual(
+            [check["state"] for check in replacement["proposal"]["safety_checks"]],
+            ["passed", "passed", "passed", "blocked"],
+        )
         self.assertEqual(replacement["replacement"]["move_in"]["name"], "Bench Bat")
         self.assertEqual(replacement["replacement"]["move_out"]["name"], "Cold Corner")
         self.assertFalse(replacement["replacement"]["safety"]["live_writes"])

@@ -925,6 +925,7 @@ function v2AttentionQueue(health, matchupRecommendations, options={}) {
       action:'Blocked',
       nav:'roster',
       replacement:replacementCard,
+      proposal:replacementCard?.proposal || null,
       blockedAction:replacementCard?.execution || {
         state:'blocked',
         label:'Propose swap',
@@ -1137,7 +1138,7 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
   const confidence = card.confidence || 'medium';
   const risk = card.risk_label || 'unknown';
   const execution = card.execution || item.blockedAction || {};
-  const proposal = card.proposal || {};
+  const proposal = item.proposal || card.proposal || {};
   const safetyChecks = Array.isArray(proposal.safety_checks) ? proposal.safety_checks : [];
   const benefitText = v2Signed(benefit.points, 1);
   const confidenceTone = String(confidence).toLowerCase() === 'high'

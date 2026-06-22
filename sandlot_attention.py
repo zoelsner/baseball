@@ -438,6 +438,7 @@ def build_queue(
             "action": None,
             "actions": [],
             "replacement": replacement_card,
+            "proposal": (replacement_card or {}).get("proposal"),
             "blocked_action": (replacement_card or {}).get("execution") or {
                 "state": "blocked",
                 "label": "Propose swap",
