@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (after Fantrax slot-provenance adapter hardening).
+> Last updated: **2026-06-22** (after frontend Attention Queue slot-provenance gating).
 
 ## Where things stand
 
@@ -19,10 +19,17 @@
   `statusId` slot provenance, tolerates fragile MLB future-game cells in
   `RosterRow`, recovers roster capacity from raw `statusTotals`, and keeps
   slot-based recommendations fail-closed when provenance is inferred.
+- **Frontend Attention Queue gate:** the Today screen now enforces the same
+  slot-provenance contract as the backend. It hides lineup/output/replacement
+  advice unless `data_quality.lineup_slots.state == "ok"` and shows an explicit
+  `Advice paused` state when active-slot data is inferred.
 - **Local verification:** Python unit suite is green on 2026-06-22
-  (`113 tests`). Live read-only Fantrax verification is still blocked in this
-  checkout because there are no local cookies/env credentials and Chrome cookie
-  import times out on macOS keychain access.
+  (`115 tests`). The local rebuilt Sandlot UI passes
+  `today-attention.spec.ts` against `http://127.0.0.1:4173`, including the
+  regression where an unsafe replacement card is hidden when slot provenance is
+  partial. Live read-only Fantrax verification is still blocked in this checkout
+  because there are no local cookies/env credentials and Chrome cookie import
+  times out on macOS keychain access.
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
 - **Current draft PR:** [#81](https://github.com/zoelsner/baseball/pull/81)
   tracks the slot-provenance safety gate, Fantrax adapter hardening, and

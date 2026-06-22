@@ -79,6 +79,24 @@
   Queue swap/output/replacement items from local branch code, proving PR #81
   blocks that unsafe recommendation class until real active-slot extraction
   lands.
+- 2026-06-22: User explicitly waived the blocked Claude gate for this slice
+  after repeated `claude -p --model opus --effort xhigh` session-limit
+  failures. Continued with internal skeptical review and documented the waiver
+  here rather than stalling the hot-swap safety work.
+- 2026-06-22: Closed the frontend gap in `web/sandlot/v2-pages.jsx`: the Today
+  Attention Queue now preserves slot provenance, requires
+  `data_quality.lineup_slots.state == "ok"` before showing lineup/output or
+  replacement advice, and renders an explicit `Advice paused` state for
+  untrusted active-slot data. Local browser verification against the rebuilt
+  bundle proves the unsafe replacement card is hidden and the pause explanation
+  is visible. Added Playwright regression coverage in
+  `tests/playwright/specs/today-attention.spec.ts`.
+- 2026-06-22: Verification after the frontend gate: `build:sandlot` passed,
+  local Playwright against `http://127.0.0.1:4173` passed
+  (`today-attention.spec.ts`, 3 tests), focused Python safety tests passed
+  (`51 tests`), full Python suite passed (`115 tests`), and `git diff --check`
+  passed. A direct Railway Playwright run intentionally still shows the unsafe
+  production behavior until PR #81 is deployed.
 
 ## Next Loop Phase
 

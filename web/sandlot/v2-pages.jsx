@@ -145,6 +145,7 @@ function v2NormalizeRosterRow(p, idx) {
     pos: positions,
     team: p.team || '',
     slot,
+    slotSource: p.slot_source || p.slotSource || null,
     fppg,
     fpts,
     proj: fppg || 0,
@@ -213,11 +214,31 @@ function v2SyncLabel(freshness) {
 
 function v2QualityReason(dataQuality, purpose='projection') {
   if (!dataQuality) return 'Data quality is unavailable';
-  const key = purpose === 'recommendation' ? 'recommendation_reasons' : 'projection_reasons';
-  const reasons = dataQuality[key] || dataQuality.reasons || [];
+  const reasonKeys = {
+    projection: ['projection_reasons'],
+    recommendation: ['recommendation_reasons'],
+    lineup: ['lineup_recommendation_reasons', 'recommendation_reasons'],
+    add_drop: ['add_drop_recommendation_reasons', 'recommendation_reasons'],
+  }[purpose] || ['projection_reasons'];
+  const reasons = reasonKeys
+    .flatMap(key => dataQuality[key] || [])
+    .concat(dataQuality.reasons || [])
+    .filter(Boolean);
   if (!reasons.length) return 'Required snapshot data is available';
   const first = String(reasons[0]).replace(/\.$/, '');
   return reasons.length === 1 ? first : `${first}, plus ${reasons.length - 1} more`;
+}
+
+function v2LineupAdviceReady(dataQuality) {
+  if (!dataQuality) return false;
+  return dataQuality.lineup_slots?.state === 'ok' && dataQuality.lineup_recommendations_ready !== false;
+}
+
+function v2LineupQualityReason(dataQuality) {
+  if (!dataQuality) return 'Data quality is unavailable';
+  const reason = v2QualityReason(dataQuality, 'lineup');
+  if (reason !== 'Required snapshot data is available') return reason;
+  return dataQuality.lineup_slots?.reason || 'Lineup-slot provenance is unavailable';
 }
 
 // ── Reusable controls ──────────────────────────────────────────
@@ -820,8 +841,10 @@ function v2AttentionReason(kind, row) {
   return `${row.reason}. Check whether this active spot needs a replacement.`;
 }
 
-function v2AttentionQueue(health, matchupRecommendations) {
+function v2AttentionQueue(health, matchupRecommendations, options={}) {
   const items = [];
+  const allowLineupHealth = options.allowLineupHealth !== false;
+  const allowReplacement = options.allowReplacement !== false;
   const addPlayerItem = (kind, row, index) => {
     const p = row.player;
     const metric = v2PlayerMetric(p);
@@ -849,10 +872,12 @@ function v2AttentionQueue(health, matchupRecommendations) {
   };
 
   health.injuryRows.forEach((row, index) => addPlayerItem('status', row, index));
-  health.lineupRows.forEach((row, index) => addPlayerItem('lineup', row, index));
-  health.coldRows.forEach((row, index) => addPlayerItem('output', row, index));
+  if (allowLineupHealth) {
+    health.lineupRows.forEach((row, index) => addPlayerItem('lineup', row, index));
+    health.coldRows.forEach((row, index) => addPlayerItem('output', row, index));
+  }
 
-  const top = matchupRecommendations?.recommendations?.[0] || null;
+  const top = allowReplacement ? matchupRecommendations?.recommendations?.[0] || null : null;
   if (top) {
     const points = v2Number(top.points_delta);
     const confidence = top.confidence || 'medium';
@@ -876,15 +901,23 @@ function v2AttentionQueue(health, matchupRecommendations) {
 
 function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
   const health = v2RosterHealth(model);
-  const matchupRecommendations = model.matchup?.recommendations || null;
-  const queue = v2AttentionQueue(health, matchupRecommendations);
-  const matchup = v2MatchupInfo(model.matchup);
   const dataQuality = model.dataQuality || null;
+  const hasRealData = model.source === 'api' && health.roster.length > 0;
+  const lineupAdviceReady = model.source === 'api' ? v2LineupAdviceReady(dataQuality) : true;
+  const matchupRecommendations = lineupAdviceReady ? model.matchup?.recommendations || null : null;
+  const queue = v2AttentionQueue(health, matchupRecommendations, {
+    allowLineupHealth: lineupAdviceReady,
+    allowReplacement: lineupAdviceReady,
+  });
+  const matchup = v2MatchupInfo(model.matchup);
   const projection = matchup?.projection || null;
   const projectionInfo = v2ProjectionInfo(projection);
   const showProjection = projectionInfo && !projectionInfo.complete;
   const showProjectionFallback = matchup && !showProjection && dataQuality?.projection_ready === false;
-  const showRecommendationFallback = model.source === 'api' && dataQuality?.recommendations_ready === false && !matchupRecommendations;
+  const lineupPausedReason = model.source === 'api' && hasRealData && !lineupAdviceReady
+    ? v2LineupQualityReason(dataQuality)
+    : null;
+  const showRecommendationFallback = model.source === 'api' && !lineupPausedReason && dataQuality?.recommendations_ready === false && !matchupRecommendations;
   const weekLabel = matchup?.week ? `Week ${matchup.week}` : 'Today';
   const staleCopy = sync.state === 'failed'
     ? (sync.error || 'Last refresh failed.')
@@ -893,7 +926,6 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
       : model.source === 'api'
         ? `Snapshot ${sync.label} old.`
         : 'Waiting for first successful Fantrax scrape.';
-  const hasRealData = model.source === 'api' && health.roster.length > 0;
 
   return (
     <div style={{ padding:'18px 16px 28px', display:'flex', flexDirection:'column', gap:14 }}>
@@ -914,7 +946,7 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
         </button>
       </div>
 
-      <V2AttentionQueue items={queue} hasRealData={hasRealData} sync={sync} onPlayer={onPlayer} onNav={onNav}/>
+      <V2AttentionQueue items={queue} hasRealData={hasRealData} sync={sync} pausedReason={lineupPausedReason} onPlayer={onPlayer} onNav={onNav}/>
 
       {sync.notice && sync.state !== 'refreshing' && (
         <V2Caution eyebrow="Heads up" tone="warn">{sync.notice}</V2Caution>
@@ -984,25 +1016,33 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
   );
 }
 
-function V2AttentionQueue({ items, hasRealData, sync, onPlayer, onNav }) {
+function V2AttentionQueue({ items, hasRealData, sync, pausedReason, onPlayer, onNav }) {
   const urgentCount = items.filter(item => item.severity === 'urgent').length;
   const checkCount = items.filter(item => item.severity === 'check').length;
   const reviewCount = items.length - urgentCount - checkCount;
+  const paused = Boolean(pausedReason);
+  const queueTone = paused
+    ? { color:V2.warn, bg:V2.warnSoft }
+    : items.length
+      ? { color:V2.accent, bg:V2.accentSoft }
+      : { color:V2.ok, bg:V2.okSoft };
   const headline = items.length
     ? [
         urgentCount ? `${urgentCount} urgent` : null,
         checkCount ? `${checkCount} check` : null,
         reviewCount ? `${reviewCount} review` : null,
       ].filter(Boolean).join(' · ')
-    : 'No current issues';
+    : paused
+      ? 'Advice paused'
+      : 'No current issues';
   return (
     <section style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, overflow:'hidden' }}>
       <div style={{ padding:'17px 18px 14px', borderBottom:items.length ? `1px solid ${V2.hairline2}` : 'none' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
-          <V2Eyebrow color={items.length ? V2.accent : V2.ok}>Attention Queue</V2Eyebrow>
+          <V2Eyebrow color={queueTone.color}>Attention Queue</V2Eyebrow>
           <span style={{
-            background:items.length ? V2.accentSoft : V2.okSoft,
-            color:items.length ? V2.accent : V2.ok,
+            background:queueTone.bg,
+            color:queueTone.color,
             borderRadius:999,
             padding:'5px 9px',
             fontSize:11,
@@ -1013,7 +1053,9 @@ function V2AttentionQueue({ items, hasRealData, sync, onPlayer, onNav }) {
           {headline}
         </div>
         <div style={{ marginTop:7, color:V2.muted, fontSize:12.5, lineHeight:1.4, fontWeight:700 }}>
-          Ordered by roster consequence from the latest Fantrax snapshot.
+          {paused
+            ? 'Showing only status-safe items until lineup slots are verified.'
+            : 'Ordered by roster consequence from the latest Fantrax snapshot.'}
         </div>
       </div>
       {items.length ? (
@@ -1029,7 +1071,7 @@ function V2AttentionQueue({ items, hasRealData, sync, onPlayer, onNav }) {
           ))}
         </div>
       ) : (
-        <V2AttentionEmptyState hasRealData={hasRealData} sync={sync}/>
+        <V2AttentionEmptyState hasRealData={hasRealData} sync={sync} pausedReason={pausedReason}/>
       )}
     </section>
   );
@@ -1083,8 +1125,13 @@ function V2AttentionQueueRow({ item, last, onPlayer, onNav }) {
   );
 }
 
-function V2AttentionEmptyState({ hasRealData, sync }) {
-  const copy = hasRealData
+function V2AttentionEmptyState({ hasRealData, sync, pausedReason }) {
+  const paused = Boolean(pausedReason);
+  const label = paused ? 'Paused' : hasRealData ? 'Clear' : 'No data';
+  const labelColor = paused ? V2.warn : hasRealData ? V2.ok : V2.warn;
+  const copy = paused
+    ? `Lineup and replacement advice is paused: ${pausedReason}.`
+    : hasRealData
     ? 'No injury, lineup, output, or replacement issue needs action in the current snapshot.'
     : sync.state === 'failed'
       ? (sync.error || 'Snapshot data is unavailable right now.')
@@ -1092,8 +1139,8 @@ function V2AttentionEmptyState({ hasRealData, sync }) {
   return (
     <div style={{ padding:'16px 18px 18px' }}>
       <div style={{ background:V2.surface2, border:`1px solid ${V2.hairline2}`, borderRadius:18, padding:'15px 16px' }}>
-        <div style={{ color:hasRealData ? V2.ok : V2.warn, fontSize:12, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em' }}>
-          {hasRealData ? 'Clear' : 'No data'}
+        <div style={{ color:labelColor, fontSize:12, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em' }}>
+          {label}
         </div>
         <div style={{ marginTop:7, color:V2.body, fontSize:13, lineHeight:1.45, fontWeight:700 }}>
           {copy}
