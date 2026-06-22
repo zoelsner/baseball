@@ -126,6 +126,21 @@
   protection for local tool/artifact directories; reuse existing
   `sandlot_data_quality` and `fantrax_data` provenance logic; add exit-code
   tests for `--require-trusted`.
+- 2026-06-22: Tried to use the Codex Chrome path for signed-in Fantrax read-only
+  proof. Chrome is running and the native host manifest is correct, but the
+  Codex Chrome Extension is not installed/enabled in the selected Chrome
+  profile, so browser control cannot read the signed-in page. Cookie inspection
+  through the browser is also intentionally out of scope for Chrome-control
+  safety rules. Added `import_fantrax_cookies_manual.py` as a keychain-free
+  fallback: paste a Fantrax request `Cookie:` header locally, write
+  `.cookies/fantrax.json` without printing values, then run
+  `diagnose_slot_provenance.py --require-trusted`.
+- 2026-06-22: Ran `claude -p --model opus --effort xhigh` on the manual cookie
+  fallback before commit. Accepted findings: remove the unnecessary `auth.py`
+  import so the manual path stays independent of Selenium/webdriver imports,
+  write the cookie file atomically with `0600` permissions, warn when secrets
+  are passed inline on the command line, stop printing all cookie names, and add
+  tests proving no cookie values are printed.
 
 ## Next Loop Phase
 

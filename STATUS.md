@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (after frontend Attention Queue slot-provenance gating).
+> Last updated: **2026-06-22** (after manual Fantrax cookie fallback hardening).
 
 ## Where things stand
 
@@ -24,7 +24,7 @@
   advice unless `data_quality.lineup_slots.state == "ok"` and shows an explicit
   `Advice paused` state when active-slot data is inferred.
 - **Local verification:** Python unit suite is green on 2026-06-22
-  (`115 tests`). The local rebuilt Sandlot UI passes
+  (`131 tests`). The local rebuilt Sandlot UI passes
   `today-attention.spec.ts` against `http://127.0.0.1:4173`, including the
   regression where an unsafe replacement card is hidden when slot provenance is
   partial. Live read-only Fantrax verification is still blocked in this checkout
@@ -38,6 +38,12 @@
   a live Fantrax roster read once cookies/env are available. Current production
   still reports `fail_closed`: 37 rows, 17 trusted, 20 untrusted, and all 20
   active rows untrusted.
+- **Cookie fallback:** if `import_chrome_cookies.py` hangs on macOS keychain,
+  copy a logged-in Fantrax request `Cookie:` header locally and run
+  `pbpaste | .venv/bin/python import_fantrax_cookies_manual.py --cookie-header -`;
+  then run `.venv/bin/python diagnose_slot_provenance.py --require-trusted`.
+  The helper writes `.cookies/fantrax.json` with `0600` permissions and does not
+  print cookie values.
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
 - **Current draft PR:** [#81](https://github.com/zoelsner/baseball/pull/81)
   tracks the slot-provenance safety gate, Fantrax adapter hardening, and
