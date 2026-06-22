@@ -12,16 +12,93 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
+import types
 from datetime import date as date_cls, datetime, time as time_cls, timezone
 from typing import Any
 
 import requests
 from fantraxapi import FantraxAPI
-from fantraxapi import api as _fantrax_api
+try:
+    from fantraxapi import api as _fantrax_api
+except Exception:  # fantraxapi 0.2.x exposes raw calls through FantraxAPI._request.
+    _fantrax_api = None
 
 log = logging.getLogger(__name__)
 
 FXPA_URL = "https://www.fantrax.com/fxpa/req"
+
+
+def _raw_request(api: Any, method: str, **data: Any) -> Any:
+    if _fantrax_api is not None:
+        fn = getattr(_fantrax_api, _raw_request_name(method), None)
+        if callable(fn):
+            return fn(api, **data)
+    request = getattr(api, "_request", None)
+    if callable(request):
+        return request(method, **data)
+    raise RuntimeError("fantraxapi raw request interface is unavailable")
+
+
+def _raw_request_name(method: str) -> str:
+    out = []
+    for i, char in enumerate(method):
+        if i and char.isupper():
+            out.append("_")
+        out.append(char.lower())
+    return "".join(out)
+
+
+class _FantraxApiCompat:
+    @staticmethod
+    def get_pending_transactions(api: Any, **data: Any) -> Any:
+        request = getattr(api, "_request", None)
+        if callable(request):
+            return request("getPendingTransactions", **data)
+        raise RuntimeError("fantraxapi raw request interface is unavailable")
+
+
+if _fantrax_api is None:
+    _fantrax_api = _FantraxApiCompat()
+
+
+def _team_roster(api: Any, team_id: str) -> Any:
+    if hasattr(api, "team_roster"):
+        return api.team_roster(team_id)
+    if hasattr(api, "roster_info"):
+        raw = None
+        request = getattr(api, "_request", None)
+        roster = None
+        if callable(request):
+            try:
+                raw = request("getTeamRosterInfo", teamId=team_id)
+                from fantraxapi.objs import Roster
+
+                roster = Roster(api, raw, team_id)
+            except Exception as e:
+                log.debug("Could not construct roster from raw Fantrax response: %s", e)
+        if roster is None:
+            roster = api.roster_info(team_id)
+        if raw is not None and not getattr(roster, "_data", None):
+            try:
+                setattr(roster, "_data", raw)
+            except Exception:
+                pass
+        return roster
+    raise AttributeError("FantraxAPI has no team_roster/roster_info method")
+
+
+def _getattr_any(obj: Any, *names: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    for name in names:
+        try:
+            value = getattr(obj, name)
+        except Exception:
+            continue
+        if value is not None:
+            return value
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +164,7 @@ try:
     _League.reset_info = _patched_reset_info  # type: ignore[method-assign]
     log.debug("Applied MLB-friendly reset_info patch to fantraxapi.objs.league.League")
 except Exception as _e:
-    log.warning("Could not apply reset_info patch: %s", _e)
+    log.debug("Skipped legacy reset_info patch: %s", _e)
 
 
 # ---------------------------------------------------------------------------
@@ -100,9 +177,7 @@ except Exception as _e:
 # from game parsing.
 
 def _patched_game_init(self, league: Any, player: Any, game_date: str, data: dict) -> None:  # type: ignore[no-redef]
-    from fantraxapi.objs.base import FantraxBaseObject
-
-    FantraxBaseObject.__init__(self, league, data)
+    self._data = data or {}
     self.id = self._data.get("eventId")
     self.player = player
     self.date = _parse_fantrax_game_date(league, game_date)
@@ -164,12 +239,86 @@ def _clean_team_token(value: Any) -> str:
     return text
 
 
+def _cell_content(data: dict, index: int) -> Any:
+    cells = data.get("cells") if isinstance(data, dict) else None
+    if not isinstance(cells, list) or index >= len(cells):
+        return None
+    cell = cells[index]
+    if isinstance(cell, dict):
+        return cell.get("content") or cell.get("value")
+    return cell
+
+
+def _floatish(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
 try:
     from fantraxapi.objs.game import Game as _Game
     _Game.__init__ = _patched_game_init  # type: ignore[method-assign]
     log.debug("Applied MLB-friendly Game.__init__ patch to fantraxapi.objs.game.Game")
 except Exception as _e:
-    log.warning("Could not apply Game.__init__ patch: %s", _e)
+    class _CompatGame:
+        def __init__(self, league: Any, player: Any, game_date: str, data: dict) -> None:
+            _patched_game_init(self, league, player, game_date, data)
+
+    _game_module = types.ModuleType("fantraxapi.objs.game")
+    _game_module.Game = _CompatGame
+    sys.modules.setdefault("fantraxapi.objs.game", _game_module)
+    log.debug("Installed compatibility fantraxapi.objs.game.Game shim: %s", _e)
+
+
+def _patched_roster_row_init(self, api: Any, data: dict) -> None:  # type: ignore[no-redef]
+    from fantraxapi.objs import Player, Position
+
+    self._api = api
+    self._data = data or {}
+    status_id = str(self._data.get("statusId") or "")
+
+    if status_id == "1":
+        self.pos_id = self._data.get("posId")
+        self.pos = getattr(api, "positions", {}).get(self.pos_id)
+        if self.pos is None:
+            self.pos = Position(api, {
+                "id": self.pos_id or "0",
+                "name": self.pos_id or "Active",
+                "shortName": self.pos_id or "ACT",
+            })
+    elif status_id == "3":
+        self.pos_id = "-1"
+        self.pos = Position(api, {"id": "-1", "name": "Injured", "shortName": "IR"})
+    else:
+        self.pos_id = "0"
+        self.pos = Position(api, {"id": "0", "name": "Reserve", "shortName": "Res"})
+    self.position = self.pos
+
+    self.player = None
+    self.fppg = None
+    self.fantasy_points_per_game = None
+    scorer = self._data.get("scorer") if isinstance(self._data.get("scorer"), dict) else None
+    if scorer:
+        self.player = Player(api, scorer)
+        self.fppg = _floatish(_cell_content(self._data, 3))
+        self.fantasy_points_per_game = self.fppg
+
+    content = str(_cell_content(self._data, 1) or "")
+    parts = _game_content_parts({"content": content})
+    self.opponent = _clean_team_token(parts[0]) if parts else None
+    self.time = _parse_game_time({"content": content})
+
+
+try:
+    from fantraxapi.objs import RosterRow as _RosterRow
+
+    _RosterRow.__init__ = _patched_roster_row_init  # type: ignore[method-assign]
+    log.debug("Applied MLB-friendly RosterRow.__init__ patch to fantraxapi.objs.RosterRow")
+except Exception as _e:
+    log.debug("Skipped RosterRow.__init__ patch: %s", _e)
 
 
 def _to_jsonable(obj: Any, depth: int = 0) -> Any:
@@ -213,6 +362,8 @@ def _injury_status(player: Any) -> str | None:
         return "SUSP"
     if getattr(player, "day_to_day", False):
         return "DTD"
+    if getattr(player, "injured", False):
+        return "INJ"
     return None
 
 
@@ -261,6 +412,26 @@ def _status_lookup(roster: Any) -> dict[str, str]:
         if raw_name:
             lookup[str(raw_name)] = normalized
     return lookup
+
+
+def _status_total_value(roster: Any, labels: set[str], key: str) -> Any:
+    data = getattr(roster, "_data", {}) if roster is not None else {}
+    totals = ((data.get("miscData") or {}).get("statusTotals") or []) if isinstance(data, dict) else []
+    for item in totals:
+        if not isinstance(item, dict):
+            continue
+        label = item.get("shortName") or item.get("name") or item.get("label")
+        normalized = _normalize_slot_label(label)
+        if normalized in labels:
+            return item.get(key)
+    return None
+
+
+def _status_value_or_attr(roster: Any, labels: set[str], key: str, attr: str) -> Any:
+    value = _status_total_value(roster, labels, key)
+    if value is not None:
+        return value
+    return getattr(roster, attr, None)
 
 
 def _raw_roster_rows(roster: Any) -> list[dict[str, Any]]:
@@ -333,17 +504,17 @@ def _assigned_slot_overrides(roster: Any) -> dict[str, tuple[str, str]]:
 def extract_roster(api: FantraxAPI, team_id: str) -> dict:
     """Returns dict with `rows` (list of normalized players) plus roster
     capacity totals (active/reserve/IR)."""
-    roster = api.team_roster(team_id)
+    roster = _team_roster(api, team_id)
     assigned_slots = _assigned_slot_overrides(roster)
 
     rows = []
     for row in getattr(roster, "rows", []) or []:
         try:
             player = getattr(row, "player", None)
-            position = getattr(row, "position", None)
+            position = _getattr_any(row, "position", "pos")
             player_id = getattr(player, "id", None) if player else None
-            position_short = getattr(position, "short_name", None) if position else None
-            position_name = getattr(position, "name", None) if position else None
+            position_short = _getattr_any(position, "short_name", "shortName") if position else None
+            position_name = _getattr_any(position, "name") if position else None
             assigned_slot, slot_source = assigned_slots.get(str(player_id), (None, None))
             slot = assigned_slot or position_short or position_name
             slot_full = assigned_slot or position_name
@@ -353,12 +524,12 @@ def extract_roster(api: FantraxAPI, team_id: str) -> dict:
                 "id": player_id,
                 "team": getattr(player, "team_short_name", None) or getattr(player, "team_name", None) if player else None,
                 "positions": getattr(player, "pos_short_name", None) if player else None,
-                "all_positions": [getattr(p, "short_name", None) for p in getattr(player, "all_positions", []) or []] if player else [],
+                "all_positions": [_getattr_any(p, "short_name", "shortName") for p in getattr(player, "all_positions", []) or []] if player else [],
                 "slot": slot,
                 "slot_full": slot_full,
                 "slot_source": slot_source or "position_fallback",
-                "fpts": getattr(row, "total_fantasy_points", None),
-                "fppg": getattr(row, "fantasy_points_per_game", None),
+                "fpts": _getattr_any(row, "total_fantasy_points", "fantasy_points", "fpts"),
+                "fppg": _getattr_any(row, "fantasy_points_per_game", "fppg"),
                 "injury": _injury_status(player),
                 "age": None,  # Fantrax doesn't expose age; populated from cache by audit.py
                 "raw": _to_jsonable(row),
@@ -370,12 +541,12 @@ def extract_roster(api: FantraxAPI, team_id: str) -> dict:
 
     return {
         "rows": rows,
-        "active": getattr(roster, "active", None),
-        "active_max": getattr(roster, "active_max", None),
-        "reserve": getattr(roster, "reserve", None),
-        "reserve_max": getattr(roster, "reserve_max", None),
-        "injured": getattr(roster, "injured", None),
-        "injured_max": getattr(roster, "injured_max", None),
+        "active": _status_value_or_attr(roster, {"ACTIVE"}, "total", "active"),
+        "active_max": _status_value_or_attr(roster, {"ACTIVE"}, "max", "active_max"),
+        "reserve": _status_value_or_attr(roster, {"RES", "BN"}, "total", "reserve"),
+        "reserve_max": _status_value_or_attr(roster, {"RES", "BN"}, "max", "reserve_max"),
+        "injured": _status_value_or_attr(roster, {"IR", "IL", "INJ", "INJURED"}, "total", "injured"),
+        "injured_max": _status_value_or_attr(roster, {"IR", "IL", "INJ", "INJURED"}, "max", "injured_max"),
         "period_number": getattr(roster, "period_number", None),
         "period_date": str(getattr(roster, "period_date", "")) or None,
     }
@@ -444,7 +615,7 @@ def extract_matchup(api: FantraxAPI, my_team_id: str) -> dict | None:
     if current is None:
         roster_period = None
         try:
-            roster_period = api.team_roster(my_team_id).period_number
+            roster_period = _team_roster(api, my_team_id).period_number
         except Exception:
             pass
         if roster_period is not None:
@@ -567,7 +738,7 @@ def extract_pending_trades(api: FantraxAPI, my_team_id: str) -> list[dict]:
 
 def _extract_pending_trades_raw(api: FantraxAPI, my_team_id: str) -> list[dict]:
     try:
-        response = _fantrax_api.get_pending_transactions(api)
+        response = _raw_request(api, "getPendingTransactions")
     except Exception as e:
         log.warning("pending_trades raw endpoint failed: %s", e)
         return []

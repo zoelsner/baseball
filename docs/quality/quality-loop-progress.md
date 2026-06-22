@@ -46,6 +46,22 @@
   recommendations now require trusted roster slot provenance and fail closed
   when `slot_source` is `position_fallback`. Generic trade grading remains
   available because it does not depend on active/bench slot execution.
+- 2026-06-22: Hardened the Fantrax roster adapter for the installed
+  `fantraxapi>=0.2.0` shape: preserve raw `getTeamRosterInfo` responses,
+  support `roster_info`/`row.pos`/`row.fppg`, patch fragile current-version
+  `RosterRow` MLB future-game parsing, recover roster capacity from raw
+  `statusTotals`, and add regression coverage for trusted `statusId` slots.
+  Focused adapter/recommendation tests and the full Python suite pass locally
+  (`113 tests`).
+- 2026-06-22: Live read-only Fantrax verification remains blocked locally:
+  this checkout has no `.env`, `FANTRAX_COOKIES_JSON`, or
+  `.cookies/fantrax.json`; `import_chrome_cookies.py` timed out after 30s,
+  likely waiting on macOS keychain access. Do not mark #67 complete until a
+  real authenticated refresh proves active slot coverage.
+- 2026-06-22: Attempted the Second-Opinion Gate with
+  `~/.local/bin/claude -p --model opus --effort xhigh`; Claude returned
+  `session limit · resets 12:20pm (America/New_York)`. Internal skeptical
+  review found and fixed the current-version `RosterRow` parser gap.
 
 ## Next Loop Phase
 

@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (after lineup-slot recommendation gate).
+> Last updated: **2026-06-22** (after Fantrax slot-provenance adapter hardening).
 
 ## Where things stand
 
@@ -13,6 +13,16 @@
   recommendations fail closed when roster slot source is `position_fallback` or
   otherwise untrusted. This prevents confident hot-swap/waiver proposals while
   real lineup-slot extraction is still being proven.
+- **#67 adapter hardening:** local `fantraxapi>=0.2.0` exposes
+  `roster_info`, `row.pos`, and `row.fppg` rather than the newer-ish fields the
+  scraper expected. The adapter now preserves raw roster responses for
+  `statusId` slot provenance, tolerates fragile MLB future-game cells in
+  `RosterRow`, recovers roster capacity from raw `statusTotals`, and keeps
+  slot-based recommendations fail-closed when provenance is inferred.
+- **Local verification:** Python unit suite is green on 2026-06-22
+  (`113 tests`). Live read-only Fantrax verification is still blocked in this
+  checkout because there are no local cookies/env credentials and Chrome cookie
+  import times out on macOS keychain access.
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
 - **Zo hot-swap issue draft:** because GitHub issue creation is blocked from
   this environment, the issue text is staged in
@@ -20,8 +30,9 @@
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 
-1. **Finish #67 real-slot proof** — verify whether `slot_source` from raw
-   Fantrax rows is sufficient for active lineup slots; if not, read the real
+1. **Finish #67 real-slot proof** — with valid local Fantrax cookies, refresh
+   read-only and inspect `slot_source` coverage from raw `statusId`/slot fields.
+   If active lineup slots still resolve as `position_fallback`, read the real
    `lineup-btn` DOM slot during scrape. Keep recommendation gates fail-closed
    until this is proven.
 2. **Build the lineup-only hot-swap card** — once real slots are trusted,

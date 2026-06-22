@@ -202,7 +202,7 @@ class ProjectionLoggingTests(unittest.TestCase):
         }
 
         with patch.object(sandlot_api, "_require_refresh_token"), patch.object(
-            sandlot_api, "run_refresh", return_value=result
+            sandlot_refresh, "run_refresh", return_value=result
         ), patch.object(
             sandlot_api.sandlot_db, "latest_successful_snapshot", return_value=row
         ):
@@ -222,7 +222,7 @@ class ProjectionLoggingTests(unittest.TestCase):
         )
 
         with patch.object(sandlot_api, "_require_refresh_token"), patch.object(
-            sandlot_api, "run_refresh", return_value=result
+            sandlot_refresh, "run_refresh", return_value=result
         ), patch.object(
             sandlot_api.sandlot_db, "latest_successful_snapshot", return_value=None
         ), self.assertRaises(fastapi.HTTPException) as raised:
