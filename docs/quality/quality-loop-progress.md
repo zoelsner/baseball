@@ -283,6 +283,23 @@
   `claude -p --model opus --effort xhigh` prompt for the data-layer trust
   boundary produced no output within 60 seconds and was interrupted; no
   external findings were available.
+- 2026-06-22: Integrated the read-only DOM slot proof path into
+  `sandlot_refresh` behind `SANDLOT_CAPTURE_ROSTER_DOM_SLOTS=1`. When enabled
+  with valid cookies, refresh captures the Fantrax roster page source, parses
+  `lineup-btn` slot evidence, applies trusted `dom.lineup-btn` overrides
+  through `fantrax_data.apply_trusted_slot_overrides()`, and records
+  top-level `slot_provenance` metadata (`dom_slots_found`,
+  `dom_slots_applied`, conflicts, and non-fatal capture errors). Capture
+  failure does not add snapshot `errors`, does not mark recommendations ready,
+  and leaves existing fail-closed gates in charge. Verification:
+  focused refresh/DOM/diagnostic/data-quality/attention tests passed
+  (`74 tests`), full Python suite passed (`155 tests`), direct `esbuild`
+  rebuild passed, `git diff --check` passed, and production
+  `/api/snapshot/latest` still exits `2` under `--require-trusted` with
+  37 roster rows, 17 trusted rows, 20 untrusted rows, and all 20 active rows
+  untrusted. This sandbox shell still lacks Node/npm/npx, so local Playwright
+  could not be rerun here; PR #81's GitHub `Local frontend E2E` job remains the
+  branch-only UI regression proof while Railway E2E remains production smoke.
 
 ## Next Loop Phase
 

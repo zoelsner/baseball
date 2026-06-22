@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (after lineup-only hot-swap card slice).
+> Last updated: **2026-06-22** (after opt-in read-only DOM slot proof refresh slice).
 
 ## Where things stand
 
@@ -41,15 +41,25 @@
   `Propose swap` state. Today renders that as a richer Attention Queue card
   with `Ask Skipper` and `Deep research` handoffs. The card emits no add/drop,
   no `change_slot` payload, and no live Fantrax write path.
+- **Opt-in refresh slot proof:** `sandlot_refresh` can now apply the read-only
+  Fantrax roster DOM proof path during snapshot refresh when
+  `SANDLOT_CAPTURE_ROSTER_DOM_SLOTS=1` is set and valid cookies are available.
+  It captures page source only, parses `lineup-btn` slot text, applies trusted
+  `dom.lineup-btn` overrides through `fantrax_data.apply_trusted_slot_overrides()`,
+  and records top-level `slot_provenance` metadata. Capture errors are
+  non-fatal and do not populate snapshot `errors`, so recommendations remain
+  fail-closed when slot proof is unavailable.
 - **Local verification:** Python unit suite is green on 2026-06-22
-  (`153 tests`). The local rebuilt Sandlot UI passes
-  `today-attention.spec.ts` against `http://127.0.0.1:4173` (`4 tests`),
-  including regressions where unsafe replacement cards are hidden when slot
-  provenance is partial or explicit lineup readiness is missing, and where the
-  hot-swap card names OUT/IN players, keeps `Propose swap` disabled, and seeds
-  Skipper with the proposed swap. Live read-only Fantrax verification is still
-  blocked in this checkout because there are no local cookies/env credentials
-  and Chrome cookie import times out on macOS keychain access.
+  (`155 tests`). The local rebuilt Sandlot bundle still builds with direct
+  `esbuild`; this sandbox shell has no Node/npm/npx available for a same-run
+  local Playwright rerun, so PR #81's GitHub `Local frontend E2E` job remains
+  the branch-owned browser regression proof. Earlier local Playwright coverage
+  verifies unsafe replacement cards are hidden when slot provenance is partial
+  or explicit lineup readiness is missing, and the hot-swap card names OUT/IN
+  players, keeps `Propose swap` disabled, and seeds Skipper with the proposed
+  swap. Live read-only Fantrax verification is still blocked in this checkout
+  because there are no local cookies/env credentials and Chrome cookie import
+  times out on macOS keychain access.
 - **CI split:** Railway Playwright remains a deployed-app smoke. PR #81 now
   adds a separate `Local frontend E2E` job for branch-only UI regressions that
   must run against the rebuilt local bundle before Railway has deployed it.
@@ -61,8 +71,8 @@
   roster DOM with `--capture-roster-dom`. Raw-payload mode reports candidate
   slot fields plus the current scraper's normalized assignment coverage. DOM
   mode can overlay `dom.lineup-btn` slots onto a matching snapshot through the
-  same `fantrax_data.apply_trusted_slot_overrides()` helper the future scraper
-  integration should use. Standalone raw/DOM evidence still cannot satisfy
+  same `fantrax_data.apply_trusted_slot_overrides()` helper now used by the
+  opt-in refresh integration. Standalone raw/DOM evidence still cannot satisfy
   `--require-trusted` until normalized roster rows carry trusted `slot_source`
   values. Current production still reports `fail_closed`: 37 rows, 17 trusted,
   20 untrusted, and all 20 active rows untrusted.
@@ -77,8 +87,8 @@
 - **Current draft PR:** [#81](https://github.com/zoelsner/baseball/pull/81)
   tracks the slot-provenance safety gate, Fantrax adapter hardening, and
   Attention Queue fail-closed behavior for untrusted active-slot data. Latest
-  pushed hot-swap-card head checked before this diagnostic slice (`3d96d8a`)
-  had green Railway smoke, local frontend E2E, frontend build, and Python
+  checked pushed head before the refresh integration slice (`b0ee36a`) was
+  green across Railway smoke, local frontend E2E, frontend build, and Python
   import/unit smoke.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.

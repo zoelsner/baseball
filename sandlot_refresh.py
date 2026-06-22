@@ -17,12 +17,14 @@ from dotenv import load_dotenv
 
 import auth
 import fantrax_data
+import fantrax_dom
 import sandlot_data_quality
 import sandlot_db
 import sandlot_matchup
 
 log = logging.getLogger(__name__)
 REFRESH_LOCK_ID = 2026051501
+DOM_SLOT_CAPTURE_ENV = "SANDLOT_CAPTURE_ROSTER_DOM_SLOTS"
 
 
 @dataclass
@@ -59,6 +61,7 @@ def _run_refresh_unlocked(source: str, started: float) -> RefreshResult:
         team_id = os.environ["FANTRAX_TEAM_ID"]
         session, cookies, cookie_source = _session_from_available_cookies()
         snapshot = fantrax_data.collect_all(session, league_id, team_id)
+        snapshot = _maybe_apply_dom_slot_proof(snapshot, cookies, league_id, team_id)
         duration_ms = int((time.perf_counter() - started) * 1000)
         errors = [str(e) for e in (snapshot.get("errors") or [])]
         status = "failed" if _looks_like_failed_auth(snapshot) else "success"
@@ -168,6 +171,78 @@ def _persist_projection_log(snapshot_id: int, snapshot: dict[str, Any]) -> None:
             sandlot_db.update_projection_actuals(**actual)
     except Exception:
         log.exception("Projection log write failed for snapshot_id=%s", snapshot_id)
+
+
+def _maybe_apply_dom_slot_proof(
+    snapshot: dict[str, Any],
+    cookies: list[dict[str, Any]] | None,
+    league_id: str,
+    team_id: str,
+) -> dict[str, Any]:
+    """Optionally enrich roster slot provenance from the read-only Fantrax DOM."""
+    if os.environ.get(DOM_SLOT_CAPTURE_ENV) != "1":
+        return snapshot
+
+    updated = dict(snapshot)
+    existing_metadata = snapshot.get("slot_provenance")
+    metadata: dict[str, Any] = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+    metadata.update({
+        "dom_capture_enabled": True,
+        "dom_slot_source": "dom.lineup-btn",
+        "dom_slots_found": 0,
+        "dom_slots_applied": 0,
+    })
+
+    if not cookies:
+        metadata["dom_capture_error"] = "Fantrax cookies are required for read-only roster DOM slot proof"
+        updated["slot_provenance"] = metadata
+        return updated
+
+    roster = snapshot.get("roster")
+    if not isinstance(roster, dict) or not isinstance(roster.get("rows"), list):
+        metadata["dom_capture_error"] = "snapshot roster rows are unavailable"
+        updated["slot_provenance"] = metadata
+        return updated
+
+    try:
+        wait_seconds = float(os.environ.get("SANDLOT_ROSTER_DOM_WAIT_SECONDS", "20"))
+        html = fantrax_dom.capture_roster_html(
+            cookies,
+            league_id=league_id,
+            team_id=team_id,
+            headful=os.environ.get("SANDLOT_ROSTER_DOM_HEADFUL") == "1",
+            url=os.environ.get("SANDLOT_FANTRAX_ROSTER_URL"),
+            wait_seconds=wait_seconds,
+        )
+        slot_overrides = fantrax_dom.lineup_slots_from_html(html)
+        before = _slot_source_map(roster)
+        enriched_roster = fantrax_data.apply_trusted_slot_overrides(roster, slot_overrides)
+        after = _slot_source_map(enriched_roster)
+        updated["roster"] = enriched_roster
+        metadata["dom_slots_found"] = len(slot_overrides)
+        metadata["dom_slots_conflicted"] = sum(1 for value in slot_overrides.values() if value.get("conflicts"))
+        metadata["dom_slots_applied"] = sum(
+            1
+            for player_id, current in after.items()
+            if current.get("slot_source") == "dom.lineup-btn" and before.get(player_id) != current
+        )
+    except Exception as exc:
+        metadata["dom_capture_error"] = str(exc)
+        log.warning("Read-only Fantrax roster DOM slot proof failed: %s", exc)
+
+    updated["slot_provenance"] = metadata
+    return updated
+
+
+def _slot_source_map(roster: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(row.get("id")): {
+            "slot": row.get("slot"),
+            "slot_source": row.get("slot_source"),
+        }
+        for row in roster.get("rows") or []
+        if isinstance(row, dict) and row.get("id") is not None
+    }
 
 
 def _session_from_available_cookies() -> tuple[requests.Session, list[dict[str, Any]] | None, str]:
