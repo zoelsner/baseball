@@ -128,9 +128,14 @@ test.describe('Today — Attention Queue', () => {
     await waitForAppMount(page);
     await skipIfAttentionQueueNotDeployed(page);
 
-    await expect(page.getByText('1 hot swap')).toBeVisible();
-    await expect(page.getByText('Best lineup-only move from the latest matchup simulation.')).toBeVisible();
-    await expect(page.getByText('1 urgent · 1 check · 1 review')).toBeVisible();
+    const expectBranchHotSwap = process.env.SANDLOT_EXPECT_SLOT_GATE === '1';
+    if (expectBranchHotSwap) {
+      await expect(page.getByText('1 hot swap')).toBeVisible();
+      await expect(page.getByText('Best lineup-only move from the latest matchup simulation.')).toBeVisible();
+      await expect(page.getByText('1 urgent · 1 check · 1 review')).toBeVisible();
+    } else {
+      await expect(page.getByText('1 urgent · 1 check · 2 review')).toBeVisible();
+    }
     await expect(page.getByText('Day-to-day on OF. Inspect replacement risk before lock.')).toBeVisible();
     await expect(page.getByText('No projected output. Confirm the active slot before leaving this player in.')).toBeVisible();
 
@@ -142,13 +147,16 @@ test.describe('Today — Attention Queue', () => {
     const judge = await yOf(page.getByRole('button', { name: /Aaron Judge/ }));
     const webb = await yOf(page.getByRole('button', { name: /Logan Webb/ }));
     const cold = await yOf(page.getByRole('button', { name: /Cold Corner Review Output/ }));
-    const expectBranchHotSwap = process.env.SANDLOT_EXPECT_SLOT_GATE === '1';
     const replacement = await yOf(expectBranchHotSwap
       ? page.getByText('Bench Bat for Cold Corner')
       : page.getByText(/Review lineup move|Bench Bat for Cold Corner/)
     );
 
-    expect(replacement).toBeLessThan(judge);
+    if (expectBranchHotSwap) {
+      expect(replacement).toBeLessThan(judge);
+    } else {
+      expect(replacement).toBeGreaterThan(cold);
+    }
     expect(webb).toBeGreaterThan(judge);
     expect(cold).toBeGreaterThan(webb);
 
@@ -162,10 +170,10 @@ test.describe('Today — Attention Queue', () => {
       await expect(page.getByText('latest Fantrax snapshot', { exact: true })).toBeVisible();
       const queueSection = page.locator('section').filter({ hasText: 'Bench Bat for Cold Corner' });
       await expect(queueSection.getByText('Proposal safety', { exact: true })).toBeVisible();
-      await expect(queueSection.getByText('Trusted slot data')).toBeVisible();
-      await expect(queueSection.getByText('Lineup-only move')).toBeVisible();
-      await expect(queueSection.getByText('Protected players excluded')).toBeVisible();
-      await expect(queueSection.getByText('Execution safety')).toBeVisible();
+      await expect(queueSection.getByText('Trusted slot data', { exact: true })).toBeVisible();
+      await expect(queueSection.getByText('Lineup-only move', { exact: true })).toBeVisible();
+      await expect(queueSection.getByText('Protected players excluded', { exact: true })).toBeVisible();
+      await expect(queueSection.getByText('Execution safety', { exact: true })).toBeVisible();
       await expect(queueSection.getByRole('button', { name: /Propose swap blocked/i })).toBeDisabled();
       await expect(queueSection.getByRole('button', { name: /Ask Skipper/i })).toBeVisible();
       await expect(queueSection.getByRole('button', { name: /Deep research/i })).toBeVisible();
@@ -200,8 +208,10 @@ test.describe('Today — Attention Queue', () => {
     await waitForAppMount(page);
     await skipIfAttentionQueueNotDeployed(page);
 
-    await expect(page.getByText('No hot swaps')).toBeVisible();
-    await expect(page.getByText('No lineup-only move clears the meaningful-gain threshold right now.')).toBeVisible();
+    if (process.env.SANDLOT_EXPECT_SLOT_GATE === '1') {
+      await expect(page.getByText('No hot swaps')).toBeVisible();
+      await expect(page.getByText('No lineup-only move clears the meaningful-gain threshold right now.')).toBeVisible();
+    }
     await expect(page.getByText('No current issues')).toBeVisible();
     await expect(page.getByText('No injury, lineup, output, or replacement issue needs action in the current snapshot.')).toBeVisible();
   });
@@ -247,7 +257,7 @@ test.describe('Today — Attention Queue', () => {
 
     await expect(page.getByText('Hot swaps paused')).toBeVisible();
     await expect(page.getByText('Lineup swap advice is paused: Lineup-slot source trusted for 17/37 roster players.')).toBeVisible();
-    await expect(page.getByText('Advice paused')).toBeVisible();
+    await expect(page.getByText('Advice paused')).toHaveCount(2);
     await expect(page.getByText('Showing only status-safe items until lineup slots are verified.')).toBeVisible();
     await expect(page.getByText('Lineup and replacement advice is paused: Lineup-slot source trusted for 17/37 roster players.')).toBeVisible();
     await expect(page.getByText('Review lineup move')).toHaveCount(0);
