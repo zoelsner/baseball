@@ -259,7 +259,7 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('Lineup swap advice is paused: Lineup-slot source trusted for 17/37 roster players.')).toBeVisible();
     await expect(page.getByText('Advice paused')).toHaveCount(2);
     await expect(page.getByText('Showing only status-safe items until lineup slots are verified.')).toBeVisible();
-    await expect(page.getByText('Lineup and replacement advice is paused: Lineup-slot source trusted for 17/37 roster players.')).toBeVisible();
+    await expect(page.getByText('Lineup and replacement advice is paused: Lineup-slot source trusted for 17/37 roster players.')).toHaveCount(2);
     await expect(page.getByText('Review lineup move')).toHaveCount(0);
     await expect(page.getByText('Low FP/G for active slot')).toHaveCount(0);
   });
