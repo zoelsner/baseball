@@ -42,7 +42,7 @@
   with `Ask Skipper` and `Deep research` handoffs. The card emits no add/drop,
   no `change_slot` payload, and no live Fantrax write path.
 - **Local verification:** Python unit suite is green on 2026-06-22
-  (`140 tests`). The local rebuilt Sandlot UI passes
+  (`147 tests`). The local rebuilt Sandlot UI passes
   `today-attention.spec.ts` against `http://127.0.0.1:4173` (`4 tests`),
   including regressions where unsafe replacement cards are hidden when slot
   provenance is partial or explicit lineup readiness is missing, and where the
@@ -55,13 +55,15 @@
   must run against the rebuilt local bundle before Railway has deployed it.
 - **Slot proof diagnostic:** `diagnose_slot_provenance.py` is the repeatable
   read-only proof tool for #67. It can check a snapshot URL/file, inspect a
-  saved raw Fantrax `getTeamRosterInfo` JSON file, and perform a live Fantrax
+  saved raw Fantrax `getTeamRosterInfo` JSON file, inspect a saved Fantrax
+  roster-page DOM file for `lineup-btn` slot text, and perform a live Fantrax
   roster read once cookies/env are available. Raw-payload mode reports candidate
-  slot fields plus the current scraper's normalized assignment coverage, but
-  still cannot satisfy `--require-trusted` until normalized roster rows carry
-  trusted `slot_source` values. Current production still reports
-  `fail_closed`: 37 rows, 17 trusted, 20 untrusted, and all 20 active rows
-  untrusted.
+  slot fields plus the current scraper's normalized assignment coverage. DOM
+  mode can overlay `dom.lineup-btn` slots onto a matching snapshot; standalone
+  raw/DOM evidence still cannot satisfy `--require-trusted` until normalized
+  roster rows carry trusted `slot_source` values. Current production still
+  reports `fail_closed`: 37 rows, 17 trusted, 20 untrusted, and all 20 active
+  rows untrusted.
 - **Cookie fallback:** if `import_chrome_cookies.py` hangs on macOS keychain,
   copy a logged-in Fantrax request `Cookie:` header locally and run
   `pbpaste | .venv/bin/python import_fantrax_cookies_manual.py --cookie-header -`;
@@ -80,11 +82,13 @@
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 
-1. **Finish #67 real-slot proof** — with valid local Fantrax cookies or a saved
-   raw `getTeamRosterInfo` payload, refresh/read-only inspect `slot_source`
-   coverage from raw `statusId`/slot fields. If active lineup slots still
-   resolve as `position_fallback`, read the real `lineup-btn` DOM slot during
-   scrape. Keep recommendation gates fail-closed until this is proven.
+1. **Finish #67 real-slot proof** — with valid local Fantrax cookies, a saved
+   raw `getTeamRosterInfo` payload, or a saved roster-page HTML file plus
+   matching snapshot, refresh/read-only inspect `slot_source` coverage from raw
+   `statusId`/slot fields and/or `dom.lineup-btn` slots. If active lineup slots
+   still resolve as `position_fallback`, integrate the read-only `lineup-btn`
+   DOM slot parser into the scrape. Keep recommendation gates fail-closed until
+   this is proven.
 2. **Wire the hot-swap proposal confirmation path** — keep `Propose swap`
    disabled until #63's executor safety can accept a lineup-only proposal with
    named OUT/IN players, slot provenance proof, and Zach confirmation.

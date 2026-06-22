@@ -228,6 +228,28 @@
   full Python suite passed (`140 tests`), direct `esbuild` rebuild passed with
   no bundle diff, `git diff --check` passed, and production
   `/api/snapshot/latest` still exits `2` with all 20 active rows untrusted.
+- 2026-06-22: Added `fantrax_dom.py`, a read-only saved-HTML parser for the
+  Fantrax roster DOM map from PR #63: player rows can be anchored by headshot
+  URLs containing `hs{player_id}_` or player/scorer data attributes, then the
+  row's `lineup-btn` text is normalized into trusted `dom.lineup-btn` slot
+  evidence. `diagnose_slot_provenance.py --roster-dom-file` can inspect DOM
+  evidence by itself (`dom_only`, still fail-closed under `--require-trusted`)
+  or overlay the DOM slots onto a matching snapshot file/URL so
+  `--require-trusted` passes only when every normalized roster row has trusted
+  slot provenance. Verification: `tests.test_fantrax_dom` and
+  `tests.test_slot_provenance_diagnostic` passed (`17 tests`), focused
+  slot/data-quality/attention tests passed (`41 tests`), full Python suite
+  passed (`147 tests`), direct `esbuild` rebuild passed with no bundle diff,
+  `git diff --check` passed, and production `/api/snapshot/latest` still exits
+  `2` with all 20 active rows untrusted.
+- 2026-06-22: Ran an internal skeptical review on the DOM proof boundary and
+  accepted one finding: do not treat broad row-level labels containing
+  "lineup" as slot controls, because that could read unrelated row text like a
+  player's eligible position. Tightened the parser to require `lineup-btn` or a
+  button-like lineup control and added a regression test. Attempted a minimal
+  non-secret `claude -p --model opus --effort xhigh` second-opinion prompt, but
+  it produced no output for several minutes and was interrupted; no external
+  findings were available.
 
 ## Next Loop Phase
 

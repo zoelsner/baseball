@@ -231,6 +231,83 @@ class SlotProvenanceDiagnosticTests(unittest.TestCase):
 
         self.assertEqual(code, 2)
 
+    def test_roster_dom_file_exit_code_cannot_satisfy_require_trusted_without_snapshot(self):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".html", delete=False)
+        with handle:
+            handle.write('<div class="player-row" data-player-id="active"><button class="lineup-btn">OF</button></div>')
+        self.addCleanup(lambda: Path(handle.name).unlink(missing_ok=True))
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = diagnostic.main(["--roster-dom-file", handle.name, "--require-trusted"])
+
+        self.assertEqual(code, 2)
+
+    def test_roster_dom_overlay_can_prove_snapshot_slot_sources(self):
+        snapshot = {
+            "roster": [
+                {
+                    "id": "active",
+                    "name": "Active Bat",
+                    "slot": "OF",
+                    "positions": "OF",
+                    "slot_source": "position_fallback",
+                },
+                {
+                    "id": "reserve",
+                    "name": "Reserve Arm",
+                    "slot": "SP",
+                    "positions": "SP",
+                    "slot_source": "position_fallback",
+                },
+            ],
+            "data_quality": {
+                "lineup_slots": {"state": "partial", "trusted_players": 0, "total_players": 2},
+            },
+        }
+        dom_slots = {
+            "active": {"slot": "OF", "slot_source": "dom.lineup-btn", "text": "OF"},
+            "reserve": {"slot": "RES", "slot_source": "dom.lineup-btn", "text": "Reserve"},
+        }
+
+        normalized = diagnostic._snapshot_with_dom_slots(snapshot, dom_slots)
+        report = diagnostic.slot_provenance_report(normalized, source="snapshot+dom")
+
+        self.assertEqual(report["verdict"], "trusted")
+        self.assertEqual(report["lineup_slots"]["state"], "ok")
+        self.assertEqual(report["slot_source_counts"], {"dom.lineup-btn": 2})
+        self.assertEqual(report["active_untrusted_rows"], 0)
+
+    def test_snapshot_plus_dom_file_can_satisfy_require_trusted(self):
+        snapshot_path = self._write_snapshot({
+            "roster": [
+                {
+                    "id": "active",
+                    "name": "Active Bat",
+                    "slot": "OF",
+                    "positions": "OF",
+                    "slot_source": "position_fallback",
+                }
+            ],
+            "data_quality": {
+                "lineup_slots": {"state": "partial", "trusted_players": 0, "total_players": 1},
+            },
+        })
+        handle = tempfile.NamedTemporaryFile("w", suffix=".html", delete=False)
+        with handle:
+            handle.write('<div class="player-row" data-player-id="active"><button class="lineup-btn">OF</button></div>')
+        self.addCleanup(lambda: Path(handle.name).unlink(missing_ok=True))
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = diagnostic.main([
+                "--snapshot-file",
+                snapshot_path,
+                "--roster-dom-file",
+                handle.name,
+                "--require-trusted",
+            ])
+
+        self.assertEqual(code, 0)
+
     def test_require_trusted_exit_code_fails_when_slots_are_untrusted(self):
         path = self._write_snapshot({
             "roster": [

@@ -22,6 +22,7 @@ from fantraxapi import FantraxAPI
 
 import auth
 import fantrax_data
+import fantrax_dom
 import sandlot_data_quality
 
 
@@ -229,6 +230,49 @@ def raw_roster_report(payload: Any, *, source: str) -> dict[str, Any]:
     }
 
 
+def dom_roster_report(html: str, *, source: str) -> dict[str, Any]:
+    slots = fantrax_dom.lineup_slots_from_html(html)
+    return {
+        "source": source,
+        "verdict": "dom_only",
+        "player_count": len(slots),
+        "slot_counts": dict(sorted(Counter(item["slot"] for item in slots.values()).items())),
+        "slot_source_counts": dict(sorted(Counter(item["slot_source"] for item in slots.values()).items())),
+        "examples": [
+            {"id": player_id, **item}
+            for player_id, item in list(sorted(slots.items()))[:8]
+        ],
+        "note": (
+            "Saved roster DOM can prove player-slot mappings from Fantrax "
+            "lineup buttons when combined with a matching Sandlot snapshot."
+        ),
+    }
+
+
+def _snapshot_with_dom_slots(snapshot: dict[str, Any], dom_slots: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    normalized = dict(snapshot)
+    roster = snapshot.get("roster")
+    rows = _rows_from_snapshot(snapshot)
+    updated_rows = []
+    for row in rows:
+        out = dict(row)
+        player_id = str(out.get("id") or "")
+        dom_slot = dom_slots.get(player_id)
+        if dom_slot and dom_slot.get("slot"):
+            out["slot"] = dom_slot["slot"]
+            out["slot_full"] = dom_slot["slot"]
+            out["slot_source"] = dom_slot.get("slot_source") or "dom.lineup-btn"
+        updated_rows.append(out)
+    if isinstance(roster, dict):
+        roster_copy = dict(roster)
+        roster_copy["rows"] = updated_rows
+        normalized["roster"] = roster_copy
+    else:
+        normalized["roster"] = updated_rows
+    normalized.pop("data_quality", None)
+    return normalized
+
+
 def slot_provenance_report(
     snapshot: dict[str, Any],
     *,
@@ -294,6 +338,10 @@ def _load_json_any_file(path: Path) -> Any:
     return json.loads(path.read_text())
 
 
+def _load_text_file(path: Path) -> str:
+    return path.read_text()
+
+
 def _cookies_from_env_or_file(path: Path) -> list[dict[str, Any]]:
     raw = os.environ.get("FANTRAX_COOKIES_JSON")
     if raw:
@@ -327,6 +375,19 @@ def _live_fantrax_snapshot(args: argparse.Namespace) -> tuple[dict[str, Any], li
 
 
 def _print_human(report: dict[str, Any]) -> None:
+    if report.get("verdict") == "dom_only":
+        print("Fantrax roster DOM diagnostic: dom_only")
+        print(f"Source: {report['source']}")
+        print(f"Players with lineup buttons: {report['player_count']}")
+        print(f"Slot counts: {json.dumps(report['slot_counts'], sort_keys=True)}")
+        print(report["note"])
+        examples = report.get("examples") or []
+        if examples:
+            print("Examples:")
+            for example in examples:
+                print(f"- {example.get('id')}: slot={example.get('slot')} text={example.get('text')!r}")
+        return
+
     if report.get("verdict") == "raw_only":
         print("Raw Fantrax roster diagnostic: raw_only")
         print(f"Source: {report['source']}")
@@ -409,6 +470,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     source.add_argument("--snapshot-url", help="Read an existing Sandlot snapshot API URL")
     source.add_argument("--snapshot-file", help="Read an existing snapshot JSON file")
     source.add_argument("--raw-roster-file", help="Inspect a saved raw Fantrax getTeamRosterInfo JSON file")
+    parser.add_argument("--roster-dom-file", help="Inspect or apply a saved Fantrax roster page HTML file")
     parser.add_argument("--league-id", help="Fantrax league id for live read-only diagnostics")
     parser.add_argument("--team-id", help="Fantrax team id for live read-only diagnostics")
     parser.add_argument("--cookies-file", default=str(auth.COOKIE_PATH), help="Fantrax cookie JSON path")
@@ -419,6 +481,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    dom_slots = None
+    dom_report = None
+    if args.roster_dom_file:
+        dom_html = _load_text_file(Path(args.roster_dom_file))
+        dom_slots = fantrax_dom.lineup_slots_from_html(dom_html)
+        dom_report = dom_roster_report(dom_html, source=args.roster_dom_file)
+
     if args.snapshot_url:
         snapshot = _load_json_url(args.snapshot_url)
         raw_rows = None
@@ -436,11 +505,25 @@ def main(argv: list[str] | None = None) -> int:
         if args.require_trusted:
             return 2
         return 0
+    elif dom_report is not None:
+        if args.json:
+            print(json.dumps(dom_report, indent=2, sort_keys=True))
+        else:
+            _print_human(dom_report)
+        if args.require_trusted:
+            return 2
+        return 0
     else:
         snapshot, raw_rows = _live_fantrax_snapshot(args)
         source = "live-fantrax-read-only"
 
+    if dom_slots is not None:
+        snapshot = _snapshot_with_dom_slots(snapshot, dom_slots)
+        source = f"{source} + {args.roster_dom_file}"
+
     report = slot_provenance_report(snapshot, source=source, raw_rows=raw_rows)
+    if dom_report is not None:
+        report["dom"] = dom_report
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
