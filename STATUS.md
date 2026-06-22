@@ -24,9 +24,10 @@
   checkout because there are no local cookies/env credentials and Chrome cookie
   import times out on macOS keychain access.
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
-- **Zo hot-swap issue draft:** because GitHub issue creation is blocked from
-  this environment, the issue text is staged in
-  `docs/quality/issue-drafts/zo-safe-roster-action-confirmation.md`.
+- **Current draft PR:** [#81](https://github.com/zoelsner/baseball/pull/81)
+  tracks the slot-provenance safety gate and Fantrax adapter hardening.
+- **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
+  tracks the future Zo confirmation/protected-player action architecture.
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 
