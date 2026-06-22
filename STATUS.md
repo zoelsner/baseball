@@ -30,6 +30,9 @@
   partial. Live read-only Fantrax verification is still blocked in this checkout
   because there are no local cookies/env credentials and Chrome cookie import
   times out on macOS keychain access.
+- **CI split:** Railway Playwright remains a deployed-app smoke. PR #81 now
+  adds a separate `Local frontend E2E` job for branch-only UI regressions that
+  must run against the rebuilt local bundle before Railway has deployed it.
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
 - **Current draft PR:** [#81](https://github.com/zoelsner/baseball/pull/81)
   tracks the slot-provenance safety gate, Fantrax adapter hardening, and

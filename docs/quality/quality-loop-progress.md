@@ -97,6 +97,14 @@
   (`51 tests`), full Python suite passed (`115 tests`), and `git diff --check`
   passed. A direct Railway Playwright run intentionally still shows the unsafe
   production behavior until PR #81 is deployed.
+- 2026-06-22: Initial PR CI showed why branch-only frontend regressions should
+  not run inside the Railway production smoke: `E2E against Railway` failed on
+  the new paused-advice assertion because production is not yet deployed from
+  PR #81. Added a separate `Local frontend E2E` workflow job that builds
+  `web/sandlot/app.js`, serves the rebuilt app on localhost, and runs the
+  slot-provenance Attention Queue regression with
+  `SANDLOT_EXPECT_SLOT_GATE=1`; Railway E2E keeps the same deployed-app smoke
+  responsibility.
 
 ## Next Loop Phase
 
