@@ -25,7 +25,8 @@
   import times out on macOS keychain access.
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
 - **Current draft PR:** [#81](https://github.com/zoelsner/baseball/pull/81)
-  tracks the slot-provenance safety gate and Fantrax adapter hardening.
+  tracks the slot-provenance safety gate, Fantrax adapter hardening, and
+  Attention Queue fail-closed behavior for untrusted active-slot data.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.
 

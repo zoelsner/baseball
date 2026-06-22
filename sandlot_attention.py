@@ -87,6 +87,7 @@ def _normalize_row(raw: dict[str, Any], idx: int) -> dict[str, Any]:
         "pos": positions,
         "team": raw.get("team") or "",
         "slot": raw.get("slot") or raw.get("slot_full") or "BN",
+        "slot_source": raw.get("slot_source"),
         "fppg": fppg,
         "fpts": _number(raw.get("fpts")),
         "proj": fppg or 0.0,
@@ -372,7 +373,21 @@ def _chain_action_payloads(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return payloads
 
 
-def build_queue(health: dict[str, Any], recommendations: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _lineup_slots_ready(data_quality: dict[str, Any] | None) -> bool:
+    if not isinstance(data_quality, dict):
+        return False
+    lineup_slots = data_quality.get("lineup_slots")
+    return isinstance(lineup_slots, dict) and lineup_slots.get("state") == "ok"
+
+
+def build_queue(
+    health: dict[str, Any],
+    recommendations: dict[str, Any] | None,
+    *,
+    allow_lineup_health: bool = True,
+    allow_status_actions: bool = True,
+    allow_replacement: bool = True,
+) -> list[dict[str, Any]]:
     """Mirror of v2AttentionQueue, plus executable /api/actions payloads."""
     items: list[dict[str, Any]] = []
 
@@ -385,7 +400,7 @@ def build_queue(health: dict[str, Any], recommendations: dict[str, Any] | None) 
         for chip in [status_text if status_text != "Active" else None, *row.get("chips", []), _metric_chip(p)]:
             if chip and chip not in chips:
                 chips.append(chip)
-        actions = _status_action_payloads(p) if kind == "status" else []
+        actions = _status_action_payloads(p) if kind == "status" and allow_status_actions else []
         items.append({
             "id": f"{kind}-{p.get('id') or p.get('name') or index}",
             "kind": kind,
@@ -403,12 +418,13 @@ def build_queue(health: dict[str, Any], recommendations: dict[str, Any] | None) 
 
     for index, row in enumerate(health["injury_rows"]):
         add_player_item("status", row, index)
-    for index, row in enumerate(health["lineup_rows"]):
-        add_player_item("lineup", row, index)
-    for index, row in enumerate(health["cold_rows"]):
-        add_player_item("output", row, index)
+    if allow_lineup_health:
+        for index, row in enumerate(health["lineup_rows"]):
+            add_player_item("lineup", row, index)
+        for index, row in enumerate(health["cold_rows"]):
+            add_player_item("output", row, index)
 
-    top_list = (recommendations or {}).get("recommendations") or []
+    top_list = ((recommendations or {}).get("recommendations") or []) if allow_replacement else []
     top = top_list[0] if top_list else None
     if top:
         points = _number(top.get("points_delta"))
@@ -435,12 +451,16 @@ def build_queue(health: dict[str, Any], recommendations: dict[str, Any] | None) 
     return items[:MAX_ITEMS]
 
 
-def _matchup_recommendations(data: dict[str, Any]) -> dict[str, Any] | None:
+def _matchup_recommendations(
+    data: dict[str, Any],
+    data_quality: dict[str, Any] | None,
+) -> dict[str, Any] | None:
     """Same gating as sandlot_api._snapshot_payload."""
     matchup = data.get("matchup")
     if not isinstance(matchup, dict) or not matchup:
         return None
-    data_quality = sandlot_data_quality.snapshot_data_quality(data)
+    if not _lineup_slots_ready(data_quality):
+        return None
     return sandlot_matchup.rank_matchup_improvement_actions(data, data_quality)
 
 
@@ -452,7 +472,18 @@ def attention_items(data: dict[str, Any], recommendations: Any = _UNSET) -> list
     """
     raw_rows = (data.get("roster") or {}).get("rows") or []
     roster = [_normalize_row(r, i) for i, r in enumerate(raw_rows) if isinstance(r, dict)]
+    data_quality = sandlot_data_quality.snapshot_data_quality(data)
+    lineup_slots_ready = _lineup_slots_ready(data_quality)
     health = roster_health(roster)
     if recommendations is _UNSET:
-        recommendations = _matchup_recommendations(data)
-    return build_queue(health, recommendations)
+        recommendations = _matchup_recommendations(data, data_quality)
+        allow_replacement = lineup_slots_ready
+    else:
+        allow_replacement = True
+    return build_queue(
+        health,
+        recommendations,
+        allow_lineup_health=lineup_slots_ready,
+        allow_status_actions=lineup_slots_ready,
+        allow_replacement=allow_replacement,
+    )

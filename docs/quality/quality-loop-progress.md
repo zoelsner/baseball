@@ -74,8 +74,11 @@
   `position_fallback` for 20/37 roster rows, including active lineup rows.
   Feeding those production rows into this branch's local data-quality gate
   returned `lineup_recommendations_ready=False` and
-  `add_drop_recommendations_ready=False`, proving PR #81 blocks that unsafe
-  recommendation class until real active-slot extraction lands.
+  `add_drop_recommendations_ready=False`. After tightening
+  `sandlot_attention`, the same production-shaped input returns no Attention
+  Queue swap/output/replacement items from local branch code, proving PR #81
+  blocks that unsafe recommendation class until real active-slot extraction
+  lands.
 
 ## Next Loop Phase
 

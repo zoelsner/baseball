@@ -44,8 +44,16 @@ def today_page_recommendations(chain=None):
     }
 
 
+def row_with_slot_source(row):
+    out = dict(row)
+    if "slot_source" not in out:
+        slot = str(out.get("slot") or "").upper()
+        out["slot_source"] = "raw.statusId" if slot in sandlot_attention.RESERVED_SLOTS else "raw.lineupSlot"
+    return out
+
+
 def snapshot_data(roster):
-    return {"roster": {"rows": roster}}
+    return {"roster": {"rows": [row_with_slot_source(row) for row in roster]}}
 
 
 def queue_for(roster, recommendations=None):
@@ -232,6 +240,55 @@ class AttentionRecommendationGatingTests(unittest.TestCase):
 
         ranked.assert_called_once()
         self.assertEqual(items[-1]["kind"], "replacement")
+
+    def test_untrusted_slot_provenance_suppresses_attention_swap_guidance(self):
+        data = snapshot_data([
+            {
+                "id": "cold",
+                "name": "Cold Active",
+                "slot": "OF",
+                "slot_source": "position_fallback",
+                "positions": "OF",
+                "fppg": 0.8,
+            },
+            {
+                "id": "bench",
+                "name": "Bench Upgrade",
+                "slot": "RES",
+                "slot_source": "raw.statusId",
+                "positions": "OF",
+                "fppg": 4.0,
+            },
+        ])
+        data["matchup"] = {"my_score": 1.0}
+        with mock.patch.object(
+            sandlot_attention.sandlot_matchup,
+            "rank_matchup_improvement_actions",
+            return_value=today_page_recommendations(),
+        ) as ranked:
+            items = sandlot_attention.attention_items(data)
+
+        ranked.assert_not_called()
+        self.assertEqual(items, [])
+
+    def test_untrusted_slot_provenance_suppresses_status_action_payload(self):
+        data = snapshot_data([
+            {
+                "id": "judge",
+                "name": "Aaron Judge",
+                "slot": "OF",
+                "slot_source": "position_fallback",
+                "positions": "OF",
+                "fppg": 6.2,
+                "injury": "DTD",
+            }
+        ])
+
+        items = sandlot_attention.attention_items(data)
+
+        self.assertEqual([item["kind"] for item in items], ["status"])
+        self.assertIsNone(items[0]["action"])
+        self.assertEqual(items[0]["actions"], [])
 
 
 class AttentionStatusChangeTests(unittest.TestCase):
