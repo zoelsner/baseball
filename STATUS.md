@@ -119,10 +119,11 @@
   services reported success; manual refresh run `295` then failed safely
   instead of promoting another empty roster snapshot. It still exposed the same
   scraper error, so the active follow-up patch makes raw helper failures fall
-  back to `FantraxAPI._request` before touching the upstream `Roster` parser.
-  Verification for that patch: roster regression tests passed (`11 tests`),
-  focused scraper / refresh / recommendation tests passed (`66 tests`), and
-  full Python suite passed (`161 tests`). Final Railway production verification
+  back to `FantraxAPI._request`, then to a direct authenticated `fxpa/req`
+  call, before touching the upstream `Roster` parser. Verification for that
+  patch: roster regression tests passed (`12 tests`), focused scraper /
+  refresh / recommendation tests passed (`67 tests`), full Python suite passed
+  (`162 tests`), and import smoke passed. Final Railway production verification
   is still pending.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.

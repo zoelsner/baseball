@@ -387,12 +387,12 @@
   proving the promotion guard now prevents another empty-roster success but the
   raw scraper path still missed production's library shape. Added a follow-up
   compatibility fix so a failing `fantraxapi.api` raw helper falls back to
-  `FantraxAPI._request` before using upstream `Roster`, plus regression
-  coverage for that path. Verification: roster regression tests passed
-  (`11 tests`), focused scraper / refresh / recommendation tests passed
-  (`66 tests`), full Python suite passed (`161 tests`), and import smoke
-  passed. Next step is deploy this follow-up and verify a new real production
-  refresh returns non-empty my-roster rows.
+  `FantraxAPI._request`, then to direct authenticated `fxpa/req`, before using
+  upstream `Roster`, plus regression coverage for both fallback paths.
+  Verification: roster regression tests passed (`12 tests`), focused scraper /
+  refresh / recommendation tests passed (`67 tests`), full Python suite passed
+  (`162 tests`), and import smoke passed. Next step is deploy this follow-up
+  and verify a new real production refresh returns non-empty my-roster rows.
 
 ## Next Loop Phase
 

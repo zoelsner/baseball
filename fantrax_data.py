@@ -30,19 +30,26 @@ FXPA_URL = "https://www.fantrax.com/fxpa/req"
 
 
 def _raw_request(api: Any, method: str, **data: Any) -> Any:
-    helper_error: Exception | None = None
+    errors: list[str] = []
     if _fantrax_api is not None:
         fn = getattr(_fantrax_api, _raw_request_name(method), None)
         if callable(fn):
             try:
                 return fn(api, **data)
             except Exception as exc:
-                helper_error = exc
+                errors.append(f"helper {type(exc).__name__}: {exc}")
     request = getattr(api, "_request", None)
     if callable(request):
-        return request(method, **data)
-    if helper_error is not None:
-        raise helper_error
+        try:
+            return request(method, **data)
+        except Exception as exc:
+            errors.append(f"_request {type(exc).__name__}: {exc}")
+    try:
+        return _direct_fxpa_request(api, method, **data)
+    except Exception as exc:
+        errors.append(f"direct {type(exc).__name__}: {exc}")
+    if errors:
+        raise RuntimeError("; ".join(errors))
     raise RuntimeError("fantraxapi raw request interface is unavailable")
 
 
@@ -53,6 +60,38 @@ def _raw_request_name(method: str) -> str:
             out.append("_")
         out.append(char.lower())
     return "".join(out)
+
+
+def _direct_fxpa_request(api: Any, method: str, **data: Any) -> Any:
+    session = getattr(api, "_session", None) or getattr(api, "session", None)
+    league_id = getattr(api, "league_id", None) or data.get("leagueId")
+    if session is None or not league_id:
+        raise RuntimeError("missing authenticated session or league id")
+
+    request_data = {"leagueId": league_id, **data}
+    response = session.post(
+        FXPA_URL,
+        params={"leagueId": league_id},
+        json={"msgs": [{"method": method, "data": request_data}]},
+        timeout=30,
+    )
+    try:
+        response_json = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"invalid JSON from {method}") from exc
+    if getattr(response, "status_code", 200) >= 400:
+        reason = getattr(response, "reason", "")
+        raise RuntimeError(f"HTTP {response.status_code} {reason}".strip())
+    page_error = response_json.get("pageError") if isinstance(response_json, dict) else None
+    if page_error:
+        raise RuntimeError(str(page_error))
+    responses = response_json.get("responses") if isinstance(response_json, dict) else None
+    if not responses:
+        raise RuntimeError("missing responses")
+    first = responses[0] or {}
+    if first.get("error") or first.get("errorMsg") or first.get("pageError"):
+        raise RuntimeError(str(first.get("error") or first.get("errorMsg") or first.get("pageError")))
+    return first.get("data") if isinstance(first, dict) and "data" in first else first
 
 
 class _FantraxApiCompat:

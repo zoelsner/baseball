@@ -48,6 +48,40 @@ class RawFirstApi:
         raise AttributeError("'Roster' object has no attribute 'positions'")
 
 
+class FakeResponse:
+    status_code = 200
+    reason = "OK"
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class FakeDirectSession:
+    def __init__(self, raw):
+        self.raw = raw
+        self.requests = []
+
+    def post(self, url, *, params=None, json=None, timeout=None):
+        self.requests.append({"url": url, "params": params, "json": json, "timeout": timeout})
+        return FakeResponse({"responses": [{"data": self.raw}]})
+
+
+class DirectRawApi:
+    league_id = "league-1"
+
+    def __init__(self, raw):
+        self._session = FakeDirectSession(raw)
+
+    def _request(self, method, **kwargs):
+        raise RuntimeError(f"{method} unavailable through library")
+
+    def roster_info(self, _team_id):
+        raise AttributeError("'Roster' object has no attribute 'positions'")
+
+
 class BrokenRawHelper:
     @staticmethod
     def get_team_roster_info(_api, **_kwargs):
@@ -446,6 +480,22 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(api.raw_requests, [("getTeamRosterInfo", {"teamId": "me"})])
         self.assertEqual(len(data["rows"]), 1)
         self.assertEqual(data["rows"][0]["name"], "Raw Starter")
+
+    def test_raw_request_can_call_fxpa_directly_when_library_paths_fail(self):
+        api = DirectRawApi(raw_roster(raw_roster_row("starter", name="Raw Starter", pos="OF", status="1")))
+        original_helper = fantrax_data._fantrax_api
+        fantrax_data._fantrax_api = BrokenRawHelper()
+        try:
+            data = fantrax_data.extract_roster(api, "me")
+        finally:
+            fantrax_data._fantrax_api = original_helper
+
+        self.assertEqual(len(data["rows"]), 1)
+        self.assertEqual(data["rows"][0]["name"], "Raw Starter")
+        self.assertEqual(api._session.requests[0]["url"], fantrax_data.FXPA_URL)
+        self.assertEqual(api._session.requests[0]["params"], {"leagueId": "league-1"})
+        self.assertEqual(api._session.requests[0]["json"]["msgs"][0]["method"], "getTeamRosterInfo")
+        self.assertEqual(api._session.requests[0]["json"]["msgs"][0]["data"]["teamId"], "me")
 
     def test_all_team_rosters_use_raw_first_roster_parser(self):
         api = RawFirstApi({
