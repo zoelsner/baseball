@@ -57,10 +57,11 @@
   read-only proof tool for #67. It can check a snapshot URL/file, inspect a
   saved raw Fantrax `getTeamRosterInfo` JSON file, and perform a live Fantrax
   roster read once cookies/env are available. Raw-payload mode reports candidate
-  slot fields but still cannot satisfy `--require-trusted` until normalized
-  roster rows carry trusted `slot_source` values. Current production still
-  reports `fail_closed`: 37 rows, 17 trusted, 20 untrusted, and all 20 active
-  rows untrusted.
+  slot fields plus the current scraper's normalized assignment coverage, but
+  still cannot satisfy `--require-trusted` until normalized roster rows carry
+  trusted `slot_source` values. Current production still reports
+  `fail_closed`: 37 rows, 17 trusted, 20 untrusted, and all 20 active rows
+  untrusted.
 - **Cookie fallback:** if `import_chrome_cookies.py` hangs on macOS keychain,
   copy a logged-in Fantrax request `Cookie:` header locally and run
   `pbpaste | .venv/bin/python import_fantrax_cookies_manual.py --cookie-header -`;

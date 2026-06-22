@@ -118,16 +118,16 @@ def _raw_row_diagnostics(raw_rows: list[dict[str, Any]] | None) -> dict[str, Any
     }
 
 
-def _raw_roster_rows_from_payload(payload: Any) -> list[dict[str, Any]]:
-    """Extract raw Fantrax roster rows from a saved getTeamRosterInfo payload."""
+def _raw_roster_data_from_payload(payload: Any) -> dict[str, Any]:
+    """Extract a Fantrax-shaped raw roster payload from saved JSON."""
     if isinstance(payload, list):
-        return [row for row in payload if isinstance(row, dict)]
+        return {"tables": [{"rows": [row for row in payload if isinstance(row, dict)]}]}
     if not isinstance(payload, dict):
         raise RuntimeError("raw roster JSON must be an object or list")
 
     direct_rows = payload.get("rows")
     if isinstance(direct_rows, list):
-        return [row for row in direct_rows if isinstance(row, dict)]
+        return {"tables": [{"rows": [row for row in direct_rows if isinstance(row, dict)]}]}
 
     candidates = []
     if isinstance(payload.get("tables"), list):
@@ -137,21 +137,71 @@ def _raw_roster_rows_from_payload(payload: Any) -> list[dict[str, Any]]:
         if isinstance(nested, dict):
             nested_rows = nested.get("rows")
             if isinstance(nested_rows, list):
-                return [row for row in nested_rows if isinstance(row, dict)]
+                return {"tables": [{"rows": [row for row in nested_rows if isinstance(row, dict)]}]}
             if isinstance(nested.get("tables"), list):
                 candidates.append(nested)
 
     for candidate in candidates:
         rows = fantrax_data._raw_roster_rows(SimpleNamespace(_data=candidate))
         if rows:
-            return rows
+            return candidate
     if candidates:
-        return []
+        return candidates[0]
     raise RuntimeError("raw roster JSON must contain Fantrax tables or raw roster rows")
 
 
+def _raw_roster_rows_from_payload(payload: Any) -> list[dict[str, Any]]:
+    """Extract raw Fantrax roster rows from a saved getTeamRosterInfo payload."""
+    return fantrax_data._raw_roster_rows(SimpleNamespace(_data=_raw_roster_data_from_payload(payload)))
+
+
+def _raw_assignment_diagnostics(raw_data: dict[str, Any], raw_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    roster = SimpleNamespace(_data=raw_data)
+    status_lookup = fantrax_data._status_lookup(roster)
+    source_counts = Counter()
+    slot_counts = Counter()
+    unassigned_examples = []
+    assigned_examples = []
+    for row in raw_rows:
+        if not isinstance(row, dict):
+            continue
+        slot, source = fantrax_data._assigned_slot_from_raw(row, status_lookup)
+        if slot and source:
+            slot_counts[str(slot)] += 1
+            source_counts[str(source)] += 1
+            if len(assigned_examples) < 5:
+                scorer = row.get("scorer") if isinstance(row.get("scorer"), dict) else {}
+                assigned_examples.append({
+                    "id": fantrax_data._row_player_id(row),
+                    "name": scorer.get("name") or scorer.get("shortName"),
+                    "slot": slot,
+                    "source": source,
+                    "statusId": row.get("statusId"),
+                    "posId": row.get("posId"),
+                })
+        else:
+            if len(unassigned_examples) < 5:
+                scorer = row.get("scorer") if isinstance(row.get("scorer"), dict) else {}
+                unassigned_examples.append({
+                    "id": fantrax_data._row_player_id(row),
+                    "name": scorer.get("name") or scorer.get("shortName"),
+                    "statusId": row.get("statusId"),
+                    "posId": row.get("posId"),
+                })
+    return {
+        "status_lookup": dict(sorted(status_lookup.items())),
+        "assigned_slot_rows": sum(slot_counts.values()),
+        "unassigned_slot_rows": len(raw_rows) - sum(slot_counts.values()),
+        "assigned_slot_counts": dict(sorted(slot_counts.items())),
+        "assigned_slot_source_counts": dict(sorted(source_counts.items())),
+        "assigned_examples": assigned_examples,
+        "unassigned_examples": unassigned_examples,
+    }
+
+
 def raw_roster_report(payload: Any, *, source: str) -> dict[str, Any]:
-    rows = _raw_roster_rows_from_payload(payload)
+    raw_data = _raw_roster_data_from_payload(payload)
+    rows = fantrax_data._raw_roster_rows(SimpleNamespace(_data=raw_data))
     assigned_slot_rows = sum(
         1
         for row in rows
@@ -175,6 +225,7 @@ def raw_roster_report(payload: Any, *, source: str) -> dict[str, Any]:
             "those fields into roster slot_source values."
         ),
         "raw": _raw_row_diagnostics(rows),
+        "assignment": _raw_assignment_diagnostics(raw_data, rows),
     }
 
 
@@ -283,6 +334,17 @@ def _print_human(report: dict[str, Any]) -> None:
         print(f"Assigned-slot candidate rows: {report['assigned_slot_candidate_rows']}")
         print(f"Rows with posId only: {report['pos_only_rows']}")
         print(report["note"])
+        assignment = report.get("assignment") or {}
+        if assignment:
+            print(
+                "Current extractor assignments: "
+                f"{assignment.get('assigned_slot_rows', 0)} assigned, "
+                f"{assignment.get('unassigned_slot_rows', 0)} unassigned"
+            )
+            print(
+                "Assignment sources: "
+                f"{json.dumps(assignment.get('assigned_slot_source_counts') or {}, sort_keys=True)}"
+            )
         raw = report.get("raw")
         if raw:
             print(f"Raw statusId counts: {json.dumps(raw['status_id_counts'], sort_keys=True)}")

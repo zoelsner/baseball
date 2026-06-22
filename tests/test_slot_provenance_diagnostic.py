@@ -167,6 +167,12 @@ class SlotProvenanceDiagnosticTests(unittest.TestCase):
         report = diagnostic.raw_roster_report(
             {
                 "data": {
+                    "miscData": {
+                        "statusTotals": [
+                            {"id": "1", "name": "Active"},
+                            {"id": "2", "name": "Reserve"},
+                        ]
+                    },
                     "tables": [
                         {
                             "rows": [
@@ -179,6 +185,11 @@ class SlotProvenanceDiagnosticTests(unittest.TestCase):
                                 {
                                     "statusId": "2",
                                     "posId": "SP",
+                                    "scorer": {"scorerId": "reserve", "name": "Reserve Arm"},
+                                },
+                                {
+                                    "statusId": "1",
+                                    "posId": "SS",
                                     "scorer": {"scorerId": "pos-only", "name": "Position Only"},
                                 },
                             ]
@@ -190,12 +201,18 @@ class SlotProvenanceDiagnosticTests(unittest.TestCase):
         )
 
         self.assertEqual(report["verdict"], "raw_only")
-        self.assertEqual(report["row_count"], 2)
+        self.assertEqual(report["row_count"], 3)
         self.assertEqual(report["assigned_slot_candidate_rows"], 1)
-        self.assertEqual(report["pos_only_rows"], 1)
+        self.assertEqual(report["pos_only_rows"], 2)
         self.assertIn("cannot prove normalized Sandlot slot provenance", report["note"])
         self.assertEqual(report["raw"]["slot_key_counts_by_status"]["1"]["lineupSlot"], 1)
         self.assertEqual(report["raw"]["slot_key_counts_by_status"]["2"]["posId"], 1)
+        self.assertEqual(report["assignment"]["assigned_slot_rows"], 2)
+        self.assertEqual(report["assignment"]["unassigned_slot_rows"], 1)
+        self.assertEqual(report["assignment"]["assigned_slot_counts"], {"OF": 1, "RES": 1})
+        self.assertEqual(report["assignment"]["assigned_slot_source_counts"], {"raw.lineupSlot": 1, "raw.statusId": 1})
+        self.assertEqual(report["assignment"]["status_lookup"], {"1": "ACTIVE", "2": "RES", "Active": "ACTIVE", "Reserve": "RES"})
+        self.assertEqual(report["assignment"]["unassigned_examples"][0]["id"], "pos-only")
 
     def test_raw_roster_file_exit_code_cannot_satisfy_require_trusted(self):
         path = self._write_snapshot({

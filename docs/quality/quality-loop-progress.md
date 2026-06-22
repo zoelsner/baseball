@@ -216,6 +216,18 @@
   Node/npm was not available in this sandbox shell for a same-run Playwright
   rerun; PR #81's GitHub `Local frontend E2E` remains the branch-only browser
   regression check, and Railway E2E remains the production smoke.
+- 2026-06-22: Tightened raw roster diagnostics to apply the same
+  `fantrax_data._assigned_slot_from_raw` normalization used by the scraper.
+  Raw-payload mode now reports current-extractor assignment counts, assignment
+  source counts, normalized slot counts, status lookup, and assigned/unassigned
+  examples. This makes a saved `getTeamRosterInfo` payload useful for proving
+  whether Fantrax returned real lineup/reserve slot fields, while still keeping
+  `--require-trusted` fail-closed until normalized roster rows have trusted
+  `slot_source`. Verification: `tests.test_slot_provenance_diagnostic` passed
+  (`10 tests`), `tests.test_fantrax_data_roster_slots` passed (`6 tests`),
+  full Python suite passed (`140 tests`), direct `esbuild` rebuild passed with
+  no bundle diff, `git diff --check` passed, and production
+  `/api/snapshot/latest` still exits `2` with all 20 active rows untrusted.
 
 ## Next Loop Phase
 
