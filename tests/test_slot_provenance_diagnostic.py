@@ -1,0 +1,204 @@
+import contextlib
+import io
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+import diagnose_slot_provenance as diagnostic
+
+
+class SlotProvenanceDiagnosticTests(unittest.TestCase):
+    def _write_snapshot(self, payload):
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        with handle:
+            json.dump(payload, handle)
+        self.addCleanup(lambda: Path(handle.name).unlink(missing_ok=True))
+        return handle.name
+
+    def test_trusted_snapshot_reports_trusted_verdict(self):
+        report = diagnostic.slot_provenance_report(
+            {
+                "roster": {
+                    "rows": [
+                        {"id": "a", "name": "Starter", "slot": "OF", "positions": "OF", "slot_source": "raw.lineupSlot"},
+                        {"id": "b", "name": "Reserve", "slot": "RES", "positions": "SP", "slot_source": "raw.statusId"},
+                    ]
+                },
+                "data_quality": {
+                    "lineup_recommendations_ready": False,
+                    "add_drop_recommendations_ready": False,
+                    "lineup_slots": {"state": "ok", "trusted_players": 2, "total_players": 2},
+                },
+            },
+            source="test",
+        )
+
+        self.assertEqual(report["verdict"], "trusted")
+        self.assertFalse(report["lineup_recommendations_ready"])
+        self.assertEqual(report["row_slot_sources"]["state"], "ok")
+        self.assertEqual(report["slot_source_counts"], {"raw.lineupSlot": 1, "raw.statusId": 1})
+        self.assertEqual(report["active_untrusted_rows"], 0)
+
+    def test_api_payload_roster_list_reports_fail_closed_for_position_fallback(self):
+        report = diagnostic.slot_provenance_report(
+            {
+                "roster": [
+                    {
+                        "id": "friedl",
+                        "name": "TJ Friedl",
+                        "slot": "OF",
+                        "positions": "OF",
+                        "slot_source": "position_fallback",
+                    }
+                ],
+                "data_quality": {
+                    "lineup_recommendations_ready": False,
+                    "add_drop_recommendations_ready": False,
+                    "lineup_recommendation_reasons": ["Lineup-slot source trusted for 17/37 roster players"],
+                    "lineup_slots": {
+                        "state": "partial",
+                        "trusted_players": 17,
+                        "total_players": 37,
+                    },
+                },
+            },
+            source="api",
+        )
+
+        self.assertEqual(report["verdict"], "fail_closed")
+        self.assertFalse(report["lineup_recommendations_ready"])
+        self.assertEqual(report["active_untrusted_rows"], 1)
+        self.assertEqual(report["active_untrusted_examples"][0]["name"], "TJ Friedl")
+
+    def test_row_slot_sources_override_stale_trusted_data_quality(self):
+        report = diagnostic.slot_provenance_report(
+            {
+                "roster": [
+                    {
+                        "id": "fallback",
+                        "name": "Fallback Slot",
+                        "slot": "OF",
+                        "positions": "OF",
+                        "slot_source": "position_fallback",
+                    }
+                ],
+                "data_quality": {
+                    "lineup_recommendations_ready": True,
+                    "add_drop_recommendations_ready": True,
+                    "lineup_slots": {"state": "ok", "trusted_players": 1, "total_players": 1},
+                },
+            },
+            source="api",
+        )
+
+        self.assertEqual(report["verdict"], "fail_closed")
+        self.assertEqual(report["row_slot_sources"]["state"], "missing")
+        self.assertEqual(len(report["consistency_warnings"]), 1)
+
+    def test_absent_slot_source_field_warns_about_wrong_json_source(self):
+        report = diagnostic.slot_provenance_report(
+            {
+                "roster": [
+                    {
+                        "id": "flattened",
+                        "name": "Flattened Source",
+                        "slot": "OF",
+                        "positions": "OF",
+                    }
+                ],
+            },
+            source="player-index",
+        )
+
+        self.assertEqual(report["verdict"], "fail_closed")
+        self.assertEqual(report["row_slot_sources"]["field_present_players"], 0)
+        self.assertIn("no roster rows include slot_source", report["consistency_warnings"][0])
+
+    def test_raw_diagnostics_count_active_slot_keys_without_mutating(self):
+        report = diagnostic.slot_provenance_report(
+            {
+                "roster": {
+                    "rows": [
+                        {"id": "a", "name": "Starter", "slot": "OF", "positions": "OF", "slot_source": "raw.lineupSlot"},
+                    ]
+                },
+            },
+            source="live",
+            raw_rows=[
+                {
+                    "statusId": "1",
+                    "posId": "OF",
+                    "lineupSlot": "OF",
+                    "scorer": {"scorerId": "a", "name": "Starter"},
+                },
+                {
+                    "statusId": "2",
+                    "posId": "SP",
+                    "scorer": {"scorerId": "b", "name": "Bench Arm"},
+                },
+            ],
+        )
+
+        self.assertEqual(report["raw"]["raw_rows"], 2)
+        self.assertEqual(report["raw"]["status_id_counts"], {"1": 1, "2": 1})
+        self.assertEqual(report["raw"]["slot_key_counts_by_status"]["1"]["lineupSlot"], 1)
+        self.assertEqual(report["raw"]["slot_key_counts_by_status"]["2"]["posId"], 1)
+        self.assertEqual(report["raw"]["samples_by_status"]["1"][0]["present_slot_keys"], ["lineupSlot", "statusId", "posId"])
+
+    def test_raw_diagnostics_do_not_assume_active_status_id_is_one(self):
+        report = diagnostic.slot_provenance_report(
+            {"roster": {"rows": []}},
+            source="live",
+            raw_rows=[
+                {
+                    "statusId": "9",
+                    "posId": "UT",
+                    "lineupSlot": "UT",
+                    "scorer": {"scorerId": "future-active", "name": "Future Active"},
+                },
+            ],
+        )
+
+        self.assertEqual(report["raw"]["status_id_counts"], {"9": 1})
+        self.assertEqual(report["raw"]["slot_key_counts_by_status"]["9"]["lineupSlot"], 1)
+
+    def test_require_trusted_exit_code_fails_when_slots_are_untrusted(self):
+        path = self._write_snapshot({
+            "roster": [
+                {
+                    "id": "fallback",
+                    "name": "Fallback Slot",
+                    "slot": "OF",
+                    "positions": "OF",
+                    "slot_source": "position_fallback",
+                }
+            ],
+        })
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = diagnostic.main(["--snapshot-file", path, "--require-trusted"])
+
+        self.assertEqual(code, 2)
+
+    def test_require_trusted_exit_code_passes_when_slot_provenance_is_trusted(self):
+        path = self._write_snapshot({
+            "roster": [
+                {
+                    "id": "trusted",
+                    "name": "Trusted Slot",
+                    "slot": "OF",
+                    "positions": "OF",
+                    "slot_source": "raw.lineupSlot",
+                }
+            ],
+        })
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = diagnostic.main(["--snapshot-file", path, "--require-trusted"])
+
+        self.assertEqual(code, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

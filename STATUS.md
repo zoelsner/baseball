@@ -33,6 +33,11 @@
 - **CI split:** Railway Playwright remains a deployed-app smoke. PR #81 now
   adds a separate `Local frontend E2E` job for branch-only UI regressions that
   must run against the rebuilt local bundle before Railway has deployed it.
+- **Slot proof diagnostic:** `diagnose_slot_provenance.py` is the repeatable
+  read-only proof tool for #67. It can check a snapshot URL/file now and perform
+  a live Fantrax roster read once cookies/env are available. Current production
+  still reports `fail_closed`: 37 rows, 17 trusted, 20 untrusted, and all 20
+  active rows untrusted.
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
 - **Current draft PR:** [#81](https://github.com/zoelsner/baseball/pull/81)
   tracks the slot-provenance safety gate, Fantrax adapter hardening, and

@@ -105,6 +105,27 @@
   slot-provenance Attention Queue regression with
   `SANDLOT_EXPECT_SLOT_GATE=1`; Railway E2E keeps the same deployed-app smoke
   responsibility.
+- 2026-06-22: Added `diagnose_slot_provenance.py`, a read-only diagnostic for
+  the remaining #67 proof gap. It can inspect a Sandlot snapshot URL/file or,
+  once cookies are available, perform a live Fantrax roster read without
+  writing Fantrax actions, DB rows, snapshots, or cookies. The command reports
+  row-level `slot_source` coverage, active untrusted rows, data-quality
+  `lineup_slots`, raw status/key histograms for live reads, and exits `2` under
+  `--require-trusted` unless roster-slot provenance is fully trusted.
+- 2026-06-22: Ran the diagnostic against
+  `https://web-production-90664.up.railway.app/api/snapshot/latest`; result is
+  still `fail_closed`: 37 roster rows, 17 trusted, 20 untrusted, all 20 active
+  rows untrusted, slot sources `{"position_fallback": 20, "raw.statusId": 17}`.
+  This is current production evidence that PR #81's gates are still necessary
+  until authenticated active-slot extraction is proven.
+- 2026-06-22: Ran `claude -p --model opus --effort xhigh` for a skeptical
+  review of the new diagnostic. Accepted findings: make the diagnostic verdict
+  measure slot provenance rather than full recommendation readiness; warn when
+  rows lack any `slot_source` field; remove hardcoded `statusId == "1"` raw
+  active assumptions by reporting slot keys per status id; add `.gitignore`
+  protection for local tool/artifact directories; reuse existing
+  `sandlot_data_quality` and `fantrax_data` provenance logic; add exit-code
+  tests for `--require-trusted`.
 
 ## Next Loop Phase
 

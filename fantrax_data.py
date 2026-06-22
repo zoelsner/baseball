@@ -368,6 +368,17 @@ def _injury_status(player: Any) -> str | None:
 
 
 ACTIVE_SLOT_LABELS = {"ACTIVE", "STARTER", "STARTING", "LINEUP"}
+RAW_ASSIGNED_SLOT_KEYS = (
+    "lineupSlot",
+    "lineupSlotName",
+    "rosterSlot",
+    "rosterSlotName",
+    "slot",
+    "slotName",
+    "status",
+    "statusName",
+    "statusShortName",
+)
 ROSTER_SLOT_ALIASES = {
     "BE": "BN",
     "BENCH": "BN",
@@ -464,17 +475,7 @@ def _row_player_id(row: dict[str, Any]) -> str | None:
 
 
 def _assigned_slot_from_raw(row: dict[str, Any], status_lookup: dict[str, str]) -> tuple[str | None, str | None]:
-    for key in (
-        "lineupSlot",
-        "lineupSlotName",
-        "rosterSlot",
-        "rosterSlotName",
-        "slot",
-        "slotName",
-        "status",
-        "statusName",
-        "statusShortName",
-    ):
+    for key in RAW_ASSIGNED_SLOT_KEYS:
         normalized = _normalize_slot_label(row.get(key))
         if normalized and normalized not in ACTIVE_SLOT_LABELS:
             source = f"raw.{key}"
