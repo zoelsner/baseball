@@ -12,7 +12,7 @@ from unittest import mock
 from fastapi import HTTPException
 
 import sandlot_attention
-from sandlot_api import attention_queue
+from sandlot_api import attention_queue, latest_hot_swaps
 
 # The /api/actions request contract from PR #63 (sandlot_api.ActionRequest +
 # sandlot_actions.SUPPORTED_ACTIONS). Hardcoded here because the executor
@@ -479,6 +479,55 @@ class AttentionRouteTests(unittest.TestCase):
         self.assertEqual(payload["freshness"]["state"], "fresh")
         self.assertEqual([i["kind"] for i in payload["items"]], ["status", "lineup", "output"])
         self.assertEqual([c["player_id"] for c in payload["changes"]], ["judge"])
+
+
+class HotSwapRouteTests(unittest.TestCase):
+    def test_latest_hot_swaps_returns_read_only_proposals(self):
+        row = {
+            "id": 42,
+            "taken_at": datetime.now(timezone.utc),
+            "data": snapshot_data(today_page_roster()),
+        }
+        with mock.patch("sandlot_db.latest_successful_snapshot", return_value=row), \
+            mock.patch.object(
+                sandlot_attention.sandlot_matchup,
+                "rank_matchup_improvement_actions",
+                return_value=today_page_recommendations(),
+            ):
+            payload = latest_hot_swaps()
+
+        self.assertEqual(payload["snapshot_id"], 42)
+        self.assertEqual(payload["state"], "ready")
+        self.assertFalse(payload["writes_enabled"])
+        self.assertIsNone(payload["paused_reason"])
+        self.assertEqual(len(payload["proposals"]), 1)
+        proposal = payload["proposals"][0]["proposal"]
+        self.assertEqual(proposal["id"], "lineup-swap:corner:bench-bat:UT")
+        self.assertEqual(proposal["status"], "blocked")
+        self.assertFalse(proposal["writes_enabled"])
+        self.assertEqual(payload["proposals"][0]["blocked_action"]["state"], "blocked")
+        self.assertEqual(payload["proposals"][0]["source_item"]["kind"], "replacement")
+
+    def test_latest_hot_swaps_pauses_when_slot_provenance_is_untrusted(self):
+        data = snapshot_data(today_page_roster())
+        for row in data["roster"]["rows"]:
+            if row.get("slot") not in sandlot_attention.RESERVED_SLOTS:
+                row["slot_source"] = "position_fallback"
+        row = {
+            "id": 42,
+            "taken_at": datetime.now(timezone.utc),
+            "data": data,
+        }
+        with mock.patch("sandlot_db.latest_successful_snapshot", return_value=row), \
+            mock.patch.object(sandlot_attention.sandlot_matchup, "rank_matchup_improvement_actions") as ranked:
+            payload = latest_hot_swaps()
+
+        ranked.assert_not_called()
+        self.assertEqual(payload["state"], "paused")
+        self.assertFalse(payload["writes_enabled"])
+        self.assertEqual(payload["proposals"], [])
+        self.assertIn("Lineup-slot source trusted", payload["paused_reason"])
+        self.assertFalse(payload["data_quality"]["lineup_recommendations_ready"])
 
 
 if __name__ == "__main__":

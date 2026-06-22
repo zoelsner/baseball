@@ -52,3 +52,35 @@ test.describe('GET /api/attention', () => {
     }
   });
 });
+
+test.describe('GET /api/hot-swaps/latest', () => {
+  test('returns the read-only hot-swap proposal contract', async ({ request }) => {
+    const res = await request.get('/api/hot-swaps/latest');
+    test.skip(res.status() === 404, 'Target deploy does not have /api/hot-swaps/latest yet.');
+    test.skip(res.status() === 503, 'Target deploy has no successful snapshot (or no DB).');
+
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+
+    expect(body.snapshot_id).toBeTruthy();
+    expect(['ready', 'paused', 'none']).toContain(body.state);
+    expect(body.writes_enabled).toBe(false);
+    expect(['fresh', 'stale', 'old', 'missing']).toContain(body.freshness?.state);
+    expect(Array.isArray(body.proposals)).toBe(true);
+
+    if (body.state === 'paused') {
+      expect(typeof body.paused_reason).toBe('string');
+      expect(body.proposals).toHaveLength(0);
+    }
+
+    for (const entry of body.proposals) {
+      expect(entry.proposal?.status).toBe('blocked');
+      expect(entry.proposal?.writes_enabled).toBe(false);
+      expect(entry.proposal?.confirmation_required).toBe(true);
+      expect(Array.isArray(entry.proposal?.safety_checks)).toBe(true);
+      expect(entry.blocked_action?.state).toBe('blocked');
+      expect(entry.source_item?.kind).toBe('replacement');
+      expect(entry.replacement?.type).toBe('lineup_hot_swap');
+    }
+  });
+});

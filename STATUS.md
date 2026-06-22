@@ -96,7 +96,9 @@
   `feature/hot-swap-proposal-safety` adds a read-only `proposal` object and
   visible safety checklist to lineup-only hot-swap cards. It keeps `Propose
   swap` blocked and does not enable Fantrax writes, Zo writes, add/drop, or
-  trade automation.
+  trade automation. It now also adds `GET /api/hot-swaps/latest`, a read-only
+  proposal endpoint that returns paused/ready/none state from the same
+  fail-closed Attention Queue gate.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.
 

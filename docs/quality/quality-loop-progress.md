@@ -343,6 +343,13 @@
   that shape and the card now prefers the item-level proposal when present.
   This gives the future confirmation/executor slice a stable proposal handle
   without enabling any writes.
+- 2026-06-22: Added `GET /api/hot-swaps/latest`, a dedicated read-only
+  hot-swap proposal surface derived from the same Attention Queue output. It
+  returns `state: ready|paused|none`, `writes_enabled: false`, proposal entries
+  only when the fail-closed slot-provenance gate allows replacement items, and
+  a paused reason when lineup recommendations are not trusted. Added Python
+  route coverage and a Playwright API contract smoke; no executor, Fantrax,
+  Zo, add/drop, or trade write path was introduced.
 
 ## Next Loop Phase
 
