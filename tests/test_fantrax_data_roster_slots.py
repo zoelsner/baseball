@@ -192,6 +192,80 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(data["rows"][0]["slot"], "SS")
         self.assertEqual(data["rows"][0]["slot_source"], "position_fallback")
 
+    def test_external_trusted_slot_override_upgrades_position_fallback(self):
+        player = obj(
+            id="starter",
+            name="Starter",
+            team_short_name="NYY",
+            team_name="New York",
+            pos_short_name="SS",
+            all_positions=[obj(short_name="SS")],
+            out=False,
+            injured_reserve=False,
+            suspended=False,
+            day_to_day=False,
+        )
+        row = obj(
+            player=player,
+            position=obj(short_name="SS", name="Shortstop"),
+            total_fantasy_points=8,
+            fantasy_points_per_game=4,
+        )
+        roster = obj(
+            rows=[row],
+            active=1,
+            active_max=1,
+            reserve=0,
+            reserve_max=0,
+            injured=0,
+            injured_max=0,
+            period_number=1,
+            period_date="2026-06-18",
+            _data={"miscData": {"statusTotals": []}, "tables": []},
+        )
+
+        data = fantrax_data.extract_roster(
+            FakeApi(roster),
+            "team",
+            slot_overrides={
+                "starter": {"slot": "UT", "slot_source": "dom.lineup-btn", "text": "UT"},
+            },
+        )
+
+        self.assertEqual(data["rows"][0]["slot"], "UT")
+        self.assertEqual(data["rows"][0]["slot_full"], "UT")
+        self.assertEqual(data["rows"][0]["slot_source"], "dom.lineup-btn")
+
+    def test_external_slot_override_preserves_already_trusted_reserved_slot(self):
+        roster_data = {
+            "rows": [
+                {"id": "reserve", "name": "Reserve Arm", "slot": "RES", "slot_source": "raw.statusId"},
+                {"id": "active", "name": "Active Bat", "slot": "OF", "slot_source": "position_fallback"},
+                {"id": "conflict", "name": "Conflict Bat", "slot": "OF", "slot_source": "position_fallback"},
+            ]
+        }
+
+        updated = fantrax_data.apply_trusted_slot_overrides(
+            roster_data,
+            {
+                "reserve": {"slot": "OF", "slot_source": "dom.lineup-btn"},
+                "active": {"slot": "UT", "slot_source": "dom.lineup-btn"},
+                "conflict": {
+                    "slot": "SS",
+                    "slot_source": "dom.lineup-btn",
+                    "conflicts": [{"slot": "UT", "text": "UT"}],
+                },
+            },
+        )
+
+        self.assertEqual(updated["rows"][0]["slot"], "RES")
+        self.assertEqual(updated["rows"][0]["slot_source"], "raw.statusId")
+        self.assertEqual(updated["rows"][1]["slot"], "UT")
+        self.assertEqual(updated["rows"][1]["slot_source"], "dom.lineup-btn")
+        self.assertEqual(updated["rows"][2]["slot"], "OF")
+        self.assertEqual(updated["rows"][2]["slot_source"], "position_fallback")
+        self.assertEqual(roster_data["rows"][1]["slot"], "OF")
+
     def test_roster_info_compat_preserves_raw_slots_and_current_field_names(self):
         player = obj(
             id="compat-player",

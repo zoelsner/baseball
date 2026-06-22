@@ -252,23 +252,10 @@ def dom_roster_report(html: str, *, source: str) -> dict[str, Any]:
 def _snapshot_with_dom_slots(snapshot: dict[str, Any], dom_slots: dict[str, dict[str, Any]]) -> dict[str, Any]:
     normalized = dict(snapshot)
     roster = snapshot.get("roster")
-    rows = _rows_from_snapshot(snapshot)
-    updated_rows = []
-    for row in rows:
-        out = dict(row)
-        player_id = str(out.get("id") or "")
-        dom_slot = dom_slots.get(player_id)
-        if dom_slot and dom_slot.get("slot"):
-            out["slot"] = dom_slot["slot"]
-            out["slot_full"] = dom_slot["slot"]
-            out["slot_source"] = dom_slot.get("slot_source") or "dom.lineup-btn"
-        updated_rows.append(out)
     if isinstance(roster, dict):
-        roster_copy = dict(roster)
-        roster_copy["rows"] = updated_rows
-        normalized["roster"] = roster_copy
+        normalized["roster"] = fantrax_data.apply_trusted_slot_overrides(roster, dom_slots)
     else:
-        normalized["roster"] = updated_rows
+        normalized["roster"] = fantrax_data.apply_trusted_slot_overrides({"rows": _rows_from_snapshot(snapshot)}, dom_slots)["rows"]
     normalized.pop("data_quality", None)
     return normalized
 

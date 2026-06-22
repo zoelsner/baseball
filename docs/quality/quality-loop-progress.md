@@ -268,6 +268,21 @@
   minimal non-secret `claude -p --model opus --effort xhigh` prompt for this
   live DOM capture design produced no output within 60 seconds and was
   interrupted; no external findings were available.
+- 2026-06-22: Moved DOM slot application into the data layer with
+  `fantrax_data.apply_trusted_slot_overrides()` and an optional
+  `slot_overrides` argument on `extract_roster()`. The helper upgrades only
+  rows whose existing slot source is untrusted or missing, skips conflicting
+  DOM evidence, and preserves already-trusted raw reserved-slot proof unless a
+  caller explicitly opts into replacement. The diagnostic now uses this same
+  helper for snapshot+DOM overlays, so the future scrape integration has one
+  canonical path for `dom.lineup-btn` slot provenance. Verification:
+  `tests.test_fantrax_data_roster_slots` passed (`8 tests`), focused
+  DOM/diagnostic/data-quality/attention tests passed (`56 tests`), full Python
+  suite passed (`153 tests`), and production `/api/snapshot/latest` still exits
+  `2` with all 20 active rows untrusted. A minimal non-secret
+  `claude -p --model opus --effort xhigh` prompt for the data-layer trust
+  boundary produced no output within 60 seconds and was interrupted; no
+  external findings were available.
 
 ## Next Loop Phase
 

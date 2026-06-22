@@ -394,6 +394,7 @@ ROSTER_SLOT_ALIASES = {
     "MINOR": "MIN",
     "MINOR LEAGUE": "MIN",
 }
+UNTRUSTED_SLOT_SOURCES = {"", "position_fallback", "unknown", "fallback"}
 
 
 def _normalize_slot_label(value: Any) -> str | None:
@@ -502,7 +503,56 @@ def _assigned_slot_overrides(roster: Any) -> dict[str, tuple[str, str]]:
     return overrides
 
 
-def extract_roster(api: FantraxAPI, team_id: str) -> dict:
+def _trusted_slot_override(value: Any) -> tuple[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    if value.get("conflicts"):
+        return None
+    slot = _normalize_slot_label(value.get("slot"))
+    source = str(value.get("slot_source") or value.get("source") or "").strip()
+    if not slot or slot in ACTIVE_SLOT_LABELS:
+        return None
+    if source.casefold() in UNTRUSTED_SLOT_SOURCES:
+        return None
+    return slot, source
+
+
+def apply_trusted_slot_overrides(
+    roster_data: dict[str, Any],
+    slot_overrides: dict[str, dict[str, Any]] | None,
+    *,
+    replace_trusted: bool = False,
+) -> dict[str, Any]:
+    """Return roster data with trusted external slot proof applied to rows.
+
+    By default, trusted existing slot sources are preserved. This keeps DOM
+    evidence from clobbering raw Fantrax reserved-slot proof; it only upgrades
+    rows whose slot source is currently inferred or missing.
+    """
+    if not slot_overrides:
+        return roster_data
+    out = dict(roster_data or {})
+    rows = []
+    for row in out.get("rows") or []:
+        if not isinstance(row, dict):
+            rows.append(row)
+            continue
+        updated = dict(row)
+        player_id = str(updated.get("id") or "")
+        override = _trusted_slot_override(slot_overrides.get(player_id))
+        existing_source = str(updated.get("slot_source") or "").strip().casefold()
+        should_apply = override and (replace_trusted or existing_source in UNTRUSTED_SLOT_SOURCES)
+        if should_apply:
+            slot, source = override
+            updated["slot"] = slot
+            updated["slot_full"] = slot
+            updated["slot_source"] = source
+        rows.append(updated)
+    out["rows"] = rows
+    return out
+
+
+def extract_roster(api: FantraxAPI, team_id: str, slot_overrides: dict[str, dict[str, Any]] | None = None) -> dict:
     """Returns dict with `rows` (list of normalized players) plus roster
     capacity totals (active/reserve/IR)."""
     roster = _team_roster(api, team_id)
@@ -540,7 +590,7 @@ def extract_roster(api: FantraxAPI, team_id: str) -> dict:
             log.warning("Failed to parse roster row: %s", e)
             rows.append({"error": str(e), "raw": _to_jsonable(row)})
 
-    return {
+    roster_data = {
         "rows": rows,
         "active": _status_value_or_attr(roster, {"ACTIVE"}, "total", "active"),
         "active_max": _status_value_or_attr(roster, {"ACTIVE"}, "max", "active_max"),
@@ -551,6 +601,7 @@ def extract_roster(api: FantraxAPI, team_id: str) -> dict:
         "period_number": getattr(roster, "period_number", None),
         "period_date": str(getattr(roster, "period_date", "")) or None,
     }
+    return apply_trusted_slot_overrides(roster_data, slot_overrides)
 
 
 def extract_standings(api: FantraxAPI, my_team_id: str) -> dict | None:

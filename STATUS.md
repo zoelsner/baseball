@@ -42,7 +42,7 @@
   with `Ask Skipper` and `Deep research` handoffs. The card emits no add/drop,
   no `change_slot` payload, and no live Fantrax write path.
 - **Local verification:** Python unit suite is green on 2026-06-22
-  (`151 tests`). The local rebuilt Sandlot UI passes
+  (`153 tests`). The local rebuilt Sandlot UI passes
   `today-attention.spec.ts` against `http://127.0.0.1:4173` (`4 tests`),
   including regressions where unsafe replacement cards are hidden when slot
   provenance is partial or explicit lineup readiness is missing, and where the
@@ -60,11 +60,12 @@
   roster read once cookies/env are available, and optionally capture the live
   roster DOM with `--capture-roster-dom`. Raw-payload mode reports candidate
   slot fields plus the current scraper's normalized assignment coverage. DOM
-  mode can overlay `dom.lineup-btn` slots onto a matching snapshot; standalone
-  raw/DOM evidence still cannot satisfy `--require-trusted` until normalized
-  roster rows carry trusted `slot_source` values. Current production still
-  reports `fail_closed`: 37 rows, 17 trusted, 20 untrusted, and all 20 active
-  rows untrusted.
+  mode can overlay `dom.lineup-btn` slots onto a matching snapshot through the
+  same `fantrax_data.apply_trusted_slot_overrides()` helper the future scraper
+  integration should use. Standalone raw/DOM evidence still cannot satisfy
+  `--require-trusted` until normalized roster rows carry trusted `slot_source`
+  values. Current production still reports `fail_closed`: 37 rows, 17 trusted,
+  20 untrusted, and all 20 active rows untrusted.
 - **Cookie fallback:** if `import_chrome_cookies.py` hangs on macOS keychain,
   copy a logged-in Fantrax request `Cookie:` header locally and run
   `pbpaste | .venv/bin/python import_fantrax_cookies_manual.py --cookie-header -`;
