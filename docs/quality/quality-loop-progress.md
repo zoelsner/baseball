@@ -300,6 +300,17 @@
   untrusted. This sandbox shell still lacks Node/npm/npx, so local Playwright
   could not be rerun here; PR #81's GitHub `Local frontend E2E` job remains the
   branch-only UI regression proof while Railway E2E remains production smoke.
+- 2026-06-22: Completion audit for the shipping goal: PR #81 head
+  `cab7c5f9cc6b0deea1fdea8daeb85ef3548c2684` was clean, mergeable, and green
+  across GitHub `CI #130` and `Playwright #154` (Python/unit smoke, frontend
+  build, Local frontend E2E, Railway production smoke). The branch satisfies
+  the hot-swap card contract and safety gates, but the PR was still marked
+  draft and production was still on old behavior: deployed `/api/attention`
+  returned output/replacement items while the deployed snapshot diagnostic
+  still exited `fail_closed` with all 20 active rows untrusted. Attempting to
+  mark the draft PR ready and merge through stored GitHub credentials was
+  rejected by the sandbox approval reviewer because that exact high-impact
+  repo action needs explicit user approval. No merge/deploy action was taken.
 
 ## Next Loop Phase
 
