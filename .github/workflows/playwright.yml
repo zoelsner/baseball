@@ -79,3 +79,72 @@ jobs:
           name: playwright-report
           path: tests/playwright/playwright-report
           retention-days: 14
+
+  local-frontend-e2e:
+    name: Local frontend E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SANDLOT_URL: http://127.0.0.1:4173
+      SANDLOT_EXPECT_SLOT_GATE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            tests/playwright/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Build Sandlot frontend
+        run: npm run build:sandlot
+
+      - name: Install Playwright deps
+        working-directory: tests/playwright
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        id: local-pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-${{ runner.os }}-${{ hashFiles('tests/playwright/package-lock.json') }}
+
+      - name: Install chromium
+        if: steps.local-pw-cache.outputs.cache-hit != 'true'
+        working-directory: tests/playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Serve local Sandlot frontend
+        working-directory: web/sandlot
+        run: |
+          python3 -m http.server 4173 --bind 127.0.0.1 > /tmp/sandlot-static.log 2>&1 &
+          for i in $(seq 1 20); do
+            if curl -fsS "$SANDLOT_URL" >/dev/null; then
+              echo "Local Sandlot frontend is live"
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/sandlot-static.log || true
+          echo "Local Sandlot frontend never became reachable" >&2
+          exit 1
+
+      - name: Run local Attention Queue browser tests
+        working-directory: tests/playwright
+        env:
+          CI: "true"
+        run: npx playwright test specs/today-attention.spec.ts
+
+      - name: Upload local HTML report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-playwright-report
+          path: tests/playwright/playwright-report
+          retention-days: 14

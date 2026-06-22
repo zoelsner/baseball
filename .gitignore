@@ -3,6 +3,8 @@
 node_modules/
 .cookies/
 .data/
+.tools/
+tests/playwright/artifacts/
 __pycache__/
 *.pyc
 *.pyo

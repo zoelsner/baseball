@@ -12,8 +12,37 @@ the same player through multiple snapshot sections.
 
 import logging
 import unittest
+from contextlib import contextmanager
 
 from sandlot_api import _player_index
+
+
+@contextmanager
+def assert_no_logs(test_case, logger_name: str, level: int):
+    """Python 3.9-compatible subset of unittest.TestCase.assertNoLogs."""
+    if hasattr(test_case, "assertNoLogs"):
+        with test_case.assertNoLogs(logger_name, level=level):
+            yield
+        return
+
+    logger = logging.getLogger(logger_name)
+    records = []
+
+    class CapturingHandler(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = CapturingHandler(level=level)
+    original_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(min(original_level or level, level))
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(original_level)
+    messages = [handler.format(record) for record in records if record.levelno >= level]
+    test_case.assertEqual(messages, [], f"Unexpected logs for {logger_name}: {messages}")
 
 
 class PlayerIndexDropLoggingTests(unittest.TestCase):
@@ -50,7 +79,7 @@ class PlayerIndexDropLoggingTests(unittest.TestCase):
             },
         }
         drops: dict[str, int] = {}
-        with self.assertNoLogs("sandlot_api", level=logging.WARNING):
+        with assert_no_logs(self, "sandlot_api", level=logging.WARNING):
             _player_index(data, drops=drops)
         self.assertEqual(drops.get("missing_id_or_name"), 1)
 
@@ -76,7 +105,7 @@ class PlayerIndexDropLoggingTests(unittest.TestCase):
             "free_agents": {"players": [{"id": "p1", "name": "Duplicate"}]},
         }
         drops: dict[str, int] = {}
-        with self.assertNoLogs("sandlot_api", level=logging.WARNING):
+        with assert_no_logs(self, "sandlot_api", level=logging.WARNING):
             _player_index(data, drops=drops)
         self.assertEqual(drops.get("duplicate"), 1)
 

@@ -8,10 +8,10 @@ is a follow-up); tests/test_sandlot_attention.py pins this port to the
 same fixtures as tests/playwright/specs/today-attention.spec.ts so the
 two implementations can't silently drift.
 
-Items that map to an executable move carry ready-to-submit payloads for
-POST /api/actions: `action` is a single request body when one call covers
-the move, and `actions` is the ordered list (multi-step lineup chains need
-one call per step).
+Items that map to an executable status move carry ready-to-submit payloads
+for POST /api/actions. Lineup replacement items intentionally do not carry
+executable payloads yet; they surface a blocked proposal card until Fantrax
+write safety is separately proven.
 """
 
 from __future__ import annotations
@@ -87,6 +87,7 @@ def _normalize_row(raw: dict[str, Any], idx: int) -> dict[str, Any]:
         "pos": positions,
         "team": raw.get("team") or "",
         "slot": raw.get("slot") or raw.get("slot_full") or "BN",
+        "slot_source": raw.get("slot_source"),
         "fppg": fppg,
         "fpts": _number(raw.get("fpts")),
         "proj": fppg or 0.0,
@@ -357,22 +358,18 @@ def _status_action_payloads(p: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"action": "move_to_il", "player_id": str(p["id"])}]
 
 
-def _chain_action_payloads(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One change_slot call per chain step — all steps or nothing, so a
-    consumer can never execute half a swap."""
-    payloads = []
-    for step in chain:
-        if not step.get("player_id") or not step.get("to_slot"):
-            return []
-        payloads.append({
-            "action": "change_slot",
-            "player_id": str(step["player_id"]),
-            "to_slot": str(step["to_slot"]),
-        })
-    return payloads
+def _lineup_recommendations_ready(data_quality: dict[str, Any] | None) -> bool:
+    return isinstance(data_quality, dict) and data_quality.get("lineup_recommendations_ready") is True
 
 
-def build_queue(health: dict[str, Any], recommendations: dict[str, Any] | None) -> list[dict[str, Any]]:
+def build_queue(
+    health: dict[str, Any],
+    recommendations: dict[str, Any] | None,
+    *,
+    allow_lineup_health: bool = True,
+    allow_status_actions: bool = True,
+    allow_replacement: bool = True,
+) -> list[dict[str, Any]]:
     """Mirror of v2AttentionQueue, plus executable /api/actions payloads."""
     items: list[dict[str, Any]] = []
 
@@ -385,7 +382,7 @@ def build_queue(health: dict[str, Any], recommendations: dict[str, Any] | None) 
         for chip in [status_text if status_text != "Active" else None, *row.get("chips", []), _metric_chip(p)]:
             if chip and chip not in chips:
                 chips.append(chip)
-        actions = _status_action_payloads(p) if kind == "status" else []
+        actions = _status_action_payloads(p) if kind == "status" and allow_status_actions else []
         items.append({
             "id": f"{kind}-{p.get('id') or p.get('name') or index}",
             "kind": kind,
@@ -403,44 +400,65 @@ def build_queue(health: dict[str, Any], recommendations: dict[str, Any] | None) 
 
     for index, row in enumerate(health["injury_rows"]):
         add_player_item("status", row, index)
-    for index, row in enumerate(health["lineup_rows"]):
-        add_player_item("lineup", row, index)
-    for index, row in enumerate(health["cold_rows"]):
-        add_player_item("output", row, index)
+    if allow_lineup_health:
+        for index, row in enumerate(health["lineup_rows"]):
+            add_player_item("lineup", row, index)
+        for index, row in enumerate(health["cold_rows"]):
+            add_player_item("output", row, index)
 
-    top_list = (recommendations or {}).get("recommendations") or []
+    top_list = ((recommendations or {}).get("recommendations") or []) if allow_replacement else []
     top = top_list[0] if top_list else None
     if top:
         points = _number(top.get("points_delta"))
         confidence = top.get("confidence") or "medium"
         chain = (top.get("action") or {}).get("chain") or []
         chain_text = _move_chain_text(chain)
-        actions = _chain_action_payloads(chain)
+        replacement_card = top.get("replacement_card") if isinstance(top.get("replacement_card"), dict) else None
+        move_in = (replacement_card or {}).get("move_in") or {}
+        move_out = (replacement_card or {}).get("move_out") or {}
+        context = (
+            f"{move_in.get('name')} for {move_out.get('name')}"
+            if move_in.get("name") and move_out.get("name")
+            else "Roster decision"
+        )
         items.append({
             "id": f"replacement-{top.get('id') or chain_text}",
             "kind": "replacement",
             "priority": 50 + max(0.0, points),
             "severity": "review",
             "label": "Replacement",
-            "player_id": None,
-            "title": "Review lineup move",
-            "context": "Roster decision",
-            "reason": f"{chain_text}. Projected gain {'+' if points >= 0 else ''}{points:.1f} points.",
+            "player_id": move_in.get("id") or None,
+            "title": "Lineup hot swap",
+            "context": context,
+            "reason": (
+                (replacement_card or {}).get("reason")
+                or f"{chain_text}. Projected gain {'+' if points >= 0 else ''}{points:.1f} points."
+            ),
             "chips": [f"{confidence} confidence", *(top.get("reason_chips") or [])][:MAX_CHIPS],
-            "action": actions[0] if len(actions) == 1 else None,
-            "actions": actions,
+            "action": None,
+            "actions": [],
+            "replacement": replacement_card,
+            "blocked_action": (replacement_card or {}).get("execution") or {
+                "state": "blocked",
+                "label": "Propose swap",
+                "reason": "Lineup execution safety is not enabled.",
+            },
         })
 
     items.sort(key=lambda item: item["priority"], reverse=True)
     return items[:MAX_ITEMS]
 
 
-def _matchup_recommendations(data: dict[str, Any]) -> dict[str, Any] | None:
+def _matchup_recommendations(
+    data: dict[str, Any],
+    data_quality: dict[str, Any] | None,
+) -> dict[str, Any] | None:
     """Same gating as sandlot_api._snapshot_payload."""
     matchup = data.get("matchup")
     if not isinstance(matchup, dict) or not matchup:
         return None
-    data_quality = sandlot_data_quality.snapshot_data_quality(data)
+    if not _lineup_recommendations_ready(data_quality):
+        return None
     return sandlot_matchup.rank_matchup_improvement_actions(data, data_quality)
 
 
@@ -452,7 +470,18 @@ def attention_items(data: dict[str, Any], recommendations: Any = _UNSET) -> list
     """
     raw_rows = (data.get("roster") or {}).get("rows") or []
     roster = [_normalize_row(r, i) for i, r in enumerate(raw_rows) if isinstance(r, dict)]
+    data_quality = sandlot_data_quality.snapshot_data_quality(data)
+    lineup_recommendations_ready = _lineup_recommendations_ready(data_quality)
     health = roster_health(roster)
+    # Recommendations can be injected by tests, but the public queue entry
+    # point still owns the final safety gate before action payloads appear.
+    allow_replacement = lineup_recommendations_ready
     if recommendations is _UNSET:
-        recommendations = _matchup_recommendations(data)
-    return build_queue(health, recommendations)
+        recommendations = _matchup_recommendations(data, data_quality)
+    return build_queue(
+        health,
+        recommendations,
+        allow_lineup_health=lineup_recommendations_ready,
+        allow_status_actions=lineup_recommendations_ready,
+        allow_replacement=allow_replacement,
+    )

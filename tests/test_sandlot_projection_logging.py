@@ -131,6 +131,75 @@ class ProjectionLoggingTests(unittest.TestCase):
         self.assertEqual(record["predicted_margin"], 3.0)
         self.assertIn("drivers", record)
 
+    def test_dom_slot_proof_can_enrich_refresh_snapshot_when_enabled(self):
+        snapshot = projection_ready_snapshot()
+        snapshot["roster"]["rows"] = [
+            {"id": "active", "slot": "OF", "slot_source": "position_fallback"},
+            {"id": "reserve", "slot": "RES", "slot_source": "raw.statusId"},
+            {"id": "conflict", "slot": "2B", "slot_source": "position_fallback"},
+        ]
+        snapshot["slot_provenance"] = {"raw_status": "kept"}
+
+        with patch.dict(
+            sandlot_refresh.os.environ,
+            {sandlot_refresh.DOM_SLOT_CAPTURE_ENV: "1"},
+            clear=False,
+        ), patch.object(
+            sandlot_refresh.fantrax_dom, "capture_roster_html", return_value="<html></html>"
+        ) as capture, patch.object(
+            sandlot_refresh.fantrax_dom,
+            "lineup_slots_from_html",
+            return_value={
+                "active": {"slot": "UT", "slot_source": "dom.lineup-btn", "text": "UT"},
+                "reserve": {"slot": "OF", "slot_source": "dom.lineup-btn", "text": "OF"},
+                "conflict": {
+                    "slot": "SS",
+                    "slot_source": "dom.lineup-btn",
+                    "conflicts": [{"slot": "UT", "text": "UT"}],
+                },
+            },
+        ):
+            updated = sandlot_refresh._maybe_apply_dom_slot_proof(
+                snapshot,
+                cookies=[{"name": "JSESSIONID", "value": "secret"}],
+                league_id="league",
+                team_id="me",
+            )
+
+        capture.assert_called_once()
+        self.assertEqual(updated["roster"]["rows"][0]["slot"], "UT")
+        self.assertEqual(updated["roster"]["rows"][0]["slot_source"], "dom.lineup-btn")
+        self.assertEqual(updated["roster"]["rows"][1]["slot"], "RES")
+        self.assertEqual(updated["roster"]["rows"][1]["slot_source"], "raw.statusId")
+        self.assertEqual(updated["roster"]["rows"][2]["slot"], "2B")
+        self.assertEqual(updated["slot_provenance"]["dom_slots_found"], 3)
+        self.assertEqual(updated["slot_provenance"]["dom_slots_applied"], 1)
+        self.assertEqual(updated["slot_provenance"]["dom_slots_conflicted"], 1)
+        self.assertEqual(updated["slot_provenance"]["raw_status"], "kept")
+
+    def test_dom_slot_proof_failure_is_non_fatal_and_fail_closed(self):
+        snapshot = projection_ready_snapshot()
+        snapshot["roster"]["rows"][0]["slot_source"] = "position_fallback"
+
+        with patch.dict(
+            sandlot_refresh.os.environ,
+            {sandlot_refresh.DOM_SLOT_CAPTURE_ENV: "1"},
+            clear=False,
+        ), patch.object(
+            sandlot_refresh.fantrax_dom, "capture_roster_html", side_effect=RuntimeError("browser unavailable")
+        ):
+            updated = sandlot_refresh._maybe_apply_dom_slot_proof(
+                snapshot,
+                cookies=[{"name": "JSESSIONID", "value": "secret"}],
+                league_id="league",
+                team_id="me",
+            )
+
+        self.assertEqual(updated["roster"]["rows"][0]["slot_source"], "position_fallback")
+        self.assertEqual(updated.get("errors"), snapshot.get("errors"))
+        self.assertEqual(updated["slot_provenance"]["dom_slots_applied"], 0)
+        self.assertIn("browser unavailable", updated["slot_provenance"]["dom_capture_error"])
+
     def test_completed_refresh_fills_actuals_for_prior_logs(self):
         snapshot = projection_ready_snapshot()
         snapshot["matchup"]["complete"] = True
@@ -202,7 +271,7 @@ class ProjectionLoggingTests(unittest.TestCase):
         }
 
         with patch.object(sandlot_api, "_require_refresh_token"), patch.object(
-            sandlot_api, "run_refresh", return_value=result
+            sandlot_refresh, "run_refresh", return_value=result
         ), patch.object(
             sandlot_api.sandlot_db, "latest_successful_snapshot", return_value=row
         ):
@@ -222,7 +291,7 @@ class ProjectionLoggingTests(unittest.TestCase):
         )
 
         with patch.object(sandlot_api, "_require_refresh_token"), patch.object(
-            sandlot_api, "run_refresh", return_value=result
+            sandlot_refresh, "run_refresh", return_value=result
         ), patch.object(
             sandlot_api.sandlot_db, "latest_successful_snapshot", return_value=None
         ), self.assertRaises(fastapi.HTTPException) as raised:

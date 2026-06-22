@@ -130,6 +130,29 @@ function v2BuildSwapSkipperPrompt(card) {
   ].filter(Boolean).join('\n');
 }
 
+function v2BuildLineupSwapSkipperPrompt(card, mode='quick') {
+  const moveIn = card?.move_in || {};
+  const moveOut = card?.move_out || {};
+  const benefit = card?.projected_benefit || {};
+  const deep = mode === 'deep';
+  return [
+    deep
+      ? 'Run a deep research review before I touch this lineup swap.'
+      : 'Pressure-test this lineup-only hot swap before I touch Fantrax.',
+    '',
+    `Move IN: ${moveIn.name || 'Unknown player'} (${moveIn.positions || 'UT'}${moveIn.team ? `, ${moveIn.team}` : ''}) from ${moveIn.from_slot || '?'} to ${moveIn.to_slot || '?'}.`,
+    `Move OUT: ${moveOut.name || 'Unknown player'} (${moveOut.positions || 'UT'}${moveOut.team ? `, ${moveOut.team}` : ''}) from ${moveOut.from_slot || '?'} to ${moveOut.to_slot || '?'}.`,
+    `Projected benefit: ${v2Signed(benefit.points, 1)} points. Confidence: ${card?.confidence || 'unknown'}. Risk: ${card?.risk_label || 'unknown'}.`,
+    card?.reason ? `Sandlot reason: ${card.reason}` : null,
+    card?.short_term_outlook ? `Short-term outlook: ${card.short_term_outlook}` : null,
+    card?.risk ? `Risk note: ${card.risk}` : null,
+    '',
+    deep
+      ? 'Use roster context plus web search if needed. Verify probable starts, schedule/games this week, injuries, role changes, Fantrax scoring relevance, and whether this is worth proposing. Separate snapshot-verified facts from web/contextual assumptions.'
+      : 'Use the latest roster snapshot. Tell me what data you trust, what is uncertain, and whether the proposed lineup-only swap is worth considering.',
+  ].filter(Boolean).join('\n');
+}
+
 // Shared mapper so user roster + per-team roster stay byte-identical.
 function v2NormalizeRosterRow(p, idx) {
   const positions = Array.isArray(p.all_positions) && p.all_positions.length
@@ -145,6 +168,7 @@ function v2NormalizeRosterRow(p, idx) {
     pos: positions,
     team: p.team || '',
     slot,
+    slotSource: p.slot_source || p.slotSource || null,
     fppg,
     fpts,
     proj: fppg || 0,
@@ -213,11 +237,34 @@ function v2SyncLabel(freshness) {
 
 function v2QualityReason(dataQuality, purpose='projection') {
   if (!dataQuality) return 'Data quality is unavailable';
-  const key = purpose === 'recommendation' ? 'recommendation_reasons' : 'projection_reasons';
-  const reasons = dataQuality[key] || dataQuality.reasons || [];
+  const reasonKeys = {
+    projection: ['projection_reasons'],
+    recommendation: ['recommendation_reasons'],
+    lineup: ['lineup_recommendation_reasons', 'recommendation_reasons'],
+    add_drop: ['add_drop_recommendation_reasons', 'recommendation_reasons'],
+  }[purpose] || ['projection_reasons'];
+  const reasons = reasonKeys
+    .flatMap(key => dataQuality[key] || [])
+    .concat(dataQuality.reasons || [])
+    .filter(Boolean);
   if (!reasons.length) return 'Required snapshot data is available';
   const first = String(reasons[0]).replace(/\.$/, '');
   return reasons.length === 1 ? first : `${first}, plus ${reasons.length - 1} more`;
+}
+
+function v2LineupAdviceReady(dataQuality) {
+  if (!dataQuality) return false;
+  return dataQuality.lineup_slots?.state === 'ok' && dataQuality.lineup_recommendations_ready === true;
+}
+
+function v2LineupQualityReason(dataQuality) {
+  if (!dataQuality) return 'Data quality is unavailable';
+  const reason = v2QualityReason(dataQuality, 'lineup');
+  if (reason !== 'Required snapshot data is available') return reason;
+  if (dataQuality.lineup_recommendations_ready !== true) {
+    return 'Lineup recommendation readiness is not explicitly trusted';
+  }
+  return dataQuality.lineup_slots?.reason || 'Lineup-slot provenance is unavailable';
 }
 
 // ── Reusable controls ──────────────────────────────────────────
@@ -414,7 +461,7 @@ function V2App({ initial }) {
   if (!authed) return <V2Auth onSignIn={()=>setAuthed(true)}/>;
 
   const pages = {
-    today:   <V2Today model={model} sync={syncState} onRefresh={refreshSnapshot} onNav={setPage} onPlayer={setDetail}/>,
+    today:   <V2Today model={model} sync={syncState} onRefresh={refreshSnapshot} onNav={setPage} onPlayer={setDetail} onAskSkipper={continueInSkipper}/>,
     roster:  <V2Roster model={model} onPlayer={setDetail}/>,
     league:  leagueTeam
       ? <V2TeamRoster teamId={leagueTeam.id} teamMeta={leagueTeam} onBack={()=>setLeagueTeam(null)} onPlayer={setDetail}/>
@@ -820,8 +867,10 @@ function v2AttentionReason(kind, row) {
   return `${row.reason}. Check whether this active spot needs a replacement.`;
 }
 
-function v2AttentionQueue(health, matchupRecommendations) {
+function v2AttentionQueue(health, matchupRecommendations, options={}) {
   const items = [];
+  const allowLineupHealth = options.allowLineupHealth !== false;
+  const allowReplacement = options.allowReplacement !== false;
   const addPlayerItem = (kind, row, index) => {
     const p = row.player;
     const metric = v2PlayerMetric(p);
@@ -849,42 +898,61 @@ function v2AttentionQueue(health, matchupRecommendations) {
   };
 
   health.injuryRows.forEach((row, index) => addPlayerItem('status', row, index));
-  health.lineupRows.forEach((row, index) => addPlayerItem('lineup', row, index));
-  health.coldRows.forEach((row, index) => addPlayerItem('output', row, index));
+  if (allowLineupHealth) {
+    health.lineupRows.forEach((row, index) => addPlayerItem('lineup', row, index));
+    health.coldRows.forEach((row, index) => addPlayerItem('output', row, index));
+  }
 
-  const top = matchupRecommendations?.recommendations?.[0] || null;
+  const top = allowReplacement ? matchupRecommendations?.recommendations?.[0] || null : null;
   if (top) {
     const points = v2Number(top.points_delta);
     const confidence = top.confidence || 'medium';
+    const replacementCard = top.replacement_card || null;
+    const moveIn = replacementCard?.move_in || {};
+    const moveOut = replacementCard?.move_out || {};
     items.push({
       id:`replacement-${top.id || v2MoveChainText(top.action?.chain || [])}`,
       kind:'replacement',
       priority:50 + Math.max(0, points),
       severity:'review',
       label:'Replacement',
-      title:'Review lineup move',
-      context:'Roster decision',
-      reason:`${v2MoveChainText(top.action?.chain || [])}. Projected gain ${points >= 0 ? '+' : ''}${points.toFixed(1)} points.`,
+      title:'Lineup hot swap',
+      context:moveIn.name && moveOut.name ? `${moveIn.name} for ${moveOut.name}` : 'Roster decision',
+      reason:replacementCard?.reason || `${v2MoveChainText(top.action?.chain || [])}. Projected gain ${points >= 0 ? '+' : ''}${points.toFixed(1)} points.`,
       chips:[`${confidence} confidence`, ...(top.reason_chips || [])].slice(0, 3),
-      action:'Review',
+      action:'Blocked',
       nav:'roster',
+      replacement:replacementCard,
+      blockedAction:replacementCard?.execution || {
+        state:'blocked',
+        label:'Propose swap',
+        reason:'Lineup execution safety is not enabled.',
+      },
     });
   }
 
   return items.sort((a,b)=>b.priority-a.priority).slice(0, 6);
 }
 
-function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
+function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
   const health = v2RosterHealth(model);
-  const matchupRecommendations = model.matchup?.recommendations || null;
-  const queue = v2AttentionQueue(health, matchupRecommendations);
-  const matchup = v2MatchupInfo(model.matchup);
   const dataQuality = model.dataQuality || null;
+  const hasRealData = model.source === 'api' && health.roster.length > 0;
+  const lineupAdviceReady = model.source === 'api' ? v2LineupAdviceReady(dataQuality) : true;
+  const matchupRecommendations = lineupAdviceReady ? model.matchup?.recommendations || null : null;
+  const queue = v2AttentionQueue(health, matchupRecommendations, {
+    allowLineupHealth: lineupAdviceReady,
+    allowReplacement: lineupAdviceReady,
+  });
+  const matchup = v2MatchupInfo(model.matchup);
   const projection = matchup?.projection || null;
   const projectionInfo = v2ProjectionInfo(projection);
   const showProjection = projectionInfo && !projectionInfo.complete;
   const showProjectionFallback = matchup && !showProjection && dataQuality?.projection_ready === false;
-  const showRecommendationFallback = model.source === 'api' && dataQuality?.recommendations_ready === false && !matchupRecommendations;
+  const lineupPausedReason = model.source === 'api' && hasRealData && !lineupAdviceReady
+    ? v2LineupQualityReason(dataQuality)
+    : null;
+  const showRecommendationFallback = model.source === 'api' && !lineupPausedReason && dataQuality?.recommendations_ready === false && !matchupRecommendations;
   const weekLabel = matchup?.week ? `Week ${matchup.week}` : 'Today';
   const staleCopy = sync.state === 'failed'
     ? (sync.error || 'Last refresh failed.')
@@ -893,7 +961,6 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
       : model.source === 'api'
         ? `Snapshot ${sync.label} old.`
         : 'Waiting for first successful Fantrax scrape.';
-  const hasRealData = model.source === 'api' && health.roster.length > 0;
 
   return (
     <div style={{ padding:'18px 16px 28px', display:'flex', flexDirection:'column', gap:14 }}>
@@ -914,7 +981,13 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
         </button>
       </div>
 
-      <V2AttentionQueue items={queue} hasRealData={hasRealData} sync={sync} onPlayer={onPlayer} onNav={onNav}/>
+      <V2AttentionQueue items={queue} hasRealData={hasRealData} sync={sync} pausedReason={lineupPausedReason} onPlayer={onPlayer} onNav={onNav} onAskSkipper={onAskSkipper}/>
+
+      {lineupPausedReason && queue.length ? (
+        <V2Caution eyebrow="Advice paused" tone="warn">
+          Lineup and replacement advice is paused: {lineupPausedReason}.
+        </V2Caution>
+      ) : null}
 
       {sync.notice && sync.state !== 'refreshing' && (
         <V2Caution eyebrow="Heads up" tone="warn">{sync.notice}</V2Caution>
@@ -984,25 +1057,33 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
   );
 }
 
-function V2AttentionQueue({ items, hasRealData, sync, onPlayer, onNav }) {
+function V2AttentionQueue({ items, hasRealData, sync, pausedReason, onPlayer, onNav, onAskSkipper }) {
   const urgentCount = items.filter(item => item.severity === 'urgent').length;
   const checkCount = items.filter(item => item.severity === 'check').length;
   const reviewCount = items.length - urgentCount - checkCount;
+  const paused = Boolean(pausedReason);
+  const queueTone = paused
+    ? { color:V2.warn, bg:V2.warnSoft }
+    : items.length
+      ? { color:V2.accent, bg:V2.accentSoft }
+      : { color:V2.ok, bg:V2.okSoft };
   const headline = items.length
     ? [
         urgentCount ? `${urgentCount} urgent` : null,
         checkCount ? `${checkCount} check` : null,
         reviewCount ? `${reviewCount} review` : null,
       ].filter(Boolean).join(' · ')
-    : 'No current issues';
+    : paused
+      ? 'Advice paused'
+      : 'No current issues';
   return (
     <section style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, overflow:'hidden' }}>
       <div style={{ padding:'17px 18px 14px', borderBottom:items.length ? `1px solid ${V2.hairline2}` : 'none' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
-          <V2Eyebrow color={items.length ? V2.accent : V2.ok}>Attention Queue</V2Eyebrow>
+          <V2Eyebrow color={queueTone.color}>Attention Queue</V2Eyebrow>
           <span style={{
-            background:items.length ? V2.accentSoft : V2.okSoft,
-            color:items.length ? V2.accent : V2.ok,
+            background:queueTone.bg,
+            color:queueTone.color,
             borderRadius:999,
             padding:'5px 9px',
             fontSize:11,
@@ -1013,25 +1094,204 @@ function V2AttentionQueue({ items, hasRealData, sync, onPlayer, onNav }) {
           {headline}
         </div>
         <div style={{ marginTop:7, color:V2.muted, fontSize:12.5, lineHeight:1.4, fontWeight:700 }}>
-          Ordered by roster consequence from the latest Fantrax snapshot.
+          {paused
+            ? 'Showing only status-safe items until lineup slots are verified.'
+            : 'Ordered by roster consequence from the latest Fantrax snapshot.'}
         </div>
       </div>
       {items.length ? (
         <div>
           {items.map((item, index) => (
-            <V2AttentionQueueRow
-              key={item.id}
-              item={item}
-              last={index === items.length - 1}
-              onPlayer={onPlayer}
-              onNav={onNav}
-            />
+            item.kind === 'replacement' && item.replacement ? (
+              <V2LineupHotSwapCard
+                key={item.id}
+                item={item}
+                last={index === items.length - 1}
+                onAskSkipper={onAskSkipper}
+              />
+            ) : (
+              <V2AttentionQueueRow
+                key={item.id}
+                item={item}
+                last={index === items.length - 1}
+                onPlayer={onPlayer}
+                onNav={onNav}
+              />
+            )
           ))}
         </div>
       ) : (
-        <V2AttentionEmptyState hasRealData={hasRealData} sync={sync}/>
+        <V2AttentionEmptyState hasRealData={hasRealData} sync={sync} pausedReason={pausedReason}/>
       )}
     </section>
+  );
+}
+
+function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
+  const card = item.replacement || {};
+  const moveIn = card.move_in || {};
+  const moveOut = card.move_out || {};
+  const benefit = card.projected_benefit || {};
+  const confidence = card.confidence || 'medium';
+  const risk = card.risk_label || 'unknown';
+  const execution = card.execution || item.blockedAction || {};
+  const benefitText = v2Signed(benefit.points, 1);
+  const confidenceTone = String(confidence).toLowerCase() === 'high'
+    ? { fg:V2.ok, bg:V2.okSoft }
+    : String(confidence).toLowerCase() === 'light' || String(confidence).toLowerCase() === 'low'
+      ? { fg:V2.warn, bg:V2.warnSoft }
+      : { fg:V2.body, bg:V2.surface2 };
+  return (
+    <div style={{
+      padding:'15px 16px 16px',
+      borderBottom:last?'none':`1px solid ${V2.hairline2}`,
+      display:'flex',
+      flexDirection:'column',
+      gap:12,
+    }}>
+      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
+        <div style={{ minWidth:0 }}>
+          <V2Eyebrow color={V2.accent}>Lineup hot swap</V2Eyebrow>
+          <div style={{ marginTop:6, color:V2.ink, fontSize:19, lineHeight:1.08, fontWeight:800, fontFamily:V2.fontDisplay, textWrap:'balance' }}>
+            {moveIn.name || 'Move-in candidate'} for {moveOut.name || 'current starter'}
+          </div>
+        </div>
+        <div style={{ flexShrink:0, textAlign:'right' }}>
+          <div style={{ color:V2.accent, fontSize:22, lineHeight:1, fontWeight:900, fontFamily:V2.fontDisplay, fontVariantNumeric:'tabular-nums' }}>
+            {benefitText}
+          </div>
+          <div style={{ marginTop:3, color:V2.muted, fontSize:10.5, fontWeight:900, letterSpacing:'0.05em', textTransform:'uppercase' }}>
+            points
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 26px 1fr', alignItems:'stretch', gap:8 }}>
+        <V2LineupSwapPlayer label="OUT" player={moveOut} tone="out"/>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'center', color:V2.muted }}>
+          {Icons.swap(V2.muted, 18)}
+        </div>
+        <V2LineupSwapPlayer label="IN" player={moveIn} tone="in"/>
+      </div>
+
+      <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+        <span style={{ background:confidenceTone.bg, color:confidenceTone.fg, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
+          {confidence} confidence
+        </span>
+        <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
+          {risk} risk
+        </span>
+        <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
+          {card.provenance?.source || 'latest Fantrax snapshot'}
+        </span>
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+        <V2ReasonLine color={V2.ok} label="Why" text={card.reason || item.reason}/>
+        <V2ReasonLine color={V2.accent} label="Outlook" text={card.short_term_outlook}/>
+        <V2ReasonLine color={V2.warn} label="Risk" text={card.risk}/>
+        <V2ReasonLine
+          color={V2.muted}
+          label="Source"
+          text={[
+            card.provenance?.slot_provenance ? `slot provenance ${card.provenance.slot_provenance}` : null,
+            moveIn.slot_source ? `IN ${moveIn.slot_source}` : null,
+            moveOut.slot_source ? `OUT ${moveOut.slot_source}` : null,
+          ].filter(Boolean).join(' · ')}
+        />
+      </div>
+
+      <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+        <button disabled title={execution.reason || card.blocked_reason || 'Execution safety is not ready'} style={{
+          flex:'1 1 135px',
+          minHeight:40,
+          border:'none',
+          borderRadius:999,
+          background:V2.surface2,
+          color:V2.muted,
+          fontFamily:'inherit',
+          fontSize:12.5,
+          fontWeight:900,
+          cursor:'not-allowed',
+        }}>
+          {execution.label || 'Propose swap'} blocked
+        </button>
+        <button onClick={()=>onAskSkipper?.(v2BuildLineupSwapSkipperPrompt(card, 'quick'))} style={{
+          flex:'1 1 120px',
+          minHeight:40,
+          display:'inline-flex',
+          alignItems:'center',
+          justifyContent:'center',
+          gap:7,
+          border:'none',
+          borderRadius:999,
+          background:V2.accentSoft,
+          color:V2.accent,
+          fontFamily:'inherit',
+          fontSize:12.5,
+          fontWeight:900,
+          cursor:'pointer',
+        }}>
+          {Icons.chat(V2.accent, 14)} Ask Skipper
+        </button>
+        <button onClick={()=>onAskSkipper?.(v2BuildLineupSwapSkipperPrompt(card, 'deep'))} style={{
+          flex:'1 1 125px',
+          minHeight:40,
+          display:'inline-flex',
+          alignItems:'center',
+          justifyContent:'center',
+          gap:7,
+          border:'none',
+          borderRadius:999,
+          background:V2.ink,
+          color:'#fff',
+          fontFamily:'inherit',
+          fontSize:12.5,
+          fontWeight:900,
+          cursor:'pointer',
+        }}>
+          {Icons.search('#fff', 14)} Deep research
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function V2LineupSwapPlayer({ label, player, tone }) {
+  const color = tone === 'in' ? V2.ok : V2.warn;
+  const bg = tone === 'in' ? V2.okSoft : V2.warnSoft;
+  const fppg = Number(player?.fppg);
+  const games = player?.remaining_games;
+  return (
+    <div style={{ minWidth:0, display:'flex', gap:9, alignItems:'center', padding:'8px 0' }}>
+      <div style={{
+        width:38,
+        height:38,
+        borderRadius:10,
+        background:bg,
+        color,
+        display:'flex',
+        alignItems:'center',
+        justifyContent:'center',
+        flexShrink:0,
+        fontSize:11,
+        fontWeight:900,
+        fontFamily:V2.fontMono,
+      }}>
+        {label}
+      </div>
+      <div style={{ minWidth:0 }}>
+        <div style={{ color:V2.ink, fontSize:15, lineHeight:1.1, fontWeight:800, fontFamily:V2.fontDisplay, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+          {player?.name || 'Unknown player'}
+        </div>
+        <div style={{ marginTop:3, color:V2.muted, fontSize:11, lineHeight:1.25, fontWeight:750, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+          {[player?.from_slot && player?.to_slot ? `${player.from_slot} -> ${player.to_slot}` : null, player?.positions, player?.team].filter(Boolean).join(' · ')}
+        </div>
+        <div style={{ marginTop:4, color:V2.body, fontSize:11, fontWeight:850, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums' }}>
+          {Number.isFinite(fppg) ? `${fppg.toFixed(1)} FP/G` : 'FP/G —'}{games !== null && games !== undefined ? ` · ${games}g` : ''}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1083,8 +1343,13 @@ function V2AttentionQueueRow({ item, last, onPlayer, onNav }) {
   );
 }
 
-function V2AttentionEmptyState({ hasRealData, sync }) {
-  const copy = hasRealData
+function V2AttentionEmptyState({ hasRealData, sync, pausedReason }) {
+  const paused = Boolean(pausedReason);
+  const label = paused ? 'Paused' : hasRealData ? 'Clear' : 'No data';
+  const labelColor = paused ? V2.warn : hasRealData ? V2.ok : V2.warn;
+  const copy = paused
+    ? `Lineup and replacement advice is paused: ${pausedReason}.`
+    : hasRealData
     ? 'No injury, lineup, output, or replacement issue needs action in the current snapshot.'
     : sync.state === 'failed'
       ? (sync.error || 'Snapshot data is unavailable right now.')
@@ -1092,8 +1357,8 @@ function V2AttentionEmptyState({ hasRealData, sync }) {
   return (
     <div style={{ padding:'16px 18px 18px' }}>
       <div style={{ background:V2.surface2, border:`1px solid ${V2.hairline2}`, borderRadius:18, padding:'15px 16px' }}>
-        <div style={{ color:hasRealData ? V2.ok : V2.warn, fontSize:12, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em' }}>
-          {hasRealData ? 'Clear' : 'No data'}
+        <div style={{ color:labelColor, fontSize:12, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.08em' }}>
+          {label}
         </div>
         <div style={{ marginTop:7, color:V2.body, fontSize:13, lineHeight:1.45, fontWeight:700 }}>
           {copy}

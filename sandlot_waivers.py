@@ -98,11 +98,11 @@ def payload_for_snapshot(
         "protected_move_out_count": 0,
         "protected_move_outs": [],
     }
-    if not data_quality.get("recommendations_ready"):
+    if data_quality.get("add_drop_recommendations_ready") is not True:
         cards: list[dict[str, Any]] = []
         message = (
             "Waiver recommendations paused: "
-            + sandlot_data_quality.short_reason(data_quality, purpose="recommendations")
+            + sandlot_data_quality.short_reason(data_quality, purpose="add_drop_recommendations")
             + "."
         )
     elif not fa_players:

@@ -7,6 +7,7 @@ from typing import Any
 
 INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH", "INJ", "INJ RES", "MIN", "MINORS"}
 GENERIC_POSITIONS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "MIN", "MINORS", "HIT", "PIT", "ALL", "UTIL"}
+UNTRUSTED_SLOT_SOURCES = {"", "position_fallback", "unknown", "fallback"}
 
 
 def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -28,6 +29,7 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
     fppg_quality = _coverage_section("Active-player FP/G", active_rows, _has_fppg)
     future_games_quality = _future_games_quality(active_rows)
     eligibility_quality = _coverage_section("Eligibility/position", active_rows, _has_position)
+    lineup_slots_quality = _lineup_slots_quality(my_rows_list)
 
     complete = bool(matchup and matchup.get("complete"))
     projection_reasons = _projection_reasons(
@@ -40,7 +42,7 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
             "future_games": future_games_quality,
         },
     )
-    recommendation_reasons = _recommendation_reasons({
+    recommendation_sections = {
         "matchup": matchup_quality,
         "my_roster": my_roster_quality,
         "all_team_rosters": all_rosters_quality,
@@ -48,9 +50,12 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
         "fppg": fppg_quality,
         "future_games": future_games_quality,
         "eligibility": eligibility_quality,
-    })
+        "lineup_slots": lineup_slots_quality,
+    }
+    recommendation_reasons = _recommendation_reasons(recommendation_sections)
+    action_recommendation_reasons = _action_recommendation_reasons(recommendation_sections)
 
-    reasons = _dedupe([*projection_reasons, *recommendation_reasons])
+    reasons = _dedupe([*projection_reasons, *recommendation_reasons, *action_recommendation_reasons])
     return {
         "matchup": matchup_quality,
         "my_roster": my_roster_quality,
@@ -59,10 +64,15 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
         "fppg": fppg_quality,
         "future_games": future_games_quality,
         "eligibility": eligibility_quality,
+        "lineup_slots": lineup_slots_quality,
         "projection_ready": not projection_reasons,
         "recommendations_ready": not recommendation_reasons,
+        "lineup_recommendations_ready": not action_recommendation_reasons,
+        "add_drop_recommendations_ready": not action_recommendation_reasons,
         "projection_reasons": projection_reasons,
         "recommendation_reasons": recommendation_reasons,
+        "lineup_recommendation_reasons": action_recommendation_reasons,
+        "add_drop_recommendation_reasons": action_recommendation_reasons,
         "reasons": reasons,
     }
 
@@ -70,9 +80,20 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
 def short_reason(data_quality: dict[str, Any] | None, *, purpose: str = "projection") -> str:
     if not isinstance(data_quality, dict):
         return "Data quality is unavailable"
-    key = "recommendation_reasons" if purpose.startswith("recommend") else "projection_reasons"
+    if purpose.startswith("lineup"):
+        key = "lineup_recommendation_reasons"
+    elif purpose.startswith("add_drop") or purpose.startswith("waiver"):
+        key = "add_drop_recommendation_reasons"
+    else:
+        key = "recommendation_reasons" if purpose.startswith("recommend") else "projection_reasons"
     reasons = data_quality.get(key) or data_quality.get("reasons") or []
     if not reasons:
+        if purpose.startswith("lineup") and data_quality.get("lineup_recommendations_ready") is not True:
+            return "Lineup recommendation readiness is not explicitly trusted"
+        if (purpose.startswith("add_drop") or purpose.startswith("waiver")) and (
+            data_quality.get("add_drop_recommendations_ready") is not True
+        ):
+            return "Add/drop recommendation readiness is not explicitly trusted"
         return "Required snapshot data is available"
     first = str(reasons[0]).rstrip(".")
     if len(reasons) == 1:
@@ -163,6 +184,13 @@ def _recommendation_reasons(sections: dict[str, dict[str, Any]]) -> list[str]:
     )
 
 
+def _action_recommendation_reasons(sections: dict[str, dict[str, Any]]) -> list[str]:
+    return _section_reasons(
+        sections,
+        ["matchup", "my_roster", "all_team_rosters", "opponent_roster", "fppg", "future_games", "eligibility", "lineup_slots"],
+    )
+
+
 def _section_reasons(sections: dict[str, dict[str, Any]], required: list[str]) -> list[str]:
     reasons = []
     for key in required:
@@ -203,6 +231,43 @@ def _active_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for row in rows or []
         if isinstance(row, dict) and str(row.get("slot") or "").strip().upper() not in INACTIVE_SLOTS
     ]
+
+
+def _lineup_slots_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(rows)
+    if total <= 0:
+        return _section("missing", "Lineup-slot source has no roster rows", trusted_players=0, total_players=0)
+
+    trusted = []
+    untrusted = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if _has_trusted_slot_source(row):
+            trusted.append(row)
+        else:
+            untrusted.append(row)
+
+    if len(trusted) == total:
+        return _section("ok", trusted_players=len(trusted), total_players=total)
+
+    examples = [
+        str(row.get("name") or row.get("id") or "unknown")
+        for row in untrusted[:5]
+    ]
+    state = "missing" if not trusted else "partial"
+    return _section(
+        state,
+        f"Lineup-slot source trusted for {len(trusted)}/{total} roster players",
+        trusted_players=len(trusted),
+        total_players=total,
+        untrusted_examples=examples,
+    )
+
+
+def _has_trusted_slot_source(row: dict[str, Any]) -> bool:
+    source = str(row.get("slot_source") or "").strip().casefold()
+    return bool(source) and source not in UNTRUSTED_SLOT_SOURCES
 
 
 def _has_fppg(row: dict[str, Any]) -> bool:
