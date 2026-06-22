@@ -4,6 +4,78 @@ import fantrax_dom
 
 
 class FantraxDomSlotTests(unittest.TestCase):
+    def test_capture_roster_html_installs_cookies_and_reads_page_source(self):
+        class FakeDriver:
+            page_source = '<div class="player-row" data-player-id="p1"><button class="lineup-btn">OF</button></div>'
+
+            def __init__(self):
+                self.urls = []
+                self.cookies = []
+                self.quit_called = False
+
+            def get(self, url):
+                self.urls.append(url)
+
+            def add_cookie(self, cookie):
+                self.cookies.append(cookie)
+
+            def execute_script(self, _script):
+                return "complete"
+
+            def quit(self):
+                self.quit_called = True
+
+        driver = FakeDriver()
+
+        html = fantrax_dom.capture_roster_html(
+            [
+                {"name": "JSESSIONID", "value": "secret", "domain": ".fantrax.com", "path": "/"},
+                {"name": "", "value": "ignored"},
+            ],
+            league_id="league-1",
+            team_id="team-1",
+            driver_factory=lambda **_kwargs: driver,
+            wait_seconds=0,
+        )
+
+        self.assertEqual(html, driver.page_source)
+        self.assertEqual(driver.urls[0], "https://www.fantrax.com/fantasy")
+        self.assertEqual(driver.urls[1], "https://www.fantrax.com/fantasy/league/league-1/team/roster;teamId=team-1")
+        self.assertEqual(driver.cookies, [{"name": "JSESSIONID", "value": "secret", "domain": "fantrax.com", "path": "/"}])
+        self.assertTrue(driver.quit_called)
+
+    def test_capture_roster_html_can_use_override_url(self):
+        class FakeDriver:
+            page_source = "<html></html>"
+
+            def __init__(self):
+                self.urls = []
+
+            def get(self, url):
+                self.urls.append(url)
+
+            def add_cookie(self, _cookie):
+                pass
+
+            def execute_script(self, _script):
+                return "complete"
+
+            def quit(self):
+                pass
+
+        driver = FakeDriver()
+
+        fantrax_dom.capture_roster_html(
+            [{"name": "JSESSIONID", "value": "secret"}],
+            league_id="league-1",
+            team_id="team-1",
+            url="https://example.test/roster",
+            driver_factory=lambda **_kwargs: driver,
+            wait_seconds=0,
+        )
+
+        self.assertEqual(driver.urls[-1], "https://example.test/roster")
+
     def test_extracts_lineup_button_slots_from_table_and_div_rows(self):
         html = """
         <table>

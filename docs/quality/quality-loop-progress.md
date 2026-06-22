@@ -250,6 +250,24 @@
   non-secret `claude -p --model opus --effort xhigh` second-opinion prompt, but
   it produced no output for several minutes and was interrupted; no external
   findings were available.
+- 2026-06-22: Extended the DOM proof path from saved HTML to live read-only
+  capture. `fantrax_dom.capture_roster_html` installs existing cookies into a
+  Selenium browser, opens the Fantrax roster URL, waits for document readiness,
+  and returns `page_source`; it does not click controls or mutate Fantrax.
+  `diagnose_slot_provenance.py --capture-roster-dom --require-trusted` now
+  combines live `getTeamRosterInfo` data with live roster-page `lineup-btn`
+  slots when cookies/env are available. The flag is intentionally live-only;
+  file/URL diagnostics must use saved `--roster-dom-file` evidence instead.
+  Verification: `tests.test_fantrax_dom` and
+  `tests.test_slot_provenance_diagnostic` passed (`21 tests`), focused
+  slot/data-quality/attention tests passed (`41 tests`), full Python suite
+  passed (`151 tests`), and production `/api/snapshot/latest` still exits `2`
+  with all 20 active rows untrusted. This checkout still has no `.env`,
+  `.cookies/fantrax.json`, saved raw roster JSON, or saved roster HTML, so real
+  live Fantrax proof remains pending external credentials/data. A second
+  minimal non-secret `claude -p --model opus --effort xhigh` prompt for this
+  live DOM capture design produced no output within 60 seconds and was
+  interrupted; no external findings were available.
 
 ## Next Loop Phase
 

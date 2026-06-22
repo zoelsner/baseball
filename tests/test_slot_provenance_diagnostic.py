@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import diagnose_slot_provenance as diagnostic
 
@@ -307,6 +308,44 @@ class SlotProvenanceDiagnosticTests(unittest.TestCase):
             ])
 
         self.assertEqual(code, 0)
+
+    def test_live_capture_roster_dom_can_satisfy_require_trusted(self):
+        snapshot = {
+            "roster": [
+                {
+                    "id": "active",
+                    "name": "Active Bat",
+                    "slot": "OF",
+                    "positions": "OF",
+                    "slot_source": "position_fallback",
+                }
+            ],
+            "team_id": "team-1",
+            "league_id": "league-1",
+        }
+        html = '<div class="player-row" data-player-id="active"><button class="lineup-btn">OF</button></div>'
+
+        with patch.object(diagnostic, "_live_fantrax_snapshot", return_value=(snapshot, [], [{"name": "JSESSIONID", "value": "ok"}])), \
+            patch.object(diagnostic.fantrax_dom, "capture_roster_html", return_value=html) as capture, \
+            contextlib.redirect_stdout(io.StringIO()):
+            code = diagnostic.main([
+                "--capture-roster-dom",
+                "--require-trusted",
+                "--dom-wait-seconds",
+                "0",
+            ])
+
+        self.assertEqual(code, 0)
+        capture.assert_called_once()
+        self.assertEqual(capture.call_args.kwargs["league_id"], "league-1")
+        self.assertEqual(capture.call_args.kwargs["team_id"], "team-1")
+        self.assertEqual(capture.call_args.kwargs["wait_seconds"], 0.0)
+
+    def test_capture_roster_dom_rejects_non_live_sources(self):
+        path = self._write_snapshot({"roster": []})
+
+        with self.assertRaisesRegex(RuntimeError, "only supported for live"):
+            diagnostic.main(["--snapshot-file", path, "--capture-roster-dom"])
 
     def test_require_trusted_exit_code_fails_when_slots_are_untrusted(self):
         path = self._write_snapshot({

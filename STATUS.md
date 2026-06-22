@@ -42,7 +42,7 @@
   with `Ask Skipper` and `Deep research` handoffs. The card emits no add/drop,
   no `change_slot` payload, and no live Fantrax write path.
 - **Local verification:** Python unit suite is green on 2026-06-22
-  (`147 tests`). The local rebuilt Sandlot UI passes
+  (`151 tests`). The local rebuilt Sandlot UI passes
   `today-attention.spec.ts` against `http://127.0.0.1:4173` (`4 tests`),
   including regressions where unsafe replacement cards are hidden when slot
   provenance is partial or explicit lineup readiness is missing, and where the
@@ -56,8 +56,9 @@
 - **Slot proof diagnostic:** `diagnose_slot_provenance.py` is the repeatable
   read-only proof tool for #67. It can check a snapshot URL/file, inspect a
   saved raw Fantrax `getTeamRosterInfo` JSON file, inspect a saved Fantrax
-  roster-page DOM file for `lineup-btn` slot text, and perform a live Fantrax
-  roster read once cookies/env are available. Raw-payload mode reports candidate
+  roster-page DOM file for `lineup-btn` slot text, perform a live Fantrax
+  roster read once cookies/env are available, and optionally capture the live
+  roster DOM with `--capture-roster-dom`. Raw-payload mode reports candidate
   slot fields plus the current scraper's normalized assignment coverage. DOM
   mode can overlay `dom.lineup-btn` slots onto a matching snapshot; standalone
   raw/DOM evidence still cannot satisfy `--require-trusted` until normalized
@@ -67,7 +68,8 @@
 - **Cookie fallback:** if `import_chrome_cookies.py` hangs on macOS keychain,
   copy a logged-in Fantrax request `Cookie:` header locally and run
   `pbpaste | .venv/bin/python import_fantrax_cookies_manual.py --cookie-header -`;
-  then run `.venv/bin/python diagnose_slot_provenance.py --require-trusted`.
+  then run
+  `.venv/bin/python diagnose_slot_provenance.py --capture-roster-dom --require-trusted`.
   The helper writes `.cookies/fantrax.json` with `0600` permissions and does not
   print cookie values.
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
@@ -86,9 +88,10 @@
    raw `getTeamRosterInfo` payload, or a saved roster-page HTML file plus
    matching snapshot, refresh/read-only inspect `slot_source` coverage from raw
    `statusId`/slot fields and/or `dom.lineup-btn` slots. If active lineup slots
-   still resolve as `position_fallback`, integrate the read-only `lineup-btn`
-   DOM slot parser into the scrape. Keep recommendation gates fail-closed until
-   this is proven.
+   still resolve as `position_fallback`, run the live diagnostic with
+   `--capture-roster-dom`; if that proves trusted active slots, integrate the
+   read-only `lineup-btn` DOM slot parser into the scrape. Keep recommendation
+   gates fail-closed until this is proven.
 2. **Wire the hot-swap proposal confirmation path** — keep `Propose swap`
    disabled until #63's executor safety can accept a lineup-only proposal with
    named OUT/IN players, slot provenance proof, and Zach confirmation.

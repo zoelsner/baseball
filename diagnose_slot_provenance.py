@@ -359,7 +359,7 @@ def _cookies_from_env_or_file(path: Path) -> list[dict[str, Any]]:
     )
 
 
-def _live_fantrax_snapshot(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _live_fantrax_snapshot(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     load_dotenv()
     league_id = args.league_id or os.environ.get("FANTRAX_LEAGUE_ID")
     team_id = args.team_id or os.environ.get("FANTRAX_TEAM_ID")
@@ -371,7 +371,7 @@ def _live_fantrax_snapshot(args: argparse.Namespace) -> tuple[dict[str, Any], li
     roster = fantrax_data._team_roster(api, team_id)
     roster_data = fantrax_data.extract_roster(_FetchedRosterApi(roster), team_id)
     raw_rows = fantrax_data._raw_roster_rows(roster)
-    return {"roster": roster_data, "team_id": team_id, "league_id": league_id}, raw_rows
+    return {"roster": roster_data, "team_id": team_id, "league_id": league_id}, raw_rows, cookies
 
 
 def _print_human(report: dict[str, Any]) -> None:
@@ -471,6 +471,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     source.add_argument("--snapshot-file", help="Read an existing snapshot JSON file")
     source.add_argument("--raw-roster-file", help="Inspect a saved raw Fantrax getTeamRosterInfo JSON file")
     parser.add_argument("--roster-dom-file", help="Inspect or apply a saved Fantrax roster page HTML file")
+    parser.add_argument("--capture-roster-dom", action="store_true", help="During live diagnostics, read roster page HTML and apply lineup-btn slots")
+    parser.add_argument("--fantrax-roster-url", help="Override the Fantrax roster URL used by --capture-roster-dom")
+    parser.add_argument("--dom-headful", action="store_true", help="Open visible Chrome for --capture-roster-dom")
+    parser.add_argument("--dom-wait-seconds", type=float, default=20, help="Seconds to wait for roster DOM capture readiness")
     parser.add_argument("--league-id", help="Fantrax league id for live read-only diagnostics")
     parser.add_argument("--team-id", help="Fantrax team id for live read-only diagnostics")
     parser.add_argument("--cookies-file", default=str(auth.COOKIE_PATH), help="Fantrax cookie JSON path")
@@ -481,6 +485,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.capture_roster_dom and (args.snapshot_url or args.snapshot_file or args.raw_roster_file or args.roster_dom_file):
+        raise RuntimeError("--capture-roster-dom is only supported for live Fantrax diagnostics")
+
     dom_slots = None
     dom_report = None
     if args.roster_dom_file:
@@ -514,8 +521,19 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return 0
     else:
-        snapshot, raw_rows = _live_fantrax_snapshot(args)
+        snapshot, raw_rows, cookies = _live_fantrax_snapshot(args)
         source = "live-fantrax-read-only"
+        if args.capture_roster_dom:
+            dom_html = fantrax_dom.capture_roster_html(
+                cookies,
+                league_id=str(snapshot["league_id"]),
+                team_id=str(snapshot["team_id"]),
+                headful=bool(args.dom_headful),
+                url=args.fantrax_roster_url,
+                wait_seconds=float(args.dom_wait_seconds),
+            )
+            dom_slots = fantrax_dom.lineup_slots_from_html(dom_html)
+            dom_report = dom_roster_report(dom_html, source="live-fantrax-roster-dom")
 
     if dom_slots is not None:
         snapshot = _snapshot_with_dom_slots(snapshot, dom_slots)

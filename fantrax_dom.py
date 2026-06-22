@@ -8,10 +8,12 @@ real lineup slot text that the JSON API may omit.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any
 
+import auth
 import fantrax_data
 
 
@@ -36,6 +38,69 @@ LINEUP_SLOT_VALUES = {
 }
 PLAYER_ID_ATTRS = {"data-player-id", "data-scorer-id", "data-playerid", "data-scorerid"}
 HEADSHOT_RE = re.compile(r"\bhs([A-Za-z0-9_-]+)_")
+
+
+def roster_url(league_id: str, team_id: str, *, override: str | None = None) -> str:
+    if override:
+        return override
+    return f"https://www.fantrax.com/fantasy/league/{league_id}/team/roster;teamId={team_id}"
+
+
+def capture_roster_html(
+    cookies: list[dict[str, Any]],
+    *,
+    league_id: str,
+    team_id: str,
+    headful: bool = False,
+    url: str | None = None,
+    wait_seconds: float = 20,
+    driver_factory: Any | None = None,
+) -> str:
+    """Read roster page HTML through Selenium without clicking Fantrax controls."""
+    if not cookies:
+        raise RuntimeError("Fantrax cookies are required to capture roster DOM")
+    driver = driver_factory(headful=headful) if driver_factory else auth._build_driver(headful=headful)
+    try:
+        driver.get(auth.HOME_URL)
+        _install_cookies(driver, cookies)
+        driver.get(roster_url(league_id, team_id, override=url))
+        _wait_for_ready_state(driver, wait_seconds)
+        return str(getattr(driver, "page_source", "") or "")
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+
+def _install_cookies(driver: Any, cookies: list[dict[str, Any]]) -> None:
+    for cookie in cookies:
+        prepared = {
+            key: value
+            for key, value in cookie.items()
+            if key in {"name", "value", "path", "domain", "expiry", "secure", "httpOnly"}
+        }
+        if not prepared.get("name") or prepared.get("value") is None:
+            continue
+        if prepared.get("domain"):
+            prepared["domain"] = str(prepared["domain"]).lstrip(".")
+        try:
+            driver.add_cookie(prepared)
+        except Exception:
+            continue
+
+
+def _wait_for_ready_state(driver: Any, wait_seconds: float) -> None:
+    deadline = time.time() + max(0, wait_seconds)
+    while True:
+        try:
+            if driver.execute_script("return document.readyState") == "complete":
+                return
+        except Exception:
+            return
+        if time.time() >= deadline:
+            return
+        time.sleep(0.25)
 
 
 @dataclass
