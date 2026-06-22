@@ -134,6 +134,7 @@ function v2BuildLineupSwapSkipperPrompt(card, mode='quick') {
   const moveIn = card?.move_in || {};
   const moveOut = card?.move_out || {};
   const benefit = card?.projected_benefit || {};
+  const proposal = card?.proposal || {};
   const deep = mode === 'deep';
   return [
     deep
@@ -142,6 +143,7 @@ function v2BuildLineupSwapSkipperPrompt(card, mode='quick') {
     '',
     `Move IN: ${moveIn.name || 'Unknown player'} (${moveIn.positions || 'UT'}${moveIn.team ? `, ${moveIn.team}` : ''}) from ${moveIn.from_slot || '?'} to ${moveIn.to_slot || '?'}.`,
     `Move OUT: ${moveOut.name || 'Unknown player'} (${moveOut.positions || 'UT'}${moveOut.team ? `, ${moveOut.team}` : ''}) from ${moveOut.from_slot || '?'} to ${moveOut.to_slot || '?'}.`,
+    proposal.id ? `Proposal: ${proposal.id} (${proposal.status || 'blocked'}; writes enabled: ${proposal.writes_enabled === true ? 'yes' : 'no'}).` : null,
     `Projected benefit: ${v2Signed(benefit.points, 1)} points. Confidence: ${card?.confidence || 'unknown'}. Risk: ${card?.risk_label || 'unknown'}.`,
     card?.reason ? `Sandlot reason: ${card.reason}` : null,
     card?.short_term_outlook ? `Short-term outlook: ${card.short_term_outlook}` : null,
@@ -923,6 +925,7 @@ function v2AttentionQueue(health, matchupRecommendations, options={}) {
       action:'Blocked',
       nav:'roster',
       replacement:replacementCard,
+      proposal:replacementCard?.proposal || null,
       blockedAction:replacementCard?.execution || {
         state:'blocked',
         label:'Propose swap',
@@ -944,6 +947,8 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
     allowLineupHealth: lineupAdviceReady,
     allowReplacement: lineupAdviceReady,
   });
+  const hotSwapItems = queue.filter(item => item.kind === 'replacement' && item.replacement);
+  const attentionItems = queue.filter(item => !(item.kind === 'replacement' && item.replacement));
   const matchup = v2MatchupInfo(model.matchup);
   const projection = matchup?.projection || null;
   const projectionInfo = v2ProjectionInfo(projection);
@@ -968,7 +973,7 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
         <div>
           <V2Eyebrow color={V2.accent}>Today · {weekLabel}</V2Eyebrow>
           <div style={{ marginTop:8, fontSize:34, lineHeight:0.96, fontWeight:700, letterSpacing:'-0.035em', fontFamily:V2.fontDisplay }}>
-            Attention Queue
+            Today
           </div>
         </div>
         <button onClick={onRefresh} style={{
@@ -981,9 +986,17 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
         </button>
       </div>
 
-      <V2AttentionQueue items={queue} hasRealData={hasRealData} sync={sync} pausedReason={lineupPausedReason} onPlayer={onPlayer} onNav={onNav} onAskSkipper={onAskSkipper}/>
+      <V2HotSwapsPanel
+        items={hotSwapItems}
+        hasRealData={hasRealData}
+        sync={sync}
+        pausedReason={lineupPausedReason}
+        onAskSkipper={onAskSkipper}
+      />
 
-      {lineupPausedReason && queue.length ? (
+      <V2AttentionQueue items={attentionItems} hasRealData={hasRealData} sync={sync} pausedReason={lineupPausedReason} onPlayer={onPlayer} onNav={onNav} onAskSkipper={onAskSkipper}/>
+
+      {lineupPausedReason ? (
         <V2Caution eyebrow="Advice paused" tone="warn">
           Lineup and replacement advice is paused: {lineupPausedReason}.
         </V2Caution>
@@ -1054,6 +1067,66 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
         </button>
       </div>
     </div>
+  );
+}
+
+function V2HotSwapsPanel({ items, hasRealData, sync, pausedReason, onAskSkipper }) {
+  const paused = Boolean(pausedReason);
+  const tone = paused
+    ? { color:V2.warn, bg:V2.warnSoft }
+    : items.length
+      ? { color:V2.accent, bg:V2.accentSoft }
+      : { color:V2.ok, bg:V2.okSoft };
+  const headline = items.length
+    ? `${items.length} hot swap${items.length === 1 ? '' : 's'}`
+    : paused
+      ? 'Hot swaps paused'
+      : hasRealData
+        ? 'No hot swaps'
+        : 'Waiting for roster data';
+  const detail = items.length
+    ? 'Best lineup-only move from the latest matchup simulation.'
+    : paused
+      ? `Lineup swap advice is paused: ${pausedReason}.`
+      : hasRealData
+        ? 'No lineup-only move clears the meaningful-gain threshold right now.'
+        : sync.state === 'failed'
+          ? (sync.error || 'Last refresh failed.')
+          : 'Waiting for the first successful Fantrax snapshot.';
+  return (
+    <section style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, overflow:'hidden' }}>
+      <div style={{ padding:'17px 18px 14px', borderBottom:items.length ? `1px solid ${V2.hairline2}` : 'none' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+          <V2Eyebrow color={tone.color}>Hot Swaps</V2Eyebrow>
+          <span style={{
+            background:tone.bg,
+            color:tone.color,
+            borderRadius:999,
+            padding:'5px 9px',
+            fontSize:11,
+            fontWeight:900,
+          }}>{items.length || 0}</span>
+        </div>
+        <div style={{ marginTop:9, fontSize:24, lineHeight:1.05, fontWeight:800, fontFamily:V2.fontDisplay, textWrap:'balance' }}>
+          {headline}
+        </div>
+        <div style={{ marginTop:7, color:V2.muted, fontSize:12.5, lineHeight:1.4, fontWeight:700, textWrap:'pretty' }}>
+          {detail}
+        </div>
+      </div>
+      {items.length ? (
+        <div>
+          {items.map((item, index) => (
+            <V2LineupHotSwapCard
+              key={item.id}
+              item={item}
+              last={index === items.length - 1}
+              onAskSkipper={onAskSkipper}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -1135,6 +1208,8 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
   const confidence = card.confidence || 'medium';
   const risk = card.risk_label || 'unknown';
   const execution = card.execution || item.blockedAction || {};
+  const proposal = item.proposal || card.proposal || {};
+  const safetyChecks = Array.isArray(proposal.safety_checks) ? proposal.safety_checks : [];
   const benefitText = v2Signed(benefit.points, 1);
   const confidenceTone = String(confidence).toLowerCase() === 'high'
     ? { fg:V2.ok, bg:V2.okSoft }
@@ -1201,6 +1276,8 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
         />
       </div>
 
+      {safetyChecks.length ? <V2ProposalSafetyChecklist proposal={proposal} checks={safetyChecks}/> : null}
+
       <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
         <button disabled title={execution.reason || card.blocked_reason || 'Execution safety is not ready'} style={{
           flex:'1 1 135px',
@@ -1252,6 +1329,48 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
         }}>
           {Icons.search('#fff', 14)} Deep research
         </button>
+      </div>
+    </div>
+  );
+}
+
+function V2ProposalSafetyChecklist({ proposal, checks }) {
+  return (
+    <div aria-label="Proposal safety" style={{
+      display:'flex',
+      flexDirection:'column',
+      gap:7,
+      padding:'2px 0 1px',
+    }}>
+      <div style={{ display:'flex', justifyContent:'space-between', gap:10, alignItems:'baseline' }}>
+        <div style={{ color:V2.ink, fontSize:12, fontWeight:900 }}>Proposal safety</div>
+        <div style={{ color:V2.muted, fontSize:10.5, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.05em' }}>
+          {proposal.status || 'blocked'}
+        </div>
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:5 }}>
+        {checks.map((check, index)=>(
+          <div key={check.key || `${check.label}-${index}`} style={{
+            display:'grid',
+            gridTemplateColumns:'12px 1fr',
+            gap:7,
+            alignItems:'start',
+            minHeight:24,
+          }}>
+            <span aria-hidden="true" style={{
+              width:8,
+              height:8,
+              borderRadius:999,
+              marginTop:5,
+              background:check.state === 'blocked' ? V2.warn : V2.ok,
+              boxShadow:`0 0 0 3px ${check.state === 'blocked' ? V2.warnSoft : V2.okSoft}`,
+            }}/>
+            <span style={{ minWidth:0, color:V2.body, fontSize:11.5, lineHeight:1.28, fontWeight:800, textWrap:'pretty' }}>
+              <span style={{ color:V2.ink }}>{check.label}</span>
+              {check.detail ? <span style={{ color:V2.muted, fontWeight:750 }}> - {check.detail}</span> : null}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );

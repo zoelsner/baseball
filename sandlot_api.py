@@ -128,6 +128,23 @@ def attention_queue() -> dict[str, Any]:
     )
 
 
+@app.get("/api/hot-swaps/latest")
+def latest_hot_swaps() -> dict[str, Any]:
+    """Read-only hot-swap proposal surface.
+
+    This endpoint intentionally derives from the same Attention Queue contract
+    so it inherits the fail-closed lineup-slot provenance gate. It never emits
+    an executable Fantrax action payload.
+    """
+    try:
+        row = sandlot_db.latest_successful_snapshot()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
+    if not row:
+        raise HTTPException(status_code=503, detail="No successful Fantrax snapshot has been stored yet")
+    return jsonable_encoder(_hot_swap_payload(row))
+
+
 @app.post("/api/refresh")
 def refresh(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     from sandlot_refresh import run_refresh
@@ -539,6 +556,50 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
         "data_quality": data_quality,
         "player_index": _player_index(data),
         "errors": row.get("errors") or data.get("errors") or [],
+    }
+
+
+def _hot_swap_payload(row: dict[str, Any]) -> dict[str, Any]:
+    data = row.get("data") or {}
+    taken_at = row.get("taken_at")
+    data_quality = sandlot_data_quality.snapshot_data_quality(data)
+    items = sandlot_attention.attention_items(data)
+    proposals = []
+    for item in items:
+        if item.get("kind") != "replacement":
+            continue
+        proposal = item.get("proposal") if isinstance(item.get("proposal"), dict) else None
+        replacement = item.get("replacement") if isinstance(item.get("replacement"), dict) else None
+        if not proposal or not replacement:
+            continue
+        proposals.append({
+            "proposal": proposal,
+            "replacement": replacement,
+            "blocked_action": item.get("blocked_action"),
+            "source_item": {
+                "id": item.get("id"),
+                "kind": item.get("kind"),
+                "title": item.get("title"),
+                "context": item.get("context"),
+                "reason": item.get("reason"),
+                "chips": item.get("chips") or [],
+            },
+        })
+    lineup_ready = data_quality.get("lineup_recommendations_ready") is True
+    state = "ready" if proposals else ("none" if lineup_ready else "paused")
+    return {
+        "snapshot_id": row.get("id"),
+        "taken_at": taken_at,
+        "freshness": _freshness(taken_at),
+        "state": state,
+        "writes_enabled": False,
+        "proposals": proposals,
+        "paused_reason": None if lineup_ready else sandlot_data_quality.short_reason(data_quality, purpose="lineup"),
+        "data_quality": {
+            "lineup_recommendations_ready": lineup_ready,
+            "lineup_slots": data_quality.get("lineup_slots"),
+            "lineup_recommendation_reasons": data_quality.get("lineup_recommendation_reasons") or [],
+        },
     }
 
 

@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (after hot-swap shipping audit).
+> Last updated: **2026-06-22** (after Hot Swaps Today slice).
 
 ## Where things stand
 
@@ -50,7 +50,7 @@
   non-fatal and do not populate snapshot `errors`, so recommendations remain
   fail-closed when slot proof is unavailable.
 - **Local verification:** Python unit suite is green on 2026-06-22
-  (`155 tests`). The local rebuilt Sandlot bundle still builds with direct
+  (`157 tests`). The local rebuilt Sandlot bundle still builds with direct
   `esbuild`; this sandbox shell has no Node/npm/npx available for a same-run
   local Playwright rerun, so PR #81's GitHub `Local frontend E2E` job remains
   the branch-owned browser regression proof. Earlier local Playwright coverage
@@ -84,17 +84,27 @@
   The helper writes `.cookies/fantrax.json` with `0600` permissions and does not
   print cookie values.
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
-- **Current draft PR:** [#81](https://github.com/zoelsner/baseball/pull/81)
-  tracks the slot-provenance safety gate, Fantrax adapter hardening, and
-  Attention Queue fail-closed behavior for untrusted active-slot data. Current
-  head `3b56d73` is clean, mergeable, and green across GitHub `CI #131`
-  (Python import/unit smoke, frontend build) and `Playwright #155` (Local
-  frontend E2E, Railway production smoke). It is still marked **draft**, so it
-  has not shipped to production yet. Current production still shows the old
-  unsafe behavior (`/api/attention` returns `output`/`replacement` items while
-  `/api/snapshot/latest` slot provenance exits `fail_closed` with all 20 active
-  rows untrusted). Next shipping step needs explicit approval to mark PR #81
-  ready and merge it into `main`, then verify Railway after deploy.
+- **PR #81 shipped:** [#81](https://github.com/zoelsner/baseball/pull/81) was
+  marked ready and squash-merged into `main` as `fc366f7`. Main push checks
+  passed: GitHub `CI #133` (Python import/unit smoke, frontend build) and
+  `Playwright #157` (Local frontend E2E, Railway production smoke). Production
+  verification after deploy: `/api/attention` now returns `0` items while
+  `/api/snapshot/latest` still exits `fail_closed` with all 20 active rows
+  untrusted, proving unsafe lineup/output/replacement advice is suppressed
+  until trusted Fantrax slot data exists.
+- **Next hot-swap proposal slice:** branch
+  `feature/hot-swap-proposal-safety` adds a read-only `proposal` object and
+  visible safety checklist to lineup-only hot-swap cards. It keeps `Propose
+  swap` blocked and does not enable Fantrax writes, Zo writes, add/drop, or
+  trade automation. It now also adds `GET /api/hot-swaps/latest`, a read-only
+  proposal endpoint that returns paused/ready/none state from the same
+  fail-closed Attention Queue gate.
+- **Hot Swaps Today slice:** the same branch now makes hot swaps a first-class
+  Today surface instead of burying them inside the generic Attention Queue.
+  Today splits replacement items into a dedicated **Hot Swaps** section above
+  the remaining queue items. Browser smoke against a mocked local snapshot
+  verified the rendered order, OUT/IN card, blocked `Propose swap`, and
+  `Ask Skipper` handoff prompt. No new write path was enabled.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.
 
