@@ -60,6 +60,14 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(card["move_out"]["name"], "weak1b")
         self.assertEqual(card["execution"]["state"], "blocked")
         self.assertEqual(card["execution"]["label"], "Propose swap")
+        self.assertEqual(card["proposal"]["id"], "lineup-swap:weak1b:bench3b:3B")
+        self.assertEqual(card["proposal"]["status"], "blocked")
+        self.assertFalse(card["proposal"]["writes_enabled"])
+        self.assertTrue(card["proposal"]["confirmation_required"])
+        self.assertEqual(
+            [check["state"] for check in card["proposal"]["safety_checks"]],
+            ["passed", "passed", "passed", "blocked"],
+        )
         self.assertFalse(card["safety"]["live_writes"])
         self.assertFalse(card["safety"]["add_drop"])
         self.assertIn("latest Fantrax snapshot", card["provenance"]["source"])

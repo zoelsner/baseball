@@ -134,6 +134,7 @@ function v2BuildLineupSwapSkipperPrompt(card, mode='quick') {
   const moveIn = card?.move_in || {};
   const moveOut = card?.move_out || {};
   const benefit = card?.projected_benefit || {};
+  const proposal = card?.proposal || {};
   const deep = mode === 'deep';
   return [
     deep
@@ -142,6 +143,7 @@ function v2BuildLineupSwapSkipperPrompt(card, mode='quick') {
     '',
     `Move IN: ${moveIn.name || 'Unknown player'} (${moveIn.positions || 'UT'}${moveIn.team ? `, ${moveIn.team}` : ''}) from ${moveIn.from_slot || '?'} to ${moveIn.to_slot || '?'}.`,
     `Move OUT: ${moveOut.name || 'Unknown player'} (${moveOut.positions || 'UT'}${moveOut.team ? `, ${moveOut.team}` : ''}) from ${moveOut.from_slot || '?'} to ${moveOut.to_slot || '?'}.`,
+    proposal.id ? `Proposal: ${proposal.id} (${proposal.status || 'blocked'}; writes enabled: ${proposal.writes_enabled === true ? 'yes' : 'no'}).` : null,
     `Projected benefit: ${v2Signed(benefit.points, 1)} points. Confidence: ${card?.confidence || 'unknown'}. Risk: ${card?.risk_label || 'unknown'}.`,
     card?.reason ? `Sandlot reason: ${card.reason}` : null,
     card?.short_term_outlook ? `Short-term outlook: ${card.short_term_outlook}` : null,
@@ -1135,6 +1137,8 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
   const confidence = card.confidence || 'medium';
   const risk = card.risk_label || 'unknown';
   const execution = card.execution || item.blockedAction || {};
+  const proposal = card.proposal || {};
+  const safetyChecks = Array.isArray(proposal.safety_checks) ? proposal.safety_checks : [];
   const benefitText = v2Signed(benefit.points, 1);
   const confidenceTone = String(confidence).toLowerCase() === 'high'
     ? { fg:V2.ok, bg:V2.okSoft }
@@ -1201,6 +1205,8 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
         />
       </div>
 
+      {safetyChecks.length ? <V2ProposalSafetyChecklist proposal={proposal} checks={safetyChecks}/> : null}
+
       <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
         <button disabled title={execution.reason || card.blocked_reason || 'Execution safety is not ready'} style={{
           flex:'1 1 135px',
@@ -1252,6 +1258,48 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
         }}>
           {Icons.search('#fff', 14)} Deep research
         </button>
+      </div>
+    </div>
+  );
+}
+
+function V2ProposalSafetyChecklist({ proposal, checks }) {
+  return (
+    <div aria-label="Proposal safety" style={{
+      display:'flex',
+      flexDirection:'column',
+      gap:7,
+      padding:'2px 0 1px',
+    }}>
+      <div style={{ display:'flex', justifyContent:'space-between', gap:10, alignItems:'baseline' }}>
+        <div style={{ color:V2.ink, fontSize:12, fontWeight:900 }}>Proposal safety</div>
+        <div style={{ color:V2.muted, fontSize:10.5, fontWeight:900, textTransform:'uppercase', letterSpacing:'0.05em' }}>
+          {proposal.status || 'blocked'}
+        </div>
+      </div>
+      <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:5 }}>
+        {checks.map((check, index)=>(
+          <div key={check.key || `${check.label}-${index}`} style={{
+            display:'grid',
+            gridTemplateColumns:'12px 1fr',
+            gap:7,
+            alignItems:'start',
+            minHeight:24,
+          }}>
+            <span aria-hidden="true" style={{
+              width:8,
+              height:8,
+              borderRadius:999,
+              marginTop:5,
+              background:check.state === 'blocked' ? V2.warn : V2.ok,
+              boxShadow:`0 0 0 3px ${check.state === 'blocked' ? V2.warnSoft : V2.okSoft}`,
+            }}/>
+            <span style={{ minWidth:0, color:V2.body, fontSize:11.5, lineHeight:1.28, fontWeight:800, textWrap:'pretty' }}>
+              <span style={{ color:V2.ink }}>{check.label}</span>
+              {check.detail ? <span style={{ color:V2.muted, fontWeight:750 }}> - {check.detail}</span> : null}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );

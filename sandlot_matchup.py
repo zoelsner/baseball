@@ -720,6 +720,7 @@ def _lineup_replacement_card(
 
     return {
         "type": "lineup_hot_swap",
+        "proposal": _lineup_swap_proposal(move_in, move_out),
         "move_in": move_in,
         "move_out": move_out,
         "projected_benefit": {
@@ -761,6 +762,48 @@ def _lineup_replacement_card(
             "reason": "Lineup execution is disabled until the Fantrax write path has separate confirmation safety.",
         },
         "blocked_reason": "Propose swap is disabled until execution safety is ready.",
+    }
+
+
+def _lineup_swap_proposal(move_in: dict[str, Any], move_out: dict[str, Any]) -> dict[str, Any]:
+    proposal_id = "lineup-swap:{out_id}:{in_id}:{slot}".format(
+        out_id=move_out.get("id") or "unknown-out",
+        in_id=move_in.get("id") or "unknown-in",
+        slot=move_in.get("to_slot") or "slot",
+    )
+    return {
+        "id": proposal_id,
+        "type": "lineup_swap",
+        "status": "blocked",
+        "writes_enabled": False,
+        "confirmation_required": True,
+        "summary": f"Move {move_out.get('name', 'OUT player')} out and {move_in.get('name', 'IN player')} in.",
+        "safety_checks": [
+            {
+                "key": "trusted_slots",
+                "label": "Trusted slot data",
+                "state": "passed",
+                "detail": "Recommendation is only emitted after lineup slot provenance is trusted.",
+            },
+            {
+                "key": "lineup_only",
+                "label": "Lineup-only move",
+                "state": "passed",
+                "detail": "No add, drop, trade, or roster-pool mutation is attached to this proposal.",
+            },
+            {
+                "key": "protected_players",
+                "label": "Protected players excluded",
+                "state": "passed",
+                "detail": "Minors, IL/IR, and other protected rows are not eligible swap targets.",
+            },
+            {
+                "key": "executor_ready",
+                "label": "Execution safety",
+                "state": "blocked",
+                "detail": "Fantrax write execution still needs a separate confirmed executor contract.",
+            },
+        ],
     }
 
 

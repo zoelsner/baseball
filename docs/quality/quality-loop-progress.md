@@ -311,6 +311,32 @@
   mark the draft PR ready and merge through stored GitHub credentials was
   rejected by the sandbox approval reviewer because that exact high-impact
   repo action needs explicit user approval. No merge/deploy action was taken.
+- 2026-06-22: User explicitly approved marking PR #81 ready and
+  squash-merging into `main`. Reconfirmed PR head
+  `d2714001f96acf8b099d912427475e3cda401ee1`, GitHub `CI #132`, and
+  `Playwright #156`, then marked the PR ready and squash-merged it as
+  `fc366f7bfc55027112a4ab2a8590a9c1581fabbb`. Main push verification passed:
+  `CI #133` (Python import/unit smoke, frontend build) and `Playwright #157`
+  (Local frontend E2E, Railway production smoke). Post-deploy production
+  verification passed the safety invariant: `/api/attention` returned
+  `{"count": 0}` with no `output` or `replacement` items while
+  `diagnose_slot_provenance.py --snapshot-url ... --require-trusted` still
+  exited `2` with `fail_closed`, 37 roster rows, 17 trusted rows, 20 untrusted
+  rows, and all 20 active rows untrusted. Browser-level verification from this
+  sandbox was attempted through Playwright, but the bundled browser was absent
+  and system Chrome aborted under sandbox control; GitHub Railway E2E plus
+  direct production API checks are the deployed evidence for this slice.
+- 2026-06-22: Started the next hot-swaps slice on
+  `feature/hot-swap-proposal-safety`: the lineup-only replacement card now
+  carries a read-only `proposal` object with deterministic proposal id,
+  blocked status, writes disabled, confirmation required, and a visible safety
+  checklist (trusted slots, lineup-only move, protected players excluded,
+  execution safety blocked). Today renders the proposal safety ledger, and the
+  Ask Skipper handoff includes the proposal id/status plus `writes enabled:
+  no`. No Fantrax write, Zo write, add/drop, or trade automation path was
+  enabled. Verification: focused recommendation/attention/data-quality tests
+  passed (`42 tests`), full Python suite passed (`155 tests`), direct
+  `esbuild` rebuild passed, and `git diff --check` passed.
 
 ## Next Loop Phase
 

@@ -35,6 +35,20 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
           },
           replacement_card: {
             type: 'lineup_hot_swap',
+            proposal: {
+              id: 'lineup-swap:corner:bench-bat:UT',
+              type: 'lineup_swap',
+              status: 'blocked',
+              writes_enabled: false,
+              confirmation_required: true,
+              summary: 'Move Cold Corner out and Bench Bat in.',
+              safety_checks: [
+                { key: 'trusted_slots', label: 'Trusted slot data', state: 'passed', detail: 'Recommendation is only emitted after lineup slot provenance is trusted.' },
+                { key: 'lineup_only', label: 'Lineup-only move', state: 'passed', detail: 'No add, drop, trade, or roster-pool mutation is attached to this proposal.' },
+                { key: 'protected_players', label: 'Protected players excluded', state: 'passed', detail: 'Minors, IL/IR, and other protected rows are not eligible swap targets.' },
+                { key: 'executor_ready', label: 'Execution safety', state: 'blocked', detail: 'Fantrax write execution still needs a separate confirmed executor contract.' },
+              ],
+            },
             move_in: {
               id: 'bench-bat',
               name: 'Bench Bat',
@@ -145,6 +159,11 @@ test.describe('Today — Attention Queue', () => {
       await expect(page.getByText('medium risk', { exact: true })).toBeVisible();
       await expect(page.getByText('latest Fantrax snapshot', { exact: true })).toBeVisible();
       const queueSection = page.locator('section').filter({ hasText: 'Bench Bat for Cold Corner' });
+      await expect(queueSection.getByText('Proposal safety', { exact: true })).toBeVisible();
+      await expect(queueSection.getByText('Trusted slot data')).toBeVisible();
+      await expect(queueSection.getByText('Lineup-only move')).toBeVisible();
+      await expect(queueSection.getByText('Protected players excluded')).toBeVisible();
+      await expect(queueSection.getByText('Execution safety')).toBeVisible();
       await expect(queueSection.getByRole('button', { name: /Propose swap blocked/i })).toBeDisabled();
       await expect(queueSection.getByRole('button', { name: /Ask Skipper/i })).toBeVisible();
       await expect(queueSection.getByRole('button', { name: /Deep research/i })).toBeVisible();
@@ -153,6 +172,8 @@ test.describe('Today — Attention Queue', () => {
       await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Pressure-test this lineup-only hot swap/);
       await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Move IN: Bench Bat/);
       await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Move OUT: Cold Corner/);
+      await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/lineup-swap:corner:bench-bat:UT/);
+      await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/writes enabled: no/);
     }
   });
 
