@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (after hot-swap shipping audit).
+> Last updated: **2026-06-22** (after PR #81 merge and Railway verification).
 
 ## Where things stand
 
@@ -84,17 +84,14 @@
   The helper writes `.cookies/fantrax.json` with `0600` permissions and does not
   print cookie values.
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
-- **Current draft PR:** [#81](https://github.com/zoelsner/baseball/pull/81)
-  tracks the slot-provenance safety gate, Fantrax adapter hardening, and
-  Attention Queue fail-closed behavior for untrusted active-slot data. Current
-  head `3b56d73` is clean, mergeable, and green across GitHub `CI #131`
-  (Python import/unit smoke, frontend build) and `Playwright #155` (Local
-  frontend E2E, Railway production smoke). It is still marked **draft**, so it
-  has not shipped to production yet. Current production still shows the old
-  unsafe behavior (`/api/attention` returns `output`/`replacement` items while
-  `/api/snapshot/latest` slot provenance exits `fail_closed` with all 20 active
-  rows untrusted). Next shipping step needs explicit approval to mark PR #81
-  ready and merge it into `main`, then verify Railway after deploy.
+- **PR #81 shipped:** [#81](https://github.com/zoelsner/baseball/pull/81) was
+  marked ready and squash-merged into `main` as `fc366f7`. Main push checks
+  passed: GitHub `CI #133` (Python import/unit smoke, frontend build) and
+  `Playwright #157` (Local frontend E2E, Railway production smoke). Production
+  verification after deploy: `/api/attention` now returns `0` items while
+  `/api/snapshot/latest` still exits `fail_closed` with all 20 active rows
+  untrusted, proving unsafe lineup/output/replacement advice is suppressed
+  until trusted Fantrax slot data exists.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.
 
