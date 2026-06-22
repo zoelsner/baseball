@@ -947,6 +947,8 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
     allowLineupHealth: lineupAdviceReady,
     allowReplacement: lineupAdviceReady,
   });
+  const hotSwapItems = queue.filter(item => item.kind === 'replacement' && item.replacement);
+  const attentionItems = queue.filter(item => !(item.kind === 'replacement' && item.replacement));
   const matchup = v2MatchupInfo(model.matchup);
   const projection = matchup?.projection || null;
   const projectionInfo = v2ProjectionInfo(projection);
@@ -971,7 +973,7 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
         <div>
           <V2Eyebrow color={V2.accent}>Today · {weekLabel}</V2Eyebrow>
           <div style={{ marginTop:8, fontSize:34, lineHeight:0.96, fontWeight:700, letterSpacing:'-0.035em', fontFamily:V2.fontDisplay }}>
-            Attention Queue
+            Today
           </div>
         </div>
         <button onClick={onRefresh} style={{
@@ -984,9 +986,17 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
         </button>
       </div>
 
-      <V2AttentionQueue items={queue} hasRealData={hasRealData} sync={sync} pausedReason={lineupPausedReason} onPlayer={onPlayer} onNav={onNav} onAskSkipper={onAskSkipper}/>
+      <V2HotSwapsPanel
+        items={hotSwapItems}
+        hasRealData={hasRealData}
+        sync={sync}
+        pausedReason={lineupPausedReason}
+        onAskSkipper={onAskSkipper}
+      />
 
-      {lineupPausedReason && queue.length ? (
+      <V2AttentionQueue items={attentionItems} hasRealData={hasRealData} sync={sync} pausedReason={lineupPausedReason} onPlayer={onPlayer} onNav={onNav} onAskSkipper={onAskSkipper}/>
+
+      {lineupPausedReason ? (
         <V2Caution eyebrow="Advice paused" tone="warn">
           Lineup and replacement advice is paused: {lineupPausedReason}.
         </V2Caution>
@@ -1057,6 +1067,66 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
         </button>
       </div>
     </div>
+  );
+}
+
+function V2HotSwapsPanel({ items, hasRealData, sync, pausedReason, onAskSkipper }) {
+  const paused = Boolean(pausedReason);
+  const tone = paused
+    ? { color:V2.warn, bg:V2.warnSoft }
+    : items.length
+      ? { color:V2.accent, bg:V2.accentSoft }
+      : { color:V2.ok, bg:V2.okSoft };
+  const headline = items.length
+    ? `${items.length} hot swap${items.length === 1 ? '' : 's'}`
+    : paused
+      ? 'Hot swaps paused'
+      : hasRealData
+        ? 'No hot swaps'
+        : 'Waiting for roster data';
+  const detail = items.length
+    ? 'Best lineup-only move from the latest matchup simulation.'
+    : paused
+      ? `Lineup swap advice is paused: ${pausedReason}.`
+      : hasRealData
+        ? 'No lineup-only move clears the meaningful-gain threshold right now.'
+        : sync.state === 'failed'
+          ? (sync.error || 'Last refresh failed.')
+          : 'Waiting for the first successful Fantrax snapshot.';
+  return (
+    <section style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, overflow:'hidden' }}>
+      <div style={{ padding:'17px 18px 14px', borderBottom:items.length ? `1px solid ${V2.hairline2}` : 'none' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+          <V2Eyebrow color={tone.color}>Hot Swaps</V2Eyebrow>
+          <span style={{
+            background:tone.bg,
+            color:tone.color,
+            borderRadius:999,
+            padding:'5px 9px',
+            fontSize:11,
+            fontWeight:900,
+          }}>{items.length || 0}</span>
+        </div>
+        <div style={{ marginTop:9, fontSize:24, lineHeight:1.05, fontWeight:800, fontFamily:V2.fontDisplay, textWrap:'balance' }}>
+          {headline}
+        </div>
+        <div style={{ marginTop:7, color:V2.muted, fontSize:12.5, lineHeight:1.4, fontWeight:700, textWrap:'pretty' }}>
+          {detail}
+        </div>
+      </div>
+      {items.length ? (
+        <div>
+          {items.map((item, index) => (
+            <V2LineupHotSwapCard
+              key={item.id}
+              item={item}
+              last={index === items.length - 1}
+              onAskSkipper={onAskSkipper}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 

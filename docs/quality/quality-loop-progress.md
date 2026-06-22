@@ -350,6 +350,20 @@
   a paused reason when lineup recommendations are not trusted. Added Python
   route coverage and a Playwright API contract smoke; no executor, Fantrax,
   Zo, add/drop, or trade write path was introduced.
+- 2026-06-22: Pivoted from additional executor/proposal scaffolding back to
+  the product-facing Hot Swaps experience. Today now splits replacement
+  recommendations out of the generic Attention Queue into a first-class
+  **Hot Swaps** section above the remaining roster issues. The section shows
+  ready, empty, and paused states; when a swap exists it renders the existing
+  OUT/IN hot-swap card with blocked `Propose swap`, `Ask Skipper`, and
+  `Deep research`. Verification: focused recommendation/attention/data-quality
+  tests passed (`44 tests`), full Python suite passed (`157 tests`), direct
+  `esbuild` rebuild passed, `git diff --check` passed, and a temporary local
+  browser smoke with a mocked snapshot verified `HOT SWAPS` renders before
+  `ATTENTION QUEUE`, shows `Bench Bat for Cold Corner`, keeps
+  `Propose swap blocked`, and seeds Skipper with the exact swap prompt.
+  Local Playwright CLI is still unavailable in this checkout, so the updated
+  Playwright spec is expected to run in GitHub Actions after push.
 
 ## Next Loop Phase
 

@@ -128,7 +128,9 @@ test.describe('Today — Attention Queue', () => {
     await waitForAppMount(page);
     await skipIfAttentionQueueNotDeployed(page);
 
-    await expect(page.getByText('1 urgent · 1 check · 2 review')).toBeVisible();
+    await expect(page.getByText('1 hot swap')).toBeVisible();
+    await expect(page.getByText('Best lineup-only move from the latest matchup simulation.')).toBeVisible();
+    await expect(page.getByText('1 urgent · 1 check · 1 review')).toBeVisible();
     await expect(page.getByText('Day-to-day on OF. Inspect replacement risk before lock.')).toBeVisible();
     await expect(page.getByText('No projected output. Confirm the active slot before leaving this player in.')).toBeVisible();
 
@@ -146,9 +148,9 @@ test.describe('Today — Attention Queue', () => {
       : page.getByText(/Review lineup move|Bench Bat for Cold Corner/)
     );
 
+    expect(replacement).toBeLessThan(judge);
     expect(webb).toBeGreaterThan(judge);
     expect(cold).toBeGreaterThan(webb);
-    expect(replacement).toBeGreaterThan(cold);
 
     if (expectBranchHotSwap) {
       await expect(page.getByText('Bench Bat for Cold Corner')).toBeVisible();
@@ -198,6 +200,8 @@ test.describe('Today — Attention Queue', () => {
     await waitForAppMount(page);
     await skipIfAttentionQueueNotDeployed(page);
 
+    await expect(page.getByText('No hot swaps')).toBeVisible();
+    await expect(page.getByText('No lineup-only move clears the meaningful-gain threshold right now.')).toBeVisible();
     await expect(page.getByText('No current issues')).toBeVisible();
     await expect(page.getByText('No injury, lineup, output, or replacement issue needs action in the current snapshot.')).toBeVisible();
   });
@@ -241,6 +245,8 @@ test.describe('Today — Attention Queue', () => {
     await waitForAppMount(page);
     await skipIfAttentionQueueNotDeployed(page);
 
+    await expect(page.getByText('Hot swaps paused')).toBeVisible();
+    await expect(page.getByText('Lineup swap advice is paused: Lineup-slot source trusted for 17/37 roster players.')).toBeVisible();
     await expect(page.getByText('Advice paused')).toBeVisible();
     await expect(page.getByText('Showing only status-safe items until lineup slots are verified.')).toBeVisible();
     await expect(page.getByText('Lineup and replacement advice is paused: Lineup-slot source trusted for 17/37 roster players.')).toBeVisible();

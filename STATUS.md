@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (after PR #81 merge and proposal-safety slice).
+> Last updated: **2026-06-22** (after Hot Swaps Today slice).
 
 ## Where things stand
 
@@ -50,7 +50,7 @@
   non-fatal and do not populate snapshot `errors`, so recommendations remain
   fail-closed when slot proof is unavailable.
 - **Local verification:** Python unit suite is green on 2026-06-22
-  (`155 tests`). The local rebuilt Sandlot bundle still builds with direct
+  (`157 tests`). The local rebuilt Sandlot bundle still builds with direct
   `esbuild`; this sandbox shell has no Node/npm/npx available for a same-run
   local Playwright rerun, so PR #81's GitHub `Local frontend E2E` job remains
   the branch-owned browser regression proof. Earlier local Playwright coverage
@@ -99,6 +99,12 @@
   trade automation. It now also adds `GET /api/hot-swaps/latest`, a read-only
   proposal endpoint that returns paused/ready/none state from the same
   fail-closed Attention Queue gate.
+- **Hot Swaps Today slice:** the same branch now makes hot swaps a first-class
+  Today surface instead of burying them inside the generic Attention Queue.
+  Today splits replacement items into a dedicated **Hot Swaps** section above
+  the remaining queue items. Browser smoke against a mocked local snapshot
+  verified the rendered order, OUT/IN card, blocked `Propose swap`, and
+  `Ask Skipper` handoff prompt. No new write path was enabled.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.
 
