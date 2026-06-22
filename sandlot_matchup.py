@@ -335,7 +335,10 @@ def simulate_lineup_move_impact(
 ) -> dict[str, Any]:
     """Compare legal bench-to-active lineup moves against the base projection."""
     data_quality = _recommendation_quality(snapshot, data_quality)
-    if isinstance(data_quality, dict) and not data_quality.get("recommendations_ready", True):
+    if isinstance(data_quality, dict) and not data_quality.get(
+        "lineup_recommendations_ready",
+        data_quality.get("recommendations_ready", True),
+    ):
         return _no_action_result(
             base_projection=compute_projection(snapshot, data_quality),
             reason="Recommendation data incomplete: " + _quality_reason(data_quality),
@@ -760,7 +763,7 @@ def _quality_reason(data_quality: dict[str, Any]) -> str:
     try:
         import sandlot_data_quality
 
-        return sandlot_data_quality.short_reason(data_quality, purpose="recommendation")
+        return sandlot_data_quality.short_reason(data_quality, purpose="lineup_recommendations")
     except Exception:
         reasons = data_quality.get("recommendation_reasons") or data_quality.get("reasons") or []
         return str(reasons[0]) if reasons else "Required snapshot data is incomplete"

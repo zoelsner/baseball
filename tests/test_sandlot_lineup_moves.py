@@ -7,11 +7,12 @@ def future_game(day=14):
     return {"date": f"2026-05-{day:02d}"}
 
 
-def player(pid, *, slot, positions, fppg, games=1, name=None):
+def player(pid, *, slot, positions, fppg, games=1, name=None, slot_source=None):
     return {
         "id": pid,
         "name": name or pid,
         "slot": slot,
+        "slot_source": slot_source or ("raw.statusId" if slot == "BN" else "raw.lineupSlot"),
         "positions": positions,
         "all_positions": positions if isinstance(positions, list) else str(positions).split("/"),
         "fppg": fppg,

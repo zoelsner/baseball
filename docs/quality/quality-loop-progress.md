@@ -38,6 +38,14 @@
 - 2026-06-21: Implemented the Skipper nav move and Skipper web fallback after
   the second-opinion gate. Updated tracker rows `APP-004` and `SKP-009` with
   local unit/browser evidence.
+- 2026-06-22: Started the hot-swap safety execution path on
+  `fix/attention-slot-reliability`. GitHub issue creation was blocked by a
+  connector 403 and no local `gh` binary, so the issue draft was written to
+  `docs/quality/issue-drafts/zo-safe-roster-action-confirmation.md`.
+- 2026-06-22: Added the first #67 mitigation gate: lineup and add/drop
+  recommendations now require trusted roster slot provenance and fail closed
+  when `slot_source` is `position_fallback`. Generic trade grading remains
+  available because it does not depend on active/bench slot execution.
 
 ## Next Loop Phase
 

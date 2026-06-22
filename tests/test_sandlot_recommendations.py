@@ -7,11 +7,12 @@ def future_game(day=14):
     return {"date": f"2026-05-{day:02d}"}
 
 
-def player(pid, *, slot, positions, fppg, games=1, name=None):
+def player(pid, *, slot, positions, fppg, games=1, name=None, slot_source=None):
     return {
         "id": pid,
         "name": name or pid,
         "slot": slot,
+        "slot_source": slot_source or ("raw.statusId" if slot == "BN" else "raw.lineupSlot"),
         "positions": positions,
         "all_positions": positions if isinstance(positions, list) else str(positions).split("/"),
         "fppg": fppg,
@@ -91,6 +92,16 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(result["recommendations"], [])
         self.assertIn("Recommendation data incomplete", result["no_action"]["reason"])
         self.assertIn("Eligibility/position", result["no_action"]["reason"])
+
+    def test_untrusted_slot_source_suppresses_recommendations(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player("weak2b", slot="2B", positions="2B", fppg=1.0, slot_source="position_fallback"),
+            player("bench2b", slot="BN", positions="2B", fppg=4.0),
+        ]))
+
+        self.assertEqual(result["recommendations"], [])
+        self.assertIn("Recommendation data incomplete", result["no_action"]["reason"])
+        self.assertIn("Lineup-slot source", result["no_action"]["reason"])
 
 
 if __name__ == "__main__":
