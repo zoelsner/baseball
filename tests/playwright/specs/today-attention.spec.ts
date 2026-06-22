@@ -27,7 +27,56 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
           points_delta: 2.4,
           confidence: 'high',
           reason_chips: ['bench upgrade'],
-          action: { chain: [{ player_name: 'Bench Bat', from_slot: 'BN', to_slot: 'UT' }] },
+          action: {
+            chain: [
+              { player_id: 'bench-bat', player_name: 'Bench Bat', from_slot: 'BN', to_slot: 'UT' },
+              { player_id: 'corner', player_name: 'Cold Corner', from_slot: 'UT', to_slot: 'BN' },
+            ],
+          },
+          replacement_card: {
+            type: 'lineup_hot_swap',
+            move_in: {
+              id: 'bench-bat',
+              name: 'Bench Bat',
+              team: 'LAD',
+              positions: '1B',
+              from_slot: 'BN',
+              to_slot: 'UT',
+              fppg: 4.2,
+              remaining_games: 2,
+              slot_source: 'raw.statusId',
+            },
+            move_out: {
+              id: 'corner',
+              name: 'Cold Corner',
+              team: 'SEA',
+              positions: '1B',
+              from_slot: 'UT',
+              to_slot: 'BN',
+              fppg: 0.8,
+              remaining_games: 1,
+              slot_source: 'raw.lineupSlot',
+            },
+            projected_benefit: { points: 2.4, win_probability_delta: 0.02 },
+            reason: 'Move Bench Bat into UT and Cold Corner to BN because the lineup-only simulation sees bench upgrade.',
+            short_term_outlook: 'Bench Bat has 2 remaining games at 4.2 FP/G; Cold Corner has 1 remaining game at 0.8 FP/G.',
+            risk: 'Medium risk: this is a lineup-only projection. Confirm Fantrax lock status before acting.',
+            confidence: 'high',
+            risk_label: 'medium',
+            provenance: {
+              source: 'latest Fantrax snapshot',
+              slot_provenance: 'trusted',
+              move_in_slot_source: 'raw.statusId',
+              move_out_slot_source: 'raw.lineupSlot',
+            },
+            safety: { lineup_only: true, add_drop: false, live_writes: false },
+            execution: {
+              state: 'blocked',
+              label: 'Propose swap',
+              reason: 'Lineup execution is disabled until safety is ready.',
+            },
+            blocked_reason: 'Propose swap is disabled until execution safety is ready.',
+          },
         }],
       },
     },
@@ -69,16 +118,42 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('Day-to-day on OF. Inspect replacement risk before lock.')).toBeVisible();
     await expect(page.getByText('No projected output. Confirm the active slot before leaving this player in.')).toBeVisible();
 
-    const body = await page.locator('body').innerText();
-    const judge = body.indexOf('Aaron Judge');
-    const webb = body.indexOf('Logan Webb');
-    const cold = body.indexOf('Cold Corner');
-    const replacement = body.indexOf('Review lineup move');
+    const yOf = async (locator: ReturnType<Page['locator']>) => {
+      const box = await locator.boundingBox();
+      expect(box).not.toBeNull();
+      return box!.y;
+    };
+    const judge = await yOf(page.getByRole('button', { name: /Aaron Judge/ }));
+    const webb = await yOf(page.getByRole('button', { name: /Logan Webb/ }));
+    const cold = await yOf(page.getByRole('button', { name: /Cold Corner Review Output/ }));
+    const expectBranchHotSwap = process.env.SANDLOT_EXPECT_SLOT_GATE === '1';
+    const replacement = await yOf(expectBranchHotSwap
+      ? page.getByText('Bench Bat for Cold Corner')
+      : page.getByText(/Review lineup move|Bench Bat for Cold Corner/)
+    );
 
-    expect(judge).toBeGreaterThanOrEqual(0);
     expect(webb).toBeGreaterThan(judge);
     expect(cold).toBeGreaterThan(webb);
     expect(replacement).toBeGreaterThan(cold);
+
+    if (expectBranchHotSwap) {
+      await expect(page.getByText('Bench Bat for Cold Corner')).toBeVisible();
+      await expect(page.getByText('OUT', { exact: true })).toBeVisible();
+      await expect(page.getByText('IN', { exact: true })).toBeVisible();
+      await expect(page.getByText('+2.4')).toBeVisible();
+      await expect(page.getByText('high confidence', { exact: true })).toBeVisible();
+      await expect(page.getByText('medium risk', { exact: true })).toBeVisible();
+      await expect(page.getByText('latest Fantrax snapshot', { exact: true })).toBeVisible();
+      const queueSection = page.locator('section').filter({ hasText: 'Bench Bat for Cold Corner' });
+      await expect(queueSection.getByRole('button', { name: /Propose swap blocked/i })).toBeDisabled();
+      await expect(queueSection.getByRole('button', { name: /Ask Skipper/i })).toBeVisible();
+      await expect(queueSection.getByRole('button', { name: /Deep research/i })).toBeVisible();
+
+      await queueSection.getByRole('button', { name: /Ask Skipper/i }).click();
+      await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Pressure-test this lineup-only hot swap/);
+      await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Move IN: Bench Bat/);
+      await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Move OUT: Cold Corner/);
+    }
   });
 
   test('shows a clear empty state when the snapshot has no queue items', async ({ page }) => {

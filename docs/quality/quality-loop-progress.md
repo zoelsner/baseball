@@ -171,6 +171,33 @@
   `SANDLOT_EXPECT_SLOT_GATE=1`), `git diff --check` passed, and the production
   read-only diagnostic still exits `fail_closed` with 20/20 active rows
   untrusted (`position_fallback`).
+- 2026-06-22: Continued from green PR #81 into the lineup-only hot-swap card
+  slice. `sandlot_matchup` now emits an explainable `replacement_card` for
+  legal bench-to-active swaps with OUT/IN players, projected benefit, outlook,
+  risk, confidence, source/provenance, safety flags, and blocked `Propose swap`
+  execution metadata. `/api/attention` replacement items now carry that card
+  with `action: null` and `actions: []`, so no lineup swap is ready-to-submit
+  until the executor confirmation path is separately proven.
+- 2026-06-22: Today renders the hot-swap proposal inside the Attention Queue
+  with OUT/IN players, confidence/risk/source chips, Why/Outlook/Risk/Source
+  lines, disabled `Propose swap blocked`, and `Ask Skipper` / `Deep research`
+  handoffs. Local Playwright verifies the card ordering, blocked button,
+  provenance display, and Skipper draft handoff. Slot-provenance paused states
+  still hide replacement advice.
+- 2026-06-22: External `claude -p --model opus --effort xhigh` review was not
+  run for the hot-swap card because the sandbox reviewer rejected sending
+  private project details to an external service. Kept the review prompt at
+  `docs/quality/second-opinion/lineup-hot-swap-card-2026-06-22.md` and ran an
+  internal skeptical pass instead. Accepted finding: skip real backend
+  recommendations entirely when a complete OUT/IN `replacement_card` cannot be
+  built, rather than falling back to vague replacement advice.
+- 2026-06-22: Verification for the hot-swap card slice: focused backend safety
+  tests passed (`52 tests`), full Python suite passed (`138 tests`), rebuilt
+  `web/sandlot/app.js` with local `esbuild`, local Playwright against
+  `http://127.0.0.1:4173` passed (`today-attention.spec.ts`, 4 tests,
+  `SANDLOT_EXPECT_SLOT_GATE=1`), production-smoke-compatible local Playwright
+  without the branch flag passed (`2 passed`, `2 skipped`), and
+  `git diff --check` passed.
 
 ## Next Loop Phase
 

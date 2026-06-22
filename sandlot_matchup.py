@@ -9,6 +9,15 @@ from typing import Any
 
 INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH", "MIN", "MINORS"}
 BENCH_SLOTS = {"BN", "BE", "BENCH", "RES", "RESERVE"}
+PROTECTED_LINEUP_SLOTS = {"IL", "IR", "MIN", "MINORS"}
+PROTECTED_PLAYER_FLAGS = {
+    "protected",
+    "is_protected",
+    "keeper_protected",
+    "minor_league",
+    "minors",
+    "is_minor_leaguer",
+}
 UNAVAILABLE_INJURIES = {"OUT", "IL", "IL10", "IL60", "IR"}
 MODEL_VERSION = "matchup_projection_v3"
 MIN_MEANINGFUL_POINTS_DELTA = 1.0
@@ -482,6 +491,17 @@ def rank_matchup_improvement_actions(
             if best_rejected_delta is None or points_delta > best_rejected_delta:
                 best_rejected_delta = points_delta
             continue
+        confidence = _recommendation_confidence(points_delta, win_delta)
+        risk_label = _recommendation_risk(action.get("new_win_probability"))
+        replacement_card = _lineup_replacement_card(
+            action=action,
+            snapshot=snapshot,
+            base_projection=simulation.get("base_projection"),
+            confidence=confidence,
+            risk_label=risk_label,
+        )
+        if replacement_card is None:
+            continue
         recommendations.append({
             "rank": len(recommendations) + 1,
             "action": {
@@ -489,11 +509,12 @@ def rank_matchup_improvement_actions(
                 "move_shape": action.get("move_shape"),
                 "chain": action.get("chain") or [],
             },
+            "replacement_card": replacement_card,
             "points_delta": action.get("points_delta"),
             "win_probability_delta": action.get("win_probability_delta"),
             "new_win_probability": action.get("new_win_probability"),
-            "confidence": _recommendation_confidence(points_delta, win_delta),
-            "risk_label": _recommendation_risk(action.get("new_win_probability")),
+            "confidence": confidence,
+            "risk_label": risk_label,
             "reason_chips": action.get("reason_chips") or [],
         })
         if len(recommendations) >= max(0, limit):
@@ -662,6 +683,129 @@ def _reason_chips(
     return chips or ["legal lineup move"]
 
 
+def _lineup_replacement_card(
+    *,
+    action: dict[str, Any],
+    snapshot: dict[str, Any],
+    base_projection: dict[str, Any] | None,
+    confidence: str,
+    risk_label: str,
+) -> dict[str, Any] | None:
+    chain = action.get("chain") if isinstance(action.get("chain"), list) else []
+    promoted = next((step for step in chain if _is_bench_slot(step.get("from_slot")) and not _is_bench_slot(step.get("to_slot"))), None)
+    demoted = next((step for step in chain if not _is_bench_slot(step.get("from_slot")) and _is_bench_slot(step.get("to_slot"))), None)
+    if not promoted or not demoted:
+        return None
+
+    roster = snapshot.get("roster") if isinstance(snapshot.get("roster"), dict) else {}
+    rows = roster.get("rows") if isinstance(roster, dict) else []
+    by_id = {_player_id(row): row for row in rows if isinstance(row, dict) and _player_id(row)}
+    move_in_row = by_id.get(str(promoted.get("player_id") or ""))
+    move_out_row = by_id.get(str(demoted.get("player_id") or ""))
+    if not move_in_row or not move_out_row:
+        return None
+    if _is_protected_lineup_row(move_in_row) or _is_protected_lineup_row(move_out_row):
+        return None
+
+    matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
+    period_end = _parse_date(matchup.get("end"))
+    move_in = _player_card_summary(move_in_row, promoted, period_end)
+    move_out = _player_card_summary(move_out_row, demoted, period_end)
+    points_delta = _number(action.get("points_delta")) or 0.0
+    win_delta = _number(action.get("win_probability_delta")) or 0.0
+    base_win = _number((base_projection or {}).get("win_probability"))
+    new_win = _number(action.get("new_win_probability"))
+    chips = action.get("reason_chips") if isinstance(action.get("reason_chips"), list) else []
+    reason_chip_text = ", ".join(str(chip) for chip in chips[:2] if chip) or "lineup simulation edge"
+
+    return {
+        "type": "lineup_hot_swap",
+        "move_in": move_in,
+        "move_out": move_out,
+        "projected_benefit": {
+            "points": round(points_delta, 1),
+            "win_probability_delta": round(win_delta, 4),
+            "base_win_probability": round(base_win, 4) if base_win is not None else None,
+            "new_win_probability": round(new_win, 4) if new_win is not None else None,
+            "new_projected_my": action.get("new_projected_my"),
+            "new_projected_opp": action.get("new_projected_opp"),
+        },
+        "reason": (
+            f"Move {move_in['name']} into {move_in['to_slot']} and {move_out['name']} "
+            f"to {move_out['to_slot']} because the lineup-only simulation sees {reason_chip_text}."
+        ),
+        "short_term_outlook": _short_term_outlook(move_in, move_out),
+        "risk": (
+            f"{risk_label.title()} risk: this is a lineup-only projection. "
+            "Confirm Fantrax lock status, actual starts, and late scratches before acting."
+        ),
+        "confidence": confidence,
+        "risk_label": risk_label,
+        "provenance": {
+            "source": "latest Fantrax snapshot",
+            "model_version": MODEL_VERSION,
+            "slot_provenance": "trusted",
+            "move_in_slot_source": move_in.get("slot_source"),
+            "move_out_slot_source": move_out.get("slot_source"),
+            "scoring": "snapshot FP/G and remaining-games projection",
+        },
+        "safety": {
+            "lineup_only": True,
+            "add_drop": False,
+            "live_writes": False,
+            "protected_players_excluded": True,
+        },
+        "execution": {
+            "state": "blocked",
+            "label": "Propose swap",
+            "reason": "Lineup execution is disabled until the Fantrax write path has separate confirmation safety.",
+        },
+        "blocked_reason": "Propose swap is disabled until execution safety is ready.",
+    }
+
+
+def _player_card_summary(
+    row: dict[str, Any],
+    step: dict[str, Any],
+    period_end: date | None,
+) -> dict[str, Any]:
+    games = _games_remaining(row, period_end) if period_end else None
+    return {
+        "id": _player_id(row),
+        "name": row.get("name") or step.get("player_name") or "Unknown player",
+        "team": row.get("team") or "",
+        "positions": _positions_label(row),
+        "from_slot": step.get("from_slot"),
+        "to_slot": step.get("to_slot"),
+        "fppg": round(_row_fppg(row), 2),
+        "remaining_games": games,
+        "slot_source": row.get("slot_source") or "unknown",
+    }
+
+
+def _positions_label(row: dict[str, Any]) -> str:
+    positions = row.get("all_positions")
+    if isinstance(positions, list) and positions:
+        return "/".join(str(position) for position in positions if position) or "UT"
+    return str(row.get("positions") or row.get("pos") or "UT")
+
+
+def _short_term_outlook(move_in: dict[str, Any], move_out: dict[str, Any]) -> str:
+    in_games = move_in.get("remaining_games")
+    out_games = move_out.get("remaining_games")
+    if in_games is not None and out_games is not None:
+        return (
+            f"{move_in['name']} has {in_games} remaining game"
+            f"{'' if in_games == 1 else 's'} at {move_in.get('fppg', 0):.1f} FP/G; "
+            f"{move_out['name']} has {out_games} remaining game"
+            f"{'' if out_games == 1 else 's'} at {move_out.get('fppg', 0):.1f} FP/G."
+        )
+    return (
+        f"{move_in['name']} carries {move_in.get('fppg', 0):.1f} FP/G in this snapshot; "
+        f"{move_out['name']} carries {move_out.get('fppg', 0):.1f} FP/G."
+    )
+
+
 def _indexed_row(row: dict[str, Any]) -> dict[str, Any] | None:
     if not isinstance(row, dict) or not _player_id(row):
         return None
@@ -670,11 +814,17 @@ def _indexed_row(row: dict[str, Any]) -> dict[str, Any] | None:
 
 def _is_active_lineup_row(row: dict[str, Any]) -> bool:
     slot = _slot(row)
-    return isinstance(row, dict) and bool(slot) and slot not in INACTIVE_SLOTS and not _is_unavailable(row)
+    return (
+        isinstance(row, dict)
+        and bool(slot)
+        and slot not in INACTIVE_SLOTS
+        and not _is_unavailable(row)
+        and not _is_protected_lineup_row(row)
+    )
 
 
 def _is_bench_row(row: dict[str, Any]) -> bool:
-    return isinstance(row, dict) and _is_bench_slot(_slot(row)) and not _is_unavailable(row)
+    return isinstance(row, dict) and _is_bench_slot(_slot(row)) and not _is_unavailable(row) and not _is_protected_lineup_row(row)
 
 
 def _is_bench_slot(value: Any) -> bool:
@@ -686,6 +836,26 @@ def _slot(row: dict[str, Any] | None) -> str | None:
         return None
     value = str(row.get("slot") or "").strip().upper()
     return value or None
+
+
+def _is_protected_lineup_row(row: dict[str, Any]) -> bool:
+    slot = _slot(row)
+    if slot in PROTECTED_LINEUP_SLOTS:
+        return True
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    player = raw.get("player") if isinstance(raw.get("player"), dict) else {}
+    for source in (row, raw, player):
+        if not isinstance(source, dict):
+            continue
+        if any(_truthy(source.get(flag)) for flag in PROTECTED_PLAYER_FLAGS):
+            return True
+    return False
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
 
 
 def _player_id(row: dict[str, Any]) -> str | None:

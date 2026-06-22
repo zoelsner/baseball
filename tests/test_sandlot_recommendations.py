@@ -7,7 +7,7 @@ def future_game(day=14):
     return {"date": f"2026-05-{day:02d}"}
 
 
-def player(pid, *, slot, positions, fppg, games=1, name=None, slot_source=None):
+def player(pid, *, slot, positions, fppg, games=1, name=None, slot_source=None, **extra):
     return {
         "id": pid,
         "name": name or pid,
@@ -17,6 +17,7 @@ def player(pid, *, slot, positions, fppg, games=1, name=None, slot_source=None):
         "all_positions": positions if isinstance(positions, list) else str(positions).split("/"),
         "fppg": fppg,
         "future_games": [future_game(14 + idx) for idx in range(games)],
+        **extra,
     }
 
 
@@ -53,6 +54,15 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertGreater(rec["win_probability_delta"], 0)
         self.assertIn(rec["confidence"], {"medium", "high"})
         self.assertIn("legal 3B/1B chain", rec["reason_chips"])
+        card = rec["replacement_card"]
+        self.assertEqual(card["type"], "lineup_hot_swap")
+        self.assertEqual(card["move_in"]["name"], "bench3b")
+        self.assertEqual(card["move_out"]["name"], "weak1b")
+        self.assertEqual(card["execution"]["state"], "blocked")
+        self.assertEqual(card["execution"]["label"], "Propose swap")
+        self.assertFalse(card["safety"]["live_writes"])
+        self.assertFalse(card["safety"]["add_drop"])
+        self.assertIn("latest Fantrax snapshot", card["provenance"]["source"])
         self.assertIsNone(result["no_action"])
 
     def test_suppresses_moves_below_meaningful_threshold(self):
@@ -119,6 +129,17 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(result["recommendations"], [])
         self.assertIn("Recommendation data incomplete", result["no_action"]["reason"])
         self.assertIn("Lineup-slot source", result["no_action"]["reason"])
+
+    def test_protected_minors_and_il_players_are_not_hot_swap_candidates(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player("protected", slot="OF", positions="OF", fppg=1.0, protected=True),
+            player("min", slot="MIN", positions="OF", fppg=20.0),
+            player("il", slot="IR", positions="OF", fppg=20.0),
+            player("bench", slot="BN", positions="OF", fppg=8.0),
+        ]))
+
+        self.assertEqual(result["recommendations"], [])
+        self.assertIn("meaningful-gain threshold", result["no_action"]["reason"])
 
 
 if __name__ == "__main__":

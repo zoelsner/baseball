@@ -130,6 +130,29 @@ function v2BuildSwapSkipperPrompt(card) {
   ].filter(Boolean).join('\n');
 }
 
+function v2BuildLineupSwapSkipperPrompt(card, mode='quick') {
+  const moveIn = card?.move_in || {};
+  const moveOut = card?.move_out || {};
+  const benefit = card?.projected_benefit || {};
+  const deep = mode === 'deep';
+  return [
+    deep
+      ? 'Run a deep research review before I touch this lineup swap.'
+      : 'Pressure-test this lineup-only hot swap before I touch Fantrax.',
+    '',
+    `Move IN: ${moveIn.name || 'Unknown player'} (${moveIn.positions || 'UT'}${moveIn.team ? `, ${moveIn.team}` : ''}) from ${moveIn.from_slot || '?'} to ${moveIn.to_slot || '?'}.`,
+    `Move OUT: ${moveOut.name || 'Unknown player'} (${moveOut.positions || 'UT'}${moveOut.team ? `, ${moveOut.team}` : ''}) from ${moveOut.from_slot || '?'} to ${moveOut.to_slot || '?'}.`,
+    `Projected benefit: ${v2Signed(benefit.points, 1)} points. Confidence: ${card?.confidence || 'unknown'}. Risk: ${card?.risk_label || 'unknown'}.`,
+    card?.reason ? `Sandlot reason: ${card.reason}` : null,
+    card?.short_term_outlook ? `Short-term outlook: ${card.short_term_outlook}` : null,
+    card?.risk ? `Risk note: ${card.risk}` : null,
+    '',
+    deep
+      ? 'Use roster context plus web search if needed. Verify probable starts, schedule/games this week, injuries, role changes, Fantrax scoring relevance, and whether this is worth proposing. Separate snapshot-verified facts from web/contextual assumptions.'
+      : 'Use the latest roster snapshot. Tell me what data you trust, what is uncertain, and whether the proposed lineup-only swap is worth considering.',
+  ].filter(Boolean).join('\n');
+}
+
 // Shared mapper so user roster + per-team roster stay byte-identical.
 function v2NormalizeRosterRow(p, idx) {
   const positions = Array.isArray(p.all_positions) && p.all_positions.length
@@ -438,7 +461,7 @@ function V2App({ initial }) {
   if (!authed) return <V2Auth onSignIn={()=>setAuthed(true)}/>;
 
   const pages = {
-    today:   <V2Today model={model} sync={syncState} onRefresh={refreshSnapshot} onNav={setPage} onPlayer={setDetail}/>,
+    today:   <V2Today model={model} sync={syncState} onRefresh={refreshSnapshot} onNav={setPage} onPlayer={setDetail} onAskSkipper={continueInSkipper}/>,
     roster:  <V2Roster model={model} onPlayer={setDetail}/>,
     league:  leagueTeam
       ? <V2TeamRoster teamId={leagueTeam.id} teamMeta={leagueTeam} onBack={()=>setLeagueTeam(null)} onPlayer={setDetail}/>
@@ -884,25 +907,34 @@ function v2AttentionQueue(health, matchupRecommendations, options={}) {
   if (top) {
     const points = v2Number(top.points_delta);
     const confidence = top.confidence || 'medium';
+    const replacementCard = top.replacement_card || null;
+    const moveIn = replacementCard?.move_in || {};
+    const moveOut = replacementCard?.move_out || {};
     items.push({
       id:`replacement-${top.id || v2MoveChainText(top.action?.chain || [])}`,
       kind:'replacement',
       priority:50 + Math.max(0, points),
       severity:'review',
       label:'Replacement',
-      title:'Review lineup move',
-      context:'Roster decision',
-      reason:`${v2MoveChainText(top.action?.chain || [])}. Projected gain ${points >= 0 ? '+' : ''}${points.toFixed(1)} points.`,
+      title:'Lineup hot swap',
+      context:moveIn.name && moveOut.name ? `${moveIn.name} for ${moveOut.name}` : 'Roster decision',
+      reason:replacementCard?.reason || `${v2MoveChainText(top.action?.chain || [])}. Projected gain ${points >= 0 ? '+' : ''}${points.toFixed(1)} points.`,
       chips:[`${confidence} confidence`, ...(top.reason_chips || [])].slice(0, 3),
-      action:'Review',
+      action:'Blocked',
       nav:'roster',
+      replacement:replacementCard,
+      blockedAction:replacementCard?.execution || {
+        state:'blocked',
+        label:'Propose swap',
+        reason:'Lineup execution safety is not enabled.',
+      },
     });
   }
 
   return items.sort((a,b)=>b.priority-a.priority).slice(0, 6);
 }
 
-function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
+function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
   const health = v2RosterHealth(model);
   const dataQuality = model.dataQuality || null;
   const hasRealData = model.source === 'api' && health.roster.length > 0;
@@ -949,7 +981,7 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
         </button>
       </div>
 
-      <V2AttentionQueue items={queue} hasRealData={hasRealData} sync={sync} pausedReason={lineupPausedReason} onPlayer={onPlayer} onNav={onNav}/>
+      <V2AttentionQueue items={queue} hasRealData={hasRealData} sync={sync} pausedReason={lineupPausedReason} onPlayer={onPlayer} onNav={onNav} onAskSkipper={onAskSkipper}/>
 
       {lineupPausedReason && queue.length ? (
         <V2Caution eyebrow="Advice paused" tone="warn">
@@ -1025,7 +1057,7 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
   );
 }
 
-function V2AttentionQueue({ items, hasRealData, sync, pausedReason, onPlayer, onNav }) {
+function V2AttentionQueue({ items, hasRealData, sync, pausedReason, onPlayer, onNav, onAskSkipper }) {
   const urgentCount = items.filter(item => item.severity === 'urgent').length;
   const checkCount = items.filter(item => item.severity === 'check').length;
   const reviewCount = items.length - urgentCount - checkCount;
@@ -1070,19 +1102,196 @@ function V2AttentionQueue({ items, hasRealData, sync, pausedReason, onPlayer, on
       {items.length ? (
         <div>
           {items.map((item, index) => (
-            <V2AttentionQueueRow
-              key={item.id}
-              item={item}
-              last={index === items.length - 1}
-              onPlayer={onPlayer}
-              onNav={onNav}
-            />
+            item.kind === 'replacement' && item.replacement ? (
+              <V2LineupHotSwapCard
+                key={item.id}
+                item={item}
+                last={index === items.length - 1}
+                onAskSkipper={onAskSkipper}
+              />
+            ) : (
+              <V2AttentionQueueRow
+                key={item.id}
+                item={item}
+                last={index === items.length - 1}
+                onPlayer={onPlayer}
+                onNav={onNav}
+              />
+            )
           ))}
         </div>
       ) : (
         <V2AttentionEmptyState hasRealData={hasRealData} sync={sync} pausedReason={pausedReason}/>
       )}
     </section>
+  );
+}
+
+function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
+  const card = item.replacement || {};
+  const moveIn = card.move_in || {};
+  const moveOut = card.move_out || {};
+  const benefit = card.projected_benefit || {};
+  const confidence = card.confidence || 'medium';
+  const risk = card.risk_label || 'unknown';
+  const execution = card.execution || item.blockedAction || {};
+  const benefitText = v2Signed(benefit.points, 1);
+  const confidenceTone = String(confidence).toLowerCase() === 'high'
+    ? { fg:V2.ok, bg:V2.okSoft }
+    : String(confidence).toLowerCase() === 'light' || String(confidence).toLowerCase() === 'low'
+      ? { fg:V2.warn, bg:V2.warnSoft }
+      : { fg:V2.body, bg:V2.surface2 };
+  return (
+    <div style={{
+      padding:'15px 16px 16px',
+      borderBottom:last?'none':`1px solid ${V2.hairline2}`,
+      display:'flex',
+      flexDirection:'column',
+      gap:12,
+    }}>
+      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
+        <div style={{ minWidth:0 }}>
+          <V2Eyebrow color={V2.accent}>Lineup hot swap</V2Eyebrow>
+          <div style={{ marginTop:6, color:V2.ink, fontSize:19, lineHeight:1.08, fontWeight:800, fontFamily:V2.fontDisplay, textWrap:'balance' }}>
+            {moveIn.name || 'Move-in candidate'} for {moveOut.name || 'current starter'}
+          </div>
+        </div>
+        <div style={{ flexShrink:0, textAlign:'right' }}>
+          <div style={{ color:V2.accent, fontSize:22, lineHeight:1, fontWeight:900, fontFamily:V2.fontDisplay, fontVariantNumeric:'tabular-nums' }}>
+            {benefitText}
+          </div>
+          <div style={{ marginTop:3, color:V2.muted, fontSize:10.5, fontWeight:900, letterSpacing:'0.05em', textTransform:'uppercase' }}>
+            points
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 26px 1fr', alignItems:'stretch', gap:8 }}>
+        <V2LineupSwapPlayer label="OUT" player={moveOut} tone="out"/>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'center', color:V2.muted }}>
+          {Icons.swap(V2.muted, 18)}
+        </div>
+        <V2LineupSwapPlayer label="IN" player={moveIn} tone="in"/>
+      </div>
+
+      <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+        <span style={{ background:confidenceTone.bg, color:confidenceTone.fg, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
+          {confidence} confidence
+        </span>
+        <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
+          {risk} risk
+        </span>
+        <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
+          {card.provenance?.source || 'latest Fantrax snapshot'}
+        </span>
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+        <V2ReasonLine color={V2.ok} label="Why" text={card.reason || item.reason}/>
+        <V2ReasonLine color={V2.accent} label="Outlook" text={card.short_term_outlook}/>
+        <V2ReasonLine color={V2.warn} label="Risk" text={card.risk}/>
+        <V2ReasonLine
+          color={V2.muted}
+          label="Source"
+          text={[
+            card.provenance?.slot_provenance ? `slot provenance ${card.provenance.slot_provenance}` : null,
+            moveIn.slot_source ? `IN ${moveIn.slot_source}` : null,
+            moveOut.slot_source ? `OUT ${moveOut.slot_source}` : null,
+          ].filter(Boolean).join(' · ')}
+        />
+      </div>
+
+      <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+        <button disabled title={execution.reason || card.blocked_reason || 'Execution safety is not ready'} style={{
+          flex:'1 1 135px',
+          minHeight:40,
+          border:'none',
+          borderRadius:999,
+          background:V2.surface2,
+          color:V2.muted,
+          fontFamily:'inherit',
+          fontSize:12.5,
+          fontWeight:900,
+          cursor:'not-allowed',
+        }}>
+          {execution.label || 'Propose swap'} blocked
+        </button>
+        <button onClick={()=>onAskSkipper?.(v2BuildLineupSwapSkipperPrompt(card, 'quick'))} style={{
+          flex:'1 1 120px',
+          minHeight:40,
+          display:'inline-flex',
+          alignItems:'center',
+          justifyContent:'center',
+          gap:7,
+          border:'none',
+          borderRadius:999,
+          background:V2.accentSoft,
+          color:V2.accent,
+          fontFamily:'inherit',
+          fontSize:12.5,
+          fontWeight:900,
+          cursor:'pointer',
+        }}>
+          {Icons.chat(V2.accent, 14)} Ask Skipper
+        </button>
+        <button onClick={()=>onAskSkipper?.(v2BuildLineupSwapSkipperPrompt(card, 'deep'))} style={{
+          flex:'1 1 125px',
+          minHeight:40,
+          display:'inline-flex',
+          alignItems:'center',
+          justifyContent:'center',
+          gap:7,
+          border:'none',
+          borderRadius:999,
+          background:V2.ink,
+          color:'#fff',
+          fontFamily:'inherit',
+          fontSize:12.5,
+          fontWeight:900,
+          cursor:'pointer',
+        }}>
+          {Icons.search('#fff', 14)} Deep research
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function V2LineupSwapPlayer({ label, player, tone }) {
+  const color = tone === 'in' ? V2.ok : V2.warn;
+  const bg = tone === 'in' ? V2.okSoft : V2.warnSoft;
+  const fppg = Number(player?.fppg);
+  const games = player?.remaining_games;
+  return (
+    <div style={{ minWidth:0, display:'flex', gap:9, alignItems:'center', padding:'8px 0' }}>
+      <div style={{
+        width:38,
+        height:38,
+        borderRadius:10,
+        background:bg,
+        color,
+        display:'flex',
+        alignItems:'center',
+        justifyContent:'center',
+        flexShrink:0,
+        fontSize:11,
+        fontWeight:900,
+        fontFamily:V2.fontMono,
+      }}>
+        {label}
+      </div>
+      <div style={{ minWidth:0 }}>
+        <div style={{ color:V2.ink, fontSize:15, lineHeight:1.1, fontWeight:800, fontFamily:V2.fontDisplay, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+          {player?.name || 'Unknown player'}
+        </div>
+        <div style={{ marginTop:3, color:V2.muted, fontSize:11, lineHeight:1.25, fontWeight:750, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+          {[player?.from_slot && player?.to_slot ? `${player.from_slot} -> ${player.to_slot}` : null, player?.positions, player?.team].filter(Boolean).join(' · ')}
+        </div>
+        <div style={{ marginTop:4, color:V2.body, fontSize:11, fontWeight:850, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums' }}>
+          {Number.isFinite(fppg) ? `${fppg.toFixed(1)} FP/G` : 'FP/G —'}{games !== null && games !== undefined ? ` · ${games}g` : ''}
+        </div>
+      </div>
+    </div>
   );
 }
 

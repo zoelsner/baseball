@@ -8,10 +8,10 @@ is a follow-up); tests/test_sandlot_attention.py pins this port to the
 same fixtures as tests/playwright/specs/today-attention.spec.ts so the
 two implementations can't silently drift.
 
-Items that map to an executable move carry ready-to-submit payloads for
-POST /api/actions: `action` is a single request body when one call covers
-the move, and `actions` is the ordered list (multi-step lineup chains need
-one call per step).
+Items that map to an executable status move carry ready-to-submit payloads
+for POST /api/actions. Lineup replacement items intentionally do not carry
+executable payloads yet; they surface a blocked proposal card until Fantrax
+write safety is separately proven.
 """
 
 from __future__ import annotations
@@ -358,21 +358,6 @@ def _status_action_payloads(p: dict[str, Any]) -> list[dict[str, Any]]:
     return [{"action": "move_to_il", "player_id": str(p["id"])}]
 
 
-def _chain_action_payloads(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One change_slot call per chain step — all steps or nothing, so a
-    consumer can never execute half a swap."""
-    payloads = []
-    for step in chain:
-        if not step.get("player_id") or not step.get("to_slot"):
-            return []
-        payloads.append({
-            "action": "change_slot",
-            "player_id": str(step["player_id"]),
-            "to_slot": str(step["to_slot"]),
-        })
-    return payloads
-
-
 def _lineup_recommendations_ready(data_quality: dict[str, Any] | None) -> bool:
     return isinstance(data_quality, dict) and data_quality.get("lineup_recommendations_ready") is True
 
@@ -428,20 +413,36 @@ def build_queue(
         confidence = top.get("confidence") or "medium"
         chain = (top.get("action") or {}).get("chain") or []
         chain_text = _move_chain_text(chain)
-        actions = _chain_action_payloads(chain)
+        replacement_card = top.get("replacement_card") if isinstance(top.get("replacement_card"), dict) else None
+        move_in = (replacement_card or {}).get("move_in") or {}
+        move_out = (replacement_card or {}).get("move_out") or {}
+        context = (
+            f"{move_in.get('name')} for {move_out.get('name')}"
+            if move_in.get("name") and move_out.get("name")
+            else "Roster decision"
+        )
         items.append({
             "id": f"replacement-{top.get('id') or chain_text}",
             "kind": "replacement",
             "priority": 50 + max(0.0, points),
             "severity": "review",
             "label": "Replacement",
-            "player_id": None,
-            "title": "Review lineup move",
-            "context": "Roster decision",
-            "reason": f"{chain_text}. Projected gain {'+' if points >= 0 else ''}{points:.1f} points.",
+            "player_id": move_in.get("id") or None,
+            "title": "Lineup hot swap",
+            "context": context,
+            "reason": (
+                (replacement_card or {}).get("reason")
+                or f"{chain_text}. Projected gain {'+' if points >= 0 else ''}{points:.1f} points."
+            ),
             "chips": [f"{confidence} confidence", *(top.get("reason_chips") or [])][:MAX_CHIPS],
-            "action": actions[0] if len(actions) == 1 else None,
-            "actions": actions,
+            "action": None,
+            "actions": [],
+            "replacement": replacement_card,
+            "blocked_action": (replacement_card or {}).get("execution") or {
+                "state": "blocked",
+                "label": "Propose swap",
+                "reason": "Lineup execution safety is not enabled.",
+            },
         })
 
     items.sort(key=lambda item: item["priority"], reverse=True)
