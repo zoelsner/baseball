@@ -141,6 +141,21 @@
   write the cookie file atomically with `0600` permissions, warn when secrets
   are passed inline on the command line, stop printing all cookie names, and add
   tests proving no cookie values are printed.
+- 2026-06-22: Audited Skipper as another recommendation surface. Found that a
+  snapshot carrying stale `matchup.recommendations` could still put lineup-swap
+  advice in chat context or deterministic matchup text even when
+  `data_quality.lineup_recommendations_ready` was false. Added a Skipper-local
+  fail-closed gate: omit stale recommendations, strip `slot`/`slot_source`
+  fields from chat context when lineup slots are not explicitly trusted, add
+  `lineup_advice`/`add_drop_advice` paused blocks, and pause deterministic
+  move/watch/position reads until slot provenance is trusted.
+- 2026-06-22: Ran two `claude -p --model opus --effort xhigh` reviews on the
+  Skipper gate. Accepted findings: gate the ungated "Move read" sentence,
+  strengthen tests so swap framing cannot slip through, and strip/test
+  `slot_source` as well as `slot`. Local focused Skipper/recommendation tests
+  pass (`47 tests`), full Python suite passes (`135 tests`), and the production
+  snapshot diagnostic still exits `fail_closed` with all 20 active rows
+  untrusted.
 
 ## Next Loop Phase
 

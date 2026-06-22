@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (after manual Fantrax cookie fallback hardening).
+> Last updated: **2026-06-22** (after Skipper slot-provenance fail-closed hardening).
 
 ## Where things stand
 
@@ -23,8 +23,14 @@
   slot-provenance contract as the backend. It hides lineup/output/replacement
   advice unless `data_quality.lineup_slots.state == "ok"` and shows an explicit
   `Advice paused` state when active-slot data is inferred.
+- **Skipper recommendation gate:** chat context and deterministic matchup
+  replies now enforce the same contract. If
+  `lineup_recommendations_ready`/`add_drop_recommendations_ready` is not
+  explicitly true, Skipper omits stale recommendations, strips `slot` and
+  `slot_source` from roster context, and says advice is paused instead of
+  surfacing lineup/swap framing.
 - **Local verification:** Python unit suite is green on 2026-06-22
-  (`131 tests`). The local rebuilt Sandlot UI passes
+  (`135 tests`). The local rebuilt Sandlot UI passes
   `today-attention.spec.ts` against `http://127.0.0.1:4173`, including the
   regression where an unsafe replacement card is hidden when slot provenance is
   partial. Live read-only Fantrax verification is still blocked in this checkout

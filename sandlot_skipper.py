@@ -94,6 +94,7 @@ Rules:
 - Never answer with only "Data", "Data unavailable", or another one-word refusal.
 - Cite players by name. Cite numbers when relevant (FP/G, FPts, age, slot, injury status).
 - For matchup questions, prefer `matchup.projection` and `matchup.projection.drivers` when present. If `data_quality.projection_ready` is false, say data is incomplete and keep the answer score-based.
+- Only discuss lineup, swap, or add/drop recommendations when the matching data-quality flag is explicitly ready. If `data_quality.lineup_recommendations_ready` or `data_quality.add_drop_recommendations_ready` is false, say the advice is paused and why.
 - Describe projection confidence with plain bands ("comfortable edge", "slight edge", "toss-up", "uphill"), not precise percentages. Do not invent probability math.
 - No emojis. No throat-clearing intros ("Great question!"). No filler outros.
 - Markdown allowed for short lists or **emphasis**. Avoid headers and tables for chat-length replies. When you use a bulleted list, put each "- " marker on its own line (no inline " - " separators).
@@ -210,12 +211,11 @@ def detect_tier(prompt: str, snapshot: dict[str, Any]) -> int:
     return 2
 
 
-def _slim_player(p: dict[str, Any]) -> dict[str, Any]:
+def _slim_player(p: dict[str, Any], *, include_slot: bool = True) -> dict[str, Any]:
     """Strip the verbose `raw` field; keep what the model actually needs."""
-    return {
+    out = {
         "id": p.get("id"),
         "name": p.get("name"),
-        "slot": p.get("slot"),
         "positions": p.get("positions"),
         "team": p.get("team"),
         "fppg": p.get("fppg"),
@@ -223,11 +223,20 @@ def _slim_player(p: dict[str, Any]) -> dict[str, Any]:
         "age": p.get("age"),
         "injury": p.get("injury"),
     }
+    if include_slot:
+        out["slot"] = p.get("slot")
+        if p.get("slot_source"):
+            out["slot_source"] = p.get("slot_source")
+    return out
 
 
-def _slim_roster(roster: dict[str, Any] | list[dict[str, Any]] | None) -> dict[str, Any]:
+def _slim_roster(
+    roster: dict[str, Any] | list[dict[str, Any]] | None,
+    *,
+    include_slots: bool = True,
+) -> dict[str, Any]:
     if isinstance(roster, list):
-        return {"rows": [_slim_player(p) for p in roster if isinstance(p, dict)]}
+        return {"rows": [_slim_player(p, include_slot=include_slots) for p in roster if isinstance(p, dict)]}
     if not isinstance(roster, dict):
         return {}
     return {
@@ -239,7 +248,7 @@ def _slim_roster(roster: dict[str, Any] | list[dict[str, Any]] | None) -> dict[s
         "injured_max": roster.get("injured_max"),
         "period_number": roster.get("period_number"),
         "period_date": roster.get("period_date"),
-        "rows": [_slim_player(p) for p in (roster.get("rows") or [])],
+        "rows": [_slim_player(p, include_slot=include_slots) for p in (roster.get("rows") or [])],
     }
 
 
@@ -263,7 +272,11 @@ def _slim_standings(
     }
 
 
-def _slim_matchup(matchup: dict[str, Any] | None) -> dict[str, Any] | None:
+def _slim_matchup(
+    matchup: dict[str, Any] | None,
+    *,
+    include_recommendations: bool = False,
+) -> dict[str, Any] | None:
     if not isinstance(matchup, dict):
         return None
     keep = (
@@ -275,7 +288,7 @@ def _slim_matchup(matchup: dict[str, Any] | None) -> dict[str, Any] | None:
     out = {k: matchup.get(k) for k in keep}
     if isinstance(matchup.get("projection"), dict):
         out["projection"] = matchup["projection"]
-    if isinstance(matchup.get("recommendations"), dict):
+    if include_recommendations and isinstance(matchup.get("recommendations"), dict):
         out["recommendations"] = matchup["recommendations"]
     return out
 
@@ -287,12 +300,52 @@ def _data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
     return sandlot_data_quality.snapshot_data_quality(snapshot)
 
 
+def _lineup_recommendations_ready(data_quality: dict[str, Any] | None) -> bool:
+    return isinstance(data_quality, dict) and data_quality.get("lineup_recommendations_ready") is True
+
+
+def _add_drop_recommendations_ready(data_quality: dict[str, Any] | None) -> bool:
+    return isinstance(data_quality, dict) and data_quality.get("add_drop_recommendations_ready") is True
+
+
+def _recommendation_pause_reason(
+    data_quality: dict[str, Any] | None,
+    *,
+    reason_key: str,
+    fallback: str,
+) -> str:
+    if not isinstance(data_quality, dict):
+        return "data quality is unavailable"
+    reasons = data_quality.get(reason_key)
+    if isinstance(reasons, list) and reasons:
+        return str(reasons[0]).rstrip(".")
+    return fallback
+
+
+def _lineup_recommendation_pause_reason(data_quality: dict[str, Any] | None) -> str:
+    return _recommendation_pause_reason(
+        data_quality,
+        reason_key="lineup_recommendation_reasons",
+        fallback="lineup recommendation readiness is not explicitly trusted",
+    )
+
+
+def _add_drop_recommendation_pause_reason(data_quality: dict[str, Any] | None) -> str:
+    return _recommendation_pause_reason(
+        data_quality,
+        reason_key="add_drop_recommendation_reasons",
+        fallback="add/drop recommendation readiness is not explicitly trusted",
+    )
+
+
 def build_context(tier: int, snapshot: dict[str, Any], prompt: str = "") -> str:
     """Render the snapshot as a compact JSON-ish text block for the model."""
     import json
 
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
     data_quality = _data_quality(snapshot)
+    lineup_recommendations_ready = _lineup_recommendations_ready(data_quality)
+    add_drop_recommendations_ready = _add_drop_recommendations_ready(data_quality)
     ctx: dict[str, Any] = {
         "snapshot_id": snapshot.get("snapshot_id"),
         "snapshot_taken_at": snapshot.get("taken_at") or snapshot.get("timestamp"),
@@ -300,12 +353,25 @@ def build_context(tier: int, snapshot: dict[str, Any], prompt: str = "") -> str:
         "team_name": snapshot.get("team_name"),
         "available_data": _available_data(snapshot),
         "data_quality": data_quality,
-        "my_roster": _slim_roster(snapshot.get("roster")),
+        "my_roster": _slim_roster(snapshot.get("roster"), include_slots=lineup_recommendations_ready),
         "roster_meta": snapshot.get("roster_meta") if isinstance(snapshot.get("roster_meta"), dict) else None,
         "standings": _slim_standings(snapshot.get("standings"), snapshot.get("my_standing")),
     }
+    if not lineup_recommendations_ready:
+        ctx["lineup_advice"] = {
+            "state": "paused",
+            "reason": _lineup_recommendation_pause_reason(data_quality),
+        }
+    if not add_drop_recommendations_ready:
+        ctx["add_drop_advice"] = {
+            "state": "paused",
+            "reason": _add_drop_recommendation_pause_reason(data_quality),
+        }
     if matchup:
-        ctx["matchup"] = _slim_matchup(matchup)
+        ctx["matchup"] = _slim_matchup(
+            matchup,
+            include_recommendations=lineup_recommendations_ready,
+        )
 
     # Deep matchup: include only the opponent's roster, not every team — the
     # user is asking for a slot-by-slot read against this week's opponent
@@ -315,7 +381,7 @@ def build_context(tier: int, snapshot: dict[str, Any], prompt: str = "") -> str:
         if opp:
             ctx["opponent_roster"] = {
                 "team_name": opp.get("team_name"),
-                "rows": [_slim_player(p) for p in (opp.get("rows") or [])],
+                "rows": [_slim_player(p, include_slot=lineup_recommendations_ready) for p in (opp.get("rows") or [])],
             }
     elif tier >= 3:
         all_rosters = snapshot.get("all_team_rosters") or {}
@@ -323,7 +389,7 @@ def build_context(tier: int, snapshot: dict[str, Any], prompt: str = "") -> str:
             tid: {
                 "team_name": team.get("team_name"),
                 "is_me": team.get("is_me"),
-                "rows": [_slim_player(p) for p in (team.get("rows") or [])],
+                "rows": [_slim_player(p, include_slot=lineup_recommendations_ready) for p in (team.get("rows") or [])],
             }
             for tid, team in all_rosters.items()
         }
@@ -371,7 +437,8 @@ def is_broken_reply(reply: str | None) -> bool:
 def _matchup_read_reply(snapshot: dict[str, Any]) -> str:
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
     data_quality = _data_quality(snapshot)
-    roster = _slim_roster(snapshot.get("roster"))
+    lineup_recommendations_ready = _lineup_recommendations_ready(data_quality)
+    roster = _slim_roster(snapshot.get("roster"), include_slots=lineup_recommendations_ready)
     my_rows = roster.get("rows") or []
     all_rosters = snapshot.get("all_team_rosters") or {}
     opponent = _opponent_roster(snapshot, matchup)
@@ -401,8 +468,9 @@ def _matchup_read_reply(snapshot: dict[str, Any]) -> str:
 
     if projection and data_quality.get("projection_ready", True):
         lines.append("Biggest driver: " + _projection_driver_text(projection) + ".")
-        lines.append("Move read: " + _projection_move_text(projection) + ".")
-        recommendation = _recommendation_text(matchup.get("recommendations") if isinstance(matchup, dict) else None)
+        if lineup_recommendations_ready:
+            lines.append("Move read: " + _projection_move_text(projection) + ".")
+        recommendation = _lineup_recommendation_text(matchup, data_quality)
         if recommendation:
             lines.append(recommendation)
 
@@ -413,22 +481,30 @@ def _matchup_read_reply(snapshot: dict[str, Any]) -> str:
             + "."
         )
 
-    concerns = _matchup_concerns(my_rows)
-    if concerns:
-        lines.append("Watch: " + "; ".join(concerns[:3]) + ".")
-    elif my_rows:
-        lines.append("No active injury or sub-1.0 FP/G flags show up in your lineup snapshot.")
+    if lineup_recommendations_ready:
+        concerns = _matchup_concerns(my_rows)
+        if concerns:
+            lines.append("Watch: " + "; ".join(concerns[:3]) + ".")
+        elif my_rows:
+            lines.append("No active injury or sub-1.0 FP/G flags show up in your lineup snapshot.")
 
     if projection and data_quality.get("projection_ready", True):
         return " ".join(line for line in lines if line)
 
     if opponent_rows:
-        edges = _position_edges(my_rows, opponent_rows)
-        if edges:
-            lines.append("Position read: " + "; ".join(edges[:3]) + ".")
-        opp_top = _top_players(opponent_rows, limit=3)
-        if opp_top:
-            lines.append("Opponent threats: " + ", ".join(_player_label(p) for p in opp_top) + ".")
+        if lineup_recommendations_ready:
+            edges = _position_edges(my_rows, opponent_rows)
+            if edges:
+                lines.append("Position read: " + "; ".join(edges[:3]) + ".")
+            opp_top = _top_players(opponent_rows, limit=3)
+            if opp_top:
+                lines.append("Opponent threats: " + ", ".join(_player_label(p) for p in opp_top) + ".")
+        else:
+            lines.append(
+                "Active-slot watch and position reads are paused until roster-slot source is trusted: "
+                + _lineup_recommendation_pause_reason(data_quality)
+                + "."
+            )
     elif matchup:
         lines.append("I have the score/opponent, but not opponent roster rows to compare individual players.")
     elif all_rosters:
@@ -559,6 +635,16 @@ def _recommendation_text(recommendations: dict[str, Any] | None) -> str | None:
     if no_action and no_action.get("reason"):
         return "Lineup action: " + str(no_action["reason"]).rstrip(".") + "."
     return None
+
+
+def _lineup_recommendation_text(matchup: dict[str, Any] | None, data_quality: dict[str, Any]) -> str | None:
+    if not _lineup_recommendations_ready(data_quality):
+        return (
+            "Lineup action: paused until roster-slot source is trusted: "
+            + _lineup_recommendation_pause_reason(data_quality)
+            + "."
+        )
+    return _recommendation_text(matchup.get("recommendations") if isinstance(matchup, dict) else None)
 
 
 def _chain_summary(chain: list[dict[str, Any]]) -> str:
