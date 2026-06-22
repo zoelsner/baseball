@@ -13,6 +13,7 @@ import json
 import os
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.request import Request, urlopen
 
@@ -117,6 +118,66 @@ def _raw_row_diagnostics(raw_rows: list[dict[str, Any]] | None) -> dict[str, Any
     }
 
 
+def _raw_roster_rows_from_payload(payload: Any) -> list[dict[str, Any]]:
+    """Extract raw Fantrax roster rows from a saved getTeamRosterInfo payload."""
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if not isinstance(payload, dict):
+        raise RuntimeError("raw roster JSON must be an object or list")
+
+    direct_rows = payload.get("rows")
+    if isinstance(direct_rows, list):
+        return [row for row in direct_rows if isinstance(row, dict)]
+
+    candidates = []
+    if isinstance(payload.get("tables"), list):
+        candidates.append(payload)
+    for key in ("data", "payload", "response", "roster"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            nested_rows = nested.get("rows")
+            if isinstance(nested_rows, list):
+                return [row for row in nested_rows if isinstance(row, dict)]
+            if isinstance(nested.get("tables"), list):
+                candidates.append(nested)
+
+    for candidate in candidates:
+        rows = fantrax_data._raw_roster_rows(SimpleNamespace(_data=candidate))
+        if rows:
+            return rows
+    if candidates:
+        return []
+    raise RuntimeError("raw roster JSON must contain Fantrax tables or raw roster rows")
+
+
+def raw_roster_report(payload: Any, *, source: str) -> dict[str, Any]:
+    rows = _raw_roster_rows_from_payload(payload)
+    assigned_slot_rows = sum(
+        1
+        for row in rows
+        if any(row.get(key) not in (None, "") for key in fantrax_data.RAW_ASSIGNED_SLOT_KEYS)
+    )
+    pos_only_rows = sum(
+        1
+        for row in rows
+        if row.get("posId") not in (None, "")
+        and not any(row.get(key) not in (None, "") for key in fantrax_data.RAW_ASSIGNED_SLOT_KEYS)
+    )
+    return {
+        "source": source,
+        "verdict": "raw_only",
+        "row_count": len(rows),
+        "assigned_slot_candidate_rows": assigned_slot_rows,
+        "pos_only_rows": pos_only_rows,
+        "note": (
+            "Raw Fantrax JSON can identify candidate slot fields, but it cannot "
+            "prove normalized Sandlot slot provenance until extract_roster maps "
+            "those fields into roster slot_source values."
+        ),
+        "raw": _raw_row_diagnostics(rows),
+    }
+
+
 def slot_provenance_report(
     snapshot: dict[str, Any],
     *,
@@ -178,6 +239,10 @@ def _load_json_file(path: Path) -> dict[str, Any]:
     return data
 
 
+def _load_json_any_file(path: Path) -> Any:
+    return json.loads(path.read_text())
+
+
 def _cookies_from_env_or_file(path: Path) -> list[dict[str, Any]]:
     raw = os.environ.get("FANTRAX_COOKIES_JSON")
     if raw:
@@ -211,6 +276,19 @@ def _live_fantrax_snapshot(args: argparse.Namespace) -> tuple[dict[str, Any], li
 
 
 def _print_human(report: dict[str, Any]) -> None:
+    if report.get("verdict") == "raw_only":
+        print("Raw Fantrax roster diagnostic: raw_only")
+        print(f"Source: {report['source']}")
+        print(f"Rows: {report['row_count']} raw roster rows")
+        print(f"Assigned-slot candidate rows: {report['assigned_slot_candidate_rows']}")
+        print(f"Rows with posId only: {report['pos_only_rows']}")
+        print(report["note"])
+        raw = report.get("raw")
+        if raw:
+            print(f"Raw statusId counts: {json.dumps(raw['status_id_counts'], sort_keys=True)}")
+            print(f"Raw slot keys by statusId: {json.dumps(raw['slot_key_counts_by_status'], sort_keys=True)}")
+        return
+
     print(f"Slot provenance diagnostic: {report['verdict']}")
     print(f"Source: {report['source']}")
     print(
@@ -268,6 +346,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--snapshot-url", help="Read an existing Sandlot snapshot API URL")
     source.add_argument("--snapshot-file", help="Read an existing snapshot JSON file")
+    source.add_argument("--raw-roster-file", help="Inspect a saved raw Fantrax getTeamRosterInfo JSON file")
     parser.add_argument("--league-id", help="Fantrax league id for live read-only diagnostics")
     parser.add_argument("--team-id", help="Fantrax team id for live read-only diagnostics")
     parser.add_argument("--cookies-file", default=str(auth.COOKIE_PATH), help="Fantrax cookie JSON path")
@@ -286,6 +365,15 @@ def main(argv: list[str] | None = None) -> int:
         snapshot = _load_json_file(Path(args.snapshot_file))
         raw_rows = None
         source = args.snapshot_file
+    elif args.raw_roster_file:
+        report = raw_roster_report(_load_json_any_file(Path(args.raw_roster_file)), source=args.raw_roster_file)
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            _print_human(report)
+        if args.require_trusted:
+            return 2
+        return 0
     else:
         snapshot, raw_rows = _live_fantrax_snapshot(args)
         source = "live-fantrax-read-only"

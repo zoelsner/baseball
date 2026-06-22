@@ -42,7 +42,7 @@
   with `Ask Skipper` and `Deep research` handoffs. The card emits no add/drop,
   no `change_slot` payload, and no live Fantrax write path.
 - **Local verification:** Python unit suite is green on 2026-06-22
-  (`138 tests`). The local rebuilt Sandlot UI passes
+  (`140 tests`). The local rebuilt Sandlot UI passes
   `today-attention.spec.ts` against `http://127.0.0.1:4173` (`4 tests`),
   including regressions where unsafe replacement cards are hidden when slot
   provenance is partial or explicit lineup readiness is missing, and where the
@@ -54,10 +54,13 @@
   adds a separate `Local frontend E2E` job for branch-only UI regressions that
   must run against the rebuilt local bundle before Railway has deployed it.
 - **Slot proof diagnostic:** `diagnose_slot_provenance.py` is the repeatable
-  read-only proof tool for #67. It can check a snapshot URL/file now and perform
-  a live Fantrax roster read once cookies/env are available. Current production
-  still reports `fail_closed`: 37 rows, 17 trusted, 20 untrusted, and all 20
-  active rows untrusted.
+  read-only proof tool for #67. It can check a snapshot URL/file, inspect a
+  saved raw Fantrax `getTeamRosterInfo` JSON file, and perform a live Fantrax
+  roster read once cookies/env are available. Raw-payload mode reports candidate
+  slot fields but still cannot satisfy `--require-trusted` until normalized
+  roster rows carry trusted `slot_source` values. Current production still
+  reports `fail_closed`: 37 rows, 17 trusted, 20 untrusted, and all 20 active
+  rows untrusted.
 - **Cookie fallback:** if `import_chrome_cookies.py` hangs on macOS keychain,
   copy a logged-in Fantrax request `Cookie:` header locally and run
   `pbpaste | .venv/bin/python import_fantrax_cookies_manual.py --cookie-header -`;
@@ -68,18 +71,19 @@
 - **Current draft PR:** [#81](https://github.com/zoelsner/baseball/pull/81)
   tracks the slot-provenance safety gate, Fantrax adapter hardening, and
   Attention Queue fail-closed behavior for untrusted active-slot data. Latest
-  pushed head checked before this slice (`f3bc943`) had green Railway smoke,
-  local frontend E2E, frontend build, and Python import smoke.
+  pushed hot-swap-card head checked before this diagnostic slice (`3d96d8a`)
+  had green Railway smoke, local frontend E2E, frontend build, and Python
+  import/unit smoke.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 
-1. **Finish #67 real-slot proof** — with valid local Fantrax cookies, refresh
-   read-only and inspect `slot_source` coverage from raw `statusId`/slot fields.
-   If active lineup slots still resolve as `position_fallback`, read the real
-   `lineup-btn` DOM slot during scrape. Keep recommendation gates fail-closed
-   until this is proven.
+1. **Finish #67 real-slot proof** — with valid local Fantrax cookies or a saved
+   raw `getTeamRosterInfo` payload, refresh/read-only inspect `slot_source`
+   coverage from raw `statusId`/slot fields. If active lineup slots still
+   resolve as `position_fallback`, read the real `lineup-btn` DOM slot during
+   scrape. Keep recommendation gates fail-closed until this is proven.
 2. **Wire the hot-swap proposal confirmation path** — keep `Propose swap`
    disabled until #63's executor safety can accept a lineup-only proposal with
    named OUT/IN players, slot provenance proof, and Zach confirmation.

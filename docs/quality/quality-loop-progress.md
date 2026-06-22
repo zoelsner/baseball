@@ -198,6 +198,24 @@
   `SANDLOT_EXPECT_SLOT_GATE=1`), production-smoke-compatible local Playwright
   without the branch flag passed (`2 passed`, `2 skipped`), and
   `git diff --check` passed.
+- 2026-06-22: Resumed PR #81 at pushed head `3d96d8a329149be41872b32168109ccf73fad071`.
+  GitHub Actions was green for `Playwright` run `27975957250` (`Local frontend
+  E2E`, `E2E against Railway`) and `CI` run `27975957259` (`Python import
+  smoke`, `Frontend build`). Re-ran the production read-only slot diagnostic
+  against `https://web-production-90664.up.railway.app/api/snapshot/latest`;
+  it still exits `2` under `--require-trusted` with `fail_closed`, 37 roster
+  rows, 17 trusted rows, 20 untrusted rows, and all 20 active rows untrusted.
+- 2026-06-22: Added `--raw-roster-file` to `diagnose_slot_provenance.py` so a
+  saved raw Fantrax `getTeamRosterInfo` payload can be inspected without local
+  cookies, Chrome control, Fantrax writes, DB writes, or snapshot writes. The
+  mode reports status/slot-key coverage from raw rows but deliberately returns
+  `raw_only`; `--require-trusted` still exits `2` until normalized Sandlot
+  roster rows carry trusted `slot_source` values. Verification: diagnostic unit
+  tests passed (`10 tests`), focused backend safety tests passed (`54 tests`),
+  full Python suite passed (`140 tests`), and `git diff --check` passed. Local
+  Node/npm was not available in this sandbox shell for a same-run Playwright
+  rerun; PR #81's GitHub `Local frontend E2E` remains the branch-only browser
+  regression check, and Railway E2E remains the production smoke.
 
 ## Next Loop Phase
 

@@ -163,6 +163,57 @@ class SlotProvenanceDiagnosticTests(unittest.TestCase):
         self.assertEqual(report["raw"]["status_id_counts"], {"9": 1})
         self.assertEqual(report["raw"]["slot_key_counts_by_status"]["9"]["lineupSlot"], 1)
 
+    def test_raw_roster_file_payload_reports_key_coverage_without_trusting_slots(self):
+        report = diagnostic.raw_roster_report(
+            {
+                "data": {
+                    "tables": [
+                        {
+                            "rows": [
+                                {
+                                    "statusId": "1",
+                                    "posId": "OF",
+                                    "lineupSlot": "OF",
+                                    "scorer": {"scorerId": "active", "name": "Active Bat"},
+                                },
+                                {
+                                    "statusId": "2",
+                                    "posId": "SP",
+                                    "scorer": {"scorerId": "pos-only", "name": "Position Only"},
+                                },
+                            ]
+                        }
+                    ]
+                }
+            },
+            source="raw.json",
+        )
+
+        self.assertEqual(report["verdict"], "raw_only")
+        self.assertEqual(report["row_count"], 2)
+        self.assertEqual(report["assigned_slot_candidate_rows"], 1)
+        self.assertEqual(report["pos_only_rows"], 1)
+        self.assertIn("cannot prove normalized Sandlot slot provenance", report["note"])
+        self.assertEqual(report["raw"]["slot_key_counts_by_status"]["1"]["lineupSlot"], 1)
+        self.assertEqual(report["raw"]["slot_key_counts_by_status"]["2"]["posId"], 1)
+
+    def test_raw_roster_file_exit_code_cannot_satisfy_require_trusted(self):
+        path = self._write_snapshot({
+            "rows": [
+                {
+                    "statusId": "1",
+                    "posId": "OF",
+                    "lineupSlot": "OF",
+                    "scorer": {"scorerId": "active", "name": "Active Bat"},
+                }
+            ]
+        })
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = diagnostic.main(["--raw-roster-file", path, "--require-trusted"])
+
+        self.assertEqual(code, 2)
+
     def test_require_trusted_exit_code_fails_when_slots_are_untrusted(self):
         path = self._write_snapshot({
             "roster": [
