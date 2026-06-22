@@ -639,7 +639,7 @@ def _raw_fppg(row: dict[str, Any], scorer: dict[str, Any]) -> float | None:
             value = _floatish(source.get(key))
             if value is not None:
                 return value
-    return _floatish(_cell_content(row, 3))
+    return _floatish(_cell_content(row, 2))
 
 
 def _raw_fpts(row: dict[str, Any], scorer: dict[str, Any]) -> float | None:
@@ -648,7 +648,7 @@ def _raw_fpts(row: dict[str, Any], scorer: dict[str, Any]) -> float | None:
             value = _floatish(source.get(key))
             if value is not None:
                 return value
-    return _floatish(_cell_content(row, 2))
+    return _floatish(_cell_content(row, 1))
 
 
 def _raw_injury_status(scorer: dict[str, Any]) -> str | None:

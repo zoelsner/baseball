@@ -116,10 +116,10 @@ def raw_roster_row(player_id, *, name, team="ATL", pos="OF", status="1", fppg="3
             "posIds": [pos, "UT"],
         },
         "cells": [
-            {"content": ""},
-            {"content": "@DET<br/>7:05 PM ET", "eventId": "evt-1", "date": "2026-06-23"},
+            {"content": "30"},
             {"content": fpts},
             {"content": fppg},
+            {"content": "100"},
         ],
         "futureGames": [{"date": "2026-06-23", "eventId": "evt-1", "opponent": "DET"}],
     }
@@ -415,10 +415,10 @@ class FantraxRosterSlotTests(unittest.TestCase):
                                 "injuryStatus": "INJ",
                             },
                             "cells": [
-                                {"content": ""},
-                                {"content": ""},
+                                {"content": "27"},
                                 {"content": "9.5"},
                                 {"content": "3.5"},
+                                {"content": "110"},
                             ],
                         }
                     ]
@@ -433,6 +433,7 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(data["rows"][0]["slot"], "RES")
         self.assertEqual(data["rows"][0]["slot_source"], "raw.statusId")
         self.assertEqual(data["rows"][0]["fppg"], 3.5)
+        self.assertEqual(data["rows"][0]["fpts"], 9.5)
         self.assertEqual(data["rows"][0]["injury"], "INJ")
         self.assertEqual(data["active"], 0)
         self.assertEqual(data["active_max"], 22)
