@@ -156,6 +156,21 @@
   pass (`47 tests`), full Python suite passes (`135 tests`), and the production
   snapshot diagnostic still exits `fail_closed` with all 20 active rows
   untrusted.
+- 2026-06-22: Resumed PR #81 without restarting the old loop. Confirmed pushed
+  head `5f85995` was green across Railway smoke, local frontend E2E, frontend
+  build, and Python import smoke. Tightened the remaining compatibility
+  fallback: `/api/attention`, matchup recommendations, waiver cards, Skipper,
+  and Today UI now require explicit `lineup_recommendations_ready === true` /
+  `add_drop_recommendations_ready === true` before surfacing lineup or add/drop
+  advice. Missing action-readiness flags now render a paused reason instead of
+  falling back to legacy `recommendations_ready`.
+- 2026-06-22: Verification for the explicit-readiness gate: focused backend
+  safety tests passed (`53 tests`), full Python suite passed (`139 tests`),
+  rebuilt `web/sandlot/app.js` with local `esbuild`, local Playwright against
+  `http://127.0.0.1:4173` passed (`today-attention.spec.ts`, 4 tests,
+  `SANDLOT_EXPECT_SLOT_GATE=1`), `git diff --check` passed, and the production
+  read-only diagnostic still exits `fail_closed` with 20/20 active rows
+  untrusted (`position_fallback`).
 
 ## Next Loop Phase
 

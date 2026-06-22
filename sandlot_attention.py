@@ -373,11 +373,8 @@ def _chain_action_payloads(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return payloads
 
 
-def _lineup_slots_ready(data_quality: dict[str, Any] | None) -> bool:
-    if not isinstance(data_quality, dict):
-        return False
-    lineup_slots = data_quality.get("lineup_slots")
-    return isinstance(lineup_slots, dict) and lineup_slots.get("state") == "ok"
+def _lineup_recommendations_ready(data_quality: dict[str, Any] | None) -> bool:
+    return isinstance(data_quality, dict) and data_quality.get("lineup_recommendations_ready") is True
 
 
 def build_queue(
@@ -459,7 +456,7 @@ def _matchup_recommendations(
     matchup = data.get("matchup")
     if not isinstance(matchup, dict) or not matchup:
         return None
-    if not _lineup_slots_ready(data_quality):
+    if not _lineup_recommendations_ready(data_quality):
         return None
     return sandlot_matchup.rank_matchup_improvement_actions(data, data_quality)
 
@@ -473,17 +470,17 @@ def attention_items(data: dict[str, Any], recommendations: Any = _UNSET) -> list
     raw_rows = (data.get("roster") or {}).get("rows") or []
     roster = [_normalize_row(r, i) for i, r in enumerate(raw_rows) if isinstance(r, dict)]
     data_quality = sandlot_data_quality.snapshot_data_quality(data)
-    lineup_slots_ready = _lineup_slots_ready(data_quality)
+    lineup_recommendations_ready = _lineup_recommendations_ready(data_quality)
     health = roster_health(roster)
+    # Recommendations can be injected by tests, but the public queue entry
+    # point still owns the final safety gate before action payloads appear.
+    allow_replacement = lineup_recommendations_ready
     if recommendations is _UNSET:
         recommendations = _matchup_recommendations(data, data_quality)
-        allow_replacement = lineup_slots_ready
-    else:
-        allow_replacement = True
     return build_queue(
         health,
         recommendations,
-        allow_lineup_health=lineup_slots_ready,
-        allow_status_actions=lineup_slots_ready,
+        allow_lineup_health=lineup_recommendations_ready,
+        allow_status_actions=lineup_recommendations_ready,
         allow_replacement=allow_replacement,
     )

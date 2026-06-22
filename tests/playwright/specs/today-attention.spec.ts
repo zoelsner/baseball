@@ -151,4 +151,28 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('Review lineup move')).toHaveCount(0);
     await expect(page.getByText('Low FP/G for active slot')).toHaveCount(0);
   });
+
+  test('pauses swap guidance when explicit lineup readiness is missing', async ({ page }) => {
+    test.skip(
+      process.env.SANDLOT_EXPECT_SLOT_GATE !== '1',
+      'Slot-provenance pause UI is verified against the rebuilt local bundle, not the current Railway deploy.',
+    );
+
+    const dataQuality = {
+      projection_ready: true,
+      recommendations_ready: true,
+      add_drop_recommendations_ready: true,
+      lineup_slots: { state: 'ok', trusted: 3, total: 3, reason: 'Lineup slots trusted from Fantrax statusId' },
+    };
+
+    await mockSnapshot(page, baseSnapshot({ data_quality: dataQuality }));
+
+    await page.goto('/');
+    await waitForAppMount(page);
+    await skipIfAttentionQueueNotDeployed(page);
+
+    await expect(page.getByText('Advice paused')).toBeVisible();
+    await expect(page.getByText('Lineup and replacement advice is paused: Lineup recommendation readiness is not explicitly trusted.')).toBeVisible();
+    await expect(page.getByText('Review lineup move')).toHaveCount(0);
+  });
 });

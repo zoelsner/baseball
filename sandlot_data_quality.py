@@ -88,6 +88,12 @@ def short_reason(data_quality: dict[str, Any] | None, *, purpose: str = "project
         key = "recommendation_reasons" if purpose.startswith("recommend") else "projection_reasons"
     reasons = data_quality.get(key) or data_quality.get("reasons") or []
     if not reasons:
+        if purpose.startswith("lineup") and data_quality.get("lineup_recommendations_ready") is not True:
+            return "Lineup recommendation readiness is not explicitly trusted"
+        if (purpose.startswith("add_drop") or purpose.startswith("waiver")) and (
+            data_quality.get("add_drop_recommendations_ready") is not True
+        ):
+            return "Add/drop recommendation readiness is not explicitly trusted"
         return "Required snapshot data is available"
     first = str(reasons[0]).rstrip(".")
     if len(reasons) == 1:

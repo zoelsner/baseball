@@ -335,10 +335,7 @@ def simulate_lineup_move_impact(
 ) -> dict[str, Any]:
     """Compare legal bench-to-active lineup moves against the base projection."""
     data_quality = _recommendation_quality(snapshot, data_quality)
-    if isinstance(data_quality, dict) and not data_quality.get(
-        "lineup_recommendations_ready",
-        data_quality.get("recommendations_ready", True),
-    ):
+    if not (isinstance(data_quality, dict) and data_quality.get("lineup_recommendations_ready") is True):
         return _no_action_result(
             base_projection=compute_projection(snapshot, data_quality),
             reason="Recommendation data incomplete: " + _quality_reason(data_quality),

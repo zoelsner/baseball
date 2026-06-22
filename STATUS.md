@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (after Skipper slot-provenance fail-closed hardening).
+> Last updated: **2026-06-22** (after explicit hot-swap readiness gating).
 
 ## Where things stand
 
@@ -29,13 +29,20 @@
   explicitly true, Skipper omits stale recommendations, strips `slot` and
   `slot_source` from roster context, and says advice is paused instead of
   surfacing lineup/swap framing.
+- **Explicit readiness contract:** lineup and add/drop recommendation surfaces
+  now fail closed unless the action-specific readiness flag is explicitly
+  `true`. `/api/attention`, matchup recommendations, waiver cards, Skipper,
+  and the Today UI no longer fall back from missing
+  `lineup_recommendations_ready`/`add_drop_recommendations_ready` to legacy
+  `recommendations_ready`.
 - **Local verification:** Python unit suite is green on 2026-06-22
-  (`135 tests`). The local rebuilt Sandlot UI passes
-  `today-attention.spec.ts` against `http://127.0.0.1:4173`, including the
-  regression where an unsafe replacement card is hidden when slot provenance is
-  partial. Live read-only Fantrax verification is still blocked in this checkout
-  because there are no local cookies/env credentials and Chrome cookie import
-  times out on macOS keychain access.
+  (`139 tests`). The local rebuilt Sandlot UI passes
+  `today-attention.spec.ts` against `http://127.0.0.1:4173` (`4 tests`),
+  including regressions where unsafe replacement cards are hidden when slot
+  provenance is partial or explicit lineup readiness is missing. Live read-only
+  Fantrax verification is still blocked in this checkout because there are no
+  local cookies/env credentials and Chrome cookie import times out on macOS
+  keychain access.
 - **CI split:** Railway Playwright remains a deployed-app smoke. PR #81 now
   adds a separate `Local frontend E2E` job for branch-only UI regressions that
   must run against the rebuilt local bundle before Railway has deployed it.
@@ -53,7 +60,9 @@
 - **Not yet done:** Railway tokens (`SANDLOT_ACTIONS_TOKEN`, `SANDLOT_REFRESH_TOKEN`) unset — the executor endpoint is fail-closed (503) until then. Zo Computer not wired.
 - **Current draft PR:** [#81](https://github.com/zoelsner/baseball/pull/81)
   tracks the slot-provenance safety gate, Fantrax adapter hardening, and
-  Attention Queue fail-closed behavior for untrusted active-slot data.
+  Attention Queue fail-closed behavior for untrusted active-slot data. Latest
+  pushed head checked before this slice (`5f85995`) had green Railway smoke,
+  local frontend E2E, frontend build, and Python import smoke.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.
 

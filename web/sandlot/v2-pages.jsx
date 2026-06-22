@@ -231,13 +231,16 @@ function v2QualityReason(dataQuality, purpose='projection') {
 
 function v2LineupAdviceReady(dataQuality) {
   if (!dataQuality) return false;
-  return dataQuality.lineup_slots?.state === 'ok' && dataQuality.lineup_recommendations_ready !== false;
+  return dataQuality.lineup_slots?.state === 'ok' && dataQuality.lineup_recommendations_ready === true;
 }
 
 function v2LineupQualityReason(dataQuality) {
   if (!dataQuality) return 'Data quality is unavailable';
   const reason = v2QualityReason(dataQuality, 'lineup');
   if (reason !== 'Required snapshot data is available') return reason;
+  if (dataQuality.lineup_recommendations_ready !== true) {
+    return 'Lineup recommendation readiness is not explicitly trusted';
+  }
   return dataQuality.lineup_slots?.reason || 'Lineup-slot provenance is unavailable';
 }
 
@@ -947,6 +950,12 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer }) {
       </div>
 
       <V2AttentionQueue items={queue} hasRealData={hasRealData} sync={sync} pausedReason={lineupPausedReason} onPlayer={onPlayer} onNav={onNav}/>
+
+      {lineupPausedReason && queue.length ? (
+        <V2Caution eyebrow="Advice paused" tone="warn">
+          Lineup and replacement advice is paused: {lineupPausedReason}.
+        </V2Caution>
+      ) : null}
 
       {sync.notice && sync.state !== 'refreshing' && (
         <V2Caution eyebrow="Heads up" tone="warn">{sync.notice}</V2Caution>

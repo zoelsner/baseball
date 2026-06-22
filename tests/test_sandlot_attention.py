@@ -49,15 +49,43 @@ def row_with_slot_source(row):
     if "slot_source" not in out:
         slot = str(out.get("slot") or "").upper()
         out["slot_source"] = "raw.statusId" if slot in sandlot_attention.RESERVED_SLOTS else "raw.lineupSlot"
+    if "future_games" not in out:
+        out["future_games"] = [{"date": "2026-06-23"}]
     return out
 
 
-def snapshot_data(roster):
-    return {"roster": {"rows": [row_with_slot_source(row) for row in roster]}}
+def snapshot_data(roster, *, include_matchup=True):
+    data = {"roster": {"rows": [row_with_slot_source(row) for row in roster]}}
+    if include_matchup:
+        data["matchup"] = {
+            "my_score": 1.0,
+            "opponent_score": 1.0,
+            "opponent_team_id": "opp",
+            "end": "2026-06-29",
+        }
+        data["all_team_rosters"] = {
+            "opp": {
+                "rows": [
+                    row_with_slot_source({
+                        "id": "opp-ss",
+                        "name": "Opponent Shortstop",
+                        "positions": "SS",
+                        "slot": "SS",
+                        "fppg": 1.0,
+                    })
+                ]
+            }
+        }
+    return data
 
 
 def queue_for(roster, recommendations=None):
     return sandlot_attention.attention_items(snapshot_data(roster), recommendations=recommendations)
+
+
+def replacement_for(chain):
+    items = queue_for(today_page_roster(), today_page_recommendations(chain))
+    return next(item for item in items if item["kind"] == "replacement")
 
 
 class AttentionQueueOrderingTests(unittest.TestCase):
@@ -185,9 +213,7 @@ class AttentionActionPayloadTests(unittest.TestCase):
     def test_single_step_chain_yields_change_slot_action(self):
         chain = [{"player_id": "bench-bat", "player_name": "Bench Bat", "from_slot": "BN", "to_slot": "UT"}]
 
-        items = queue_for([], today_page_recommendations(chain))
-
-        replacement = items[0]
+        replacement = replacement_for(chain)
         self.assertEqual(replacement["action"], {"action": "change_slot", "player_id": "bench-bat", "to_slot": "UT"})
         self.assertEqual(replacement["actions"], [replacement["action"]])
         self.assert_valid_action_payload(replacement["action"])
@@ -198,9 +224,7 @@ class AttentionActionPayloadTests(unittest.TestCase):
             {"player_id": "slumper", "player_name": "Slumper", "from_slot": "UT", "to_slot": "BN"},
         ]
 
-        items = queue_for([], today_page_recommendations(chain))
-
-        replacement = items[0]
+        replacement = replacement_for(chain)
         self.assertIsNone(replacement["action"])  # one payload can't represent two calls
         self.assertEqual(len(replacement["actions"]), 2)
         self.assertEqual([a["player_id"] for a in replacement["actions"]], ["bench-bat", "slumper"])
@@ -214,23 +238,23 @@ class AttentionActionPayloadTests(unittest.TestCase):
             {"player_name": "Unknown Id", "from_slot": "UT", "to_slot": "BN"},
         ]
 
-        items = queue_for([], today_page_recommendations(chain))
+        replacement = replacement_for(chain)
 
-        self.assertIsNone(items[0]["action"])
-        self.assertEqual(items[0]["actions"], [])
+        self.assertIsNone(replacement["action"])
+        self.assertEqual(replacement["actions"], [])
 
 
 class AttentionRecommendationGatingTests(unittest.TestCase):
     def test_no_matchup_block_skips_recommendation_compute(self):
         with mock.patch.object(sandlot_attention.sandlot_matchup, "rank_matchup_improvement_actions") as ranked:
-            items = sandlot_attention.attention_items(snapshot_data(today_page_roster()))
+            items = sandlot_attention.attention_items(snapshot_data(today_page_roster(), include_matchup=False))
 
         ranked.assert_not_called()
-        self.assertEqual([i["kind"] for i in items], ["status", "lineup", "output"])
+        self.assertEqual([i["kind"] for i in items], ["status"])
+        self.assertEqual(items[0]["actions"], [])
 
     def test_matchup_block_uses_ranked_recommendations(self):
         data = snapshot_data(today_page_roster())
-        data["matchup"] = {"my_score": 1.0}
         with mock.patch.object(
             sandlot_attention.sandlot_matchup,
             "rank_matchup_improvement_actions",
@@ -270,6 +294,31 @@ class AttentionRecommendationGatingTests(unittest.TestCase):
 
         ranked.assert_not_called()
         self.assertEqual(items, [])
+
+    def test_partial_action_readiness_suppresses_lineup_health_and_actions_even_when_slots_trusted(self):
+        data = snapshot_data(today_page_roster())
+        for row in data["roster"]["rows"]:
+            row.pop("future_games", None)
+        with mock.patch.object(
+            sandlot_attention.sandlot_matchup,
+            "rank_matchup_improvement_actions",
+            return_value=today_page_recommendations(),
+        ) as ranked:
+            items = sandlot_attention.attention_items(data)
+
+        ranked.assert_not_called()
+        self.assertEqual([item["kind"] for item in items], ["status"])
+        self.assertIsNone(items[0]["action"])
+        self.assertEqual(items[0]["actions"], [])
+
+    def test_injected_recommendations_do_not_bypass_readiness_gate(self):
+        data = snapshot_data(today_page_roster())
+        for row in data["roster"]["rows"]:
+            row.pop("future_games", None)
+
+        items = sandlot_attention.attention_items(data, recommendations=today_page_recommendations())
+
+        self.assertNotIn("replacement", [item["kind"] for item in items])
 
     def test_untrusted_slot_provenance_suppresses_status_action_payload(self):
         data = snapshot_data([

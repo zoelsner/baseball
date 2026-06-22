@@ -93,6 +93,23 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertIn("Recommendation data incomplete", result["no_action"]["reason"])
         self.assertIn("Eligibility/position", result["no_action"]["reason"])
 
+    def test_missing_lineup_ready_flag_fails_closed_even_when_legacy_quality_is_ready(self):
+        data_quality = {
+            "projection_ready": True,
+            "recommendations_ready": True,
+            "recommendation_reasons": [],
+            "reasons": [],
+        }
+
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player("weak2b", slot="2B", positions="2B", fppg=1.0),
+            player("bench2b", slot="BN", positions="2B", fppg=4.0),
+        ]), data_quality)
+
+        self.assertEqual(result["recommendations"], [])
+        self.assertIn("Recommendation data incomplete", result["no_action"]["reason"])
+        self.assertIn("lineup", result["no_action"]["reason"].lower())
+
     def test_untrusted_slot_source_suppresses_recommendations(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
             player("weak2b", slot="2B", positions="2B", fppg=1.0, slot_source="position_fallback"),

@@ -126,6 +126,23 @@ class SnapshotDataQualityTests(unittest.TestCase):
         self.assertTrue(quality["projection_ready"])
         self.assertIn("Lineup-slot source trusted for 0/1 roster players", quality["lineup_recommendation_reasons"])
 
+    def test_short_reason_fails_closed_when_action_ready_flags_are_missing(self):
+        legacy_quality = {
+            "projection_ready": True,
+            "recommendations_ready": True,
+            "recommendation_reasons": [],
+            "reasons": [],
+        }
+
+        self.assertEqual(
+            sandlot_data_quality.short_reason(legacy_quality, purpose="lineup_recommendations"),
+            "Lineup recommendation readiness is not explicitly trusted",
+        )
+        self.assertEqual(
+            sandlot_data_quality.short_reason(legacy_quality, purpose="add_drop_recommendations"),
+            "Add/drop recommendation readiness is not explicitly trusted",
+        )
+
     def test_snapshot_payload_surfaces_quality_and_suppresses_projection(self):
         snapshot = good_snapshot()
         snapshot["roster"]["rows"][0].pop("future_games")
