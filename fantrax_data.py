@@ -30,13 +30,19 @@ FXPA_URL = "https://www.fantrax.com/fxpa/req"
 
 
 def _raw_request(api: Any, method: str, **data: Any) -> Any:
+    helper_error: Exception | None = None
     if _fantrax_api is not None:
         fn = getattr(_fantrax_api, _raw_request_name(method), None)
         if callable(fn):
-            return fn(api, **data)
+            try:
+                return fn(api, **data)
+            except Exception as exc:
+                helper_error = exc
     request = getattr(api, "_request", None)
     if callable(request):
         return request(method, **data)
+    if helper_error is not None:
+        raise helper_error
     raise RuntimeError("fantraxapi raw request interface is unavailable")
 
 

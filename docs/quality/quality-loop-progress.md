@@ -378,6 +378,21 @@
   refresh / recommendation tests passed (`65 tests`), full Python suite passed
   (`160 tests`), import smoke passed, `git diff --check` passed, and direct
   `esbuild` rebuild passed. Railway deployment verification is pending.
+- 2026-06-22: Merged the production scrape recovery branch to `main` as
+  `43c743e` and verified Railway reported both `baseball - web` and
+  `baseball - cron` successful for that commit. Direct production probes still
+  showed latest successful snapshot `213` with empty roster data. A manual
+  production refresh created run `295` with status `failed` and error
+  `roster: 'Roster' object has no attribute 'positions'; No my-roster rows in snapshot`,
+  proving the promotion guard now prevents another empty-roster success but the
+  raw scraper path still missed production's library shape. Added a follow-up
+  compatibility fix so a failing `fantraxapi.api` raw helper falls back to
+  `FantraxAPI._request` before using upstream `Roster`, plus regression
+  coverage for that path. Verification: roster regression tests passed
+  (`11 tests`), focused scraper / refresh / recommendation tests passed
+  (`66 tests`), full Python suite passed (`161 tests`), and import smoke
+  passed. Next step is deploy this follow-up and verify a new real production
+  refresh returns non-empty my-roster rows.
 
 ## Next Loop Phase
 

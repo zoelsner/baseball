@@ -48,6 +48,12 @@ class RawFirstApi:
         raise AttributeError("'Roster' object has no attribute 'positions'")
 
 
+class BrokenRawHelper:
+    @staticmethod
+    def get_team_roster_info(_api, **_kwargs):
+        raise AttributeError("'Roster' object has no attribute 'positions'")
+
+
 class FakePosition:
     def __init__(self, short_name, name=None):
         self.short_name = short_name
@@ -425,6 +431,21 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(data["rows"][1]["slot_source"], "raw.statusId")
         self.assertEqual(data["reserve"], 1)
         self.assertEqual(data["reserve_max"], 7)
+
+    def test_raw_request_falls_back_to_api_request_when_helper_parser_breaks(self):
+        api = RawFirstApi({
+            "me": raw_roster(raw_roster_row("starter", name="Raw Starter", pos="OF", status="1")),
+        })
+        original_helper = fantrax_data._fantrax_api
+        fantrax_data._fantrax_api = BrokenRawHelper()
+        try:
+            data = fantrax_data.extract_roster(api, "me")
+        finally:
+            fantrax_data._fantrax_api = original_helper
+
+        self.assertEqual(api.raw_requests, [("getTeamRosterInfo", {"teamId": "me"})])
+        self.assertEqual(len(data["rows"]), 1)
+        self.assertEqual(data["rows"][0]["name"], "Raw Starter")
 
     def test_all_team_rosters_use_raw_first_roster_parser(self):
         api = RawFirstApi({

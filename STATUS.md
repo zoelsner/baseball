@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (production roster scrape fix in progress).
+> Last updated: **2026-06-22** (production roster scrape recovery in progress).
 
 ## Where things stand
 
@@ -113,10 +113,17 @@
   fragile upstream object parser, and marks refreshes `failed` when my-roster
   rows are missing or the roster section errors. Hot Swaps remain read-only and
   slot-provenance fail-closed. Local verification so far: focused scraper /
-  refresh / recommendation tests passed (`65 tests`), full Python suite passed
-  (`160 tests`), import smoke passed, `git diff --check` passed, and direct
-  `esbuild` rebuild passed. Deployment and Railway production verification are
-  still pending.
+  refresh / recommendation tests passed, full Python suite passed, import smoke
+  passed, `git diff --check` passed, and direct `esbuild` rebuild passed. First
+  production deploy reached Railway as commit `43c743e` and both Railway
+  services reported success; manual refresh run `295` then failed safely
+  instead of promoting another empty roster snapshot. It still exposed the same
+  scraper error, so the active follow-up patch makes raw helper failures fall
+  back to `FantraxAPI._request` before touching the upstream `Roster` parser.
+  Verification for that patch: roster regression tests passed (`11 tests`),
+  focused scraper / refresh / recommendation tests passed (`66 tests`), and
+  full Python suite passed (`161 tests`). Final Railway production verification
+  is still pending.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.
 
