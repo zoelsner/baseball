@@ -160,8 +160,17 @@
    Then harden the existing read-only Fantrax DOM slot proof so active
    swap-participating rows require trusted slot provenance before a proposal
    can emit. Local code and tests for this slice are in place; next proof is
-   a real Railway refresh showing schedule provenance and slot diagnostics on
-   the production snapshot.
+   PR #84 CI and then a real Railway refresh showing schedule provenance and
+   slot diagnostics on the production snapshot. The first PR #84 Railway
+   Playwright run exposed a stale production-smoke assertion: production now
+   renders the seeded Hot Swaps card in its own section, while the test still
+   expected that replacement to count as a second generic Attention Queue
+   review item when `SANDLOT_EXPECT_SLOT_GATE` was unset. The spec now asserts
+   the current split behavior for both Railway and local runs. Local evidence:
+   `git diff --check` passed and `.venv/bin/python -m unittest
+   tests.test_sandlot_attention` passed (`26` tests). Local Playwright remains
+   blocked by this shell having no `node` binary, so GitHub Actions is the
+   browser proof for the Playwright change.
 2. **Finish #67 real-slot proof** — with valid local Fantrax cookies, a saved
    raw `getTeamRosterInfo` payload, or a saved roster-page HTML file plus
    matching snapshot, refresh/read-only inspect `slot_source` coverage from raw

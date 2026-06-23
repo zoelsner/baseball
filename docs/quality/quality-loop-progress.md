@@ -440,6 +440,20 @@
   passed (`173` tests), `git diff --check` passed, and direct `esbuild`
   rebuild passed. Production deploy, refresh, API, and browser verification
   remain pending before the goal can be complete.
+- 2026-06-23: Fixed the first PR #84 Railway Playwright failure without
+  changing app behavior. The failed smoke used a mocked snapshot with a
+  `replacement_card`; production now has the Hot Swaps panel, so that seeded
+  card correctly renders as `1 hot swap` above Attention Queue and the queue
+  headline is `1 urgent · 1 check · 1 review`. The spec still expected
+  `1 urgent · 1 check · 2 review` whenever `SANDLOT_EXPECT_SLOT_GATE` was not
+  set, which is stale now that #83 is on main. Updated
+  `tests/playwright/specs/today-attention.spec.ts` to assert the split Hot
+  Swaps behavior unconditionally for that mocked payload and to keep local-only
+  pause tests gated. Verification: `git diff --check` passed and
+  `.venv/bin/python -m unittest tests.test_sandlot_attention` passed (`26`
+  tests). Local Playwright could not run because this shell has no `node`
+  binary; GitHub Actions remains the browser verification path for the pushed
+  spec fix.
 
 ## Next Loop Phase
 
