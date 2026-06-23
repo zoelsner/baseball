@@ -6,6 +6,8 @@ import math
 from datetime import date
 from typing import Any
 
+import sandlot_future_games
+
 
 INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH", "MIN", "MINORS"}
 BENCH_SLOTS = {"BN", "BE", "BENCH", "RES", "RESERVE"}
@@ -118,6 +120,7 @@ def compute_projection(
     period_end = _parse_date(matchup.get("end"))
     if period_end is None:
         return None
+    period_start = _parse_date(matchup.get("start"))
 
     roster = snapshot.get("roster") or {}
     my_rows = roster.get("rows") if isinstance(roster, dict) else None
@@ -125,8 +128,8 @@ def compute_projection(
     if not isinstance(my_rows, list) or not isinstance(opp_rows, list):
         return None
 
-    mu_my, var_my, my_games = _team_projection(my_rows, my_score, period_end)
-    mu_opp, var_opp, opp_games = _team_projection(opp_rows, opp_score, period_end)
+    mu_my, var_my, my_games = _team_projection(my_rows, my_score, period_end, period_start)
+    mu_opp, var_opp, opp_games = _team_projection(opp_rows, opp_score, period_end, period_start)
     if my_games + opp_games <= 0:
         return None
 
@@ -344,10 +347,11 @@ def simulate_lineup_move_impact(
 ) -> dict[str, Any]:
     """Compare legal bench-to-active lineup moves against the base projection."""
     data_quality = _recommendation_quality(snapshot, data_quality)
-    if not (isinstance(data_quality, dict) and data_quality.get("lineup_recommendations_ready") is True):
+    preflight_reason = _lineup_simulation_preflight_reason(data_quality)
+    if preflight_reason:
         return _no_action_result(
             base_projection=compute_projection(snapshot, data_quality),
-            reason="Recommendation data incomplete: " + _quality_reason(data_quality),
+            reason="Recommendation data incomplete: " + preflight_reason,
         )
 
     base_projection = compute_projection(snapshot, data_quality)
@@ -378,6 +382,7 @@ def simulate_lineup_move_impact(
 
     actions: list[dict[str, Any]] = []
     best_rejected_delta: float | None = None
+    blocked_reasons: list[str] = []
     seen: set[tuple[tuple[str, str, str], ...]] = set()
 
     for bench in bench_rows:
@@ -399,6 +404,7 @@ def simulate_lineup_move_impact(
                 move_shape="direct_swap",
                 min_points_delta=min_points_delta,
                 best_rejected_delta=best_rejected_delta,
+                blocked_reasons=blocked_reasons,
             )
             if action:
                 key = _chain_key(action["chain"])
@@ -434,6 +440,7 @@ def simulate_lineup_move_impact(
                     move_shape="freeing_up_swap",
                     min_points_delta=min_points_delta,
                     best_rejected_delta=best_rejected_delta,
+                    blocked_reasons=blocked_reasons,
                 )
                 if action:
                     key = _chain_key(action["chain"])
@@ -450,9 +457,12 @@ def simulate_lineup_move_impact(
             "actions": actions,
             "no_action": None,
         }
+    reason = "No legal bench-to-active move improves projected points from the current snapshot."
+    if blocked_reasons and best_rejected_delta is None:
+        reason = "No safe lineup move is available: " + blocked_reasons[0]
     return _no_action_result(
         base_projection=base_projection,
-        reason="No legal bench-to-active move improves projected points from the current snapshot.",
+        reason=reason,
         best_rejected_delta=best_rejected_delta,
     )
 
@@ -531,7 +541,7 @@ def rank_matchup_improvement_actions(
 
     no_action = simulation.get("no_action") or {}
     reason = no_action.get("reason")
-    if not reason or not str(reason).startswith("Recommendation data incomplete"):
+    if not reason or str(reason).startswith("No legal bench-to-active move"):
         reason = "No lineup move clears the meaningful-gain threshold from this snapshot."
     return {
         "model_version": MODEL_VERSION,
@@ -589,7 +599,14 @@ def _evaluate_move_chain(
     move_shape: str,
     min_points_delta: float,
     best_rejected_delta: float | None,
+    blocked_reasons: list[str],
 ) -> tuple[dict[str, Any] | None, float | None]:
+    participant_blocker = _participant_blocker(chain, rows, snapshot)
+    if participant_blocker:
+        if participant_blocker not in blocked_reasons and len(blocked_reasons) < 5:
+            blocked_reasons.append(participant_blocker)
+        return None, best_rejected_delta
+
     moved_rows = _apply_chain(rows, chain)
     moved_snapshot = _with_roster_rows(snapshot, moved_rows)
     moved_projection = compute_projection(moved_snapshot, data_quality)
@@ -667,10 +684,11 @@ def _reason_chips(
         promoted_before = before_by_id.get(str(promoted.get("player_id")))
         demoted_before = before_by_id.get(str(demoted.get("player_id")))
         matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
+        period_start = _parse_date(matchup.get("start"))
         period_end = _parse_date(matchup.get("end"))
         if period_end and promoted_before and demoted_before:
-            promoted_games = _games_remaining(promoted_before, period_end)
-            demoted_games = _games_remaining(demoted_before, period_end)
+            promoted_games = _games_remaining(promoted_before, period_end, period_start)
+            demoted_games = _games_remaining(demoted_before, period_end, period_start)
             if promoted_games > demoted_games:
                 chips.append("more remaining games")
         if promoted_before and demoted_before and _row_fppg(promoted_before) > _row_fppg(demoted_before):
@@ -708,9 +726,10 @@ def _lineup_replacement_card(
         return None
 
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
+    period_start = _parse_date(matchup.get("start"))
     period_end = _parse_date(matchup.get("end"))
-    move_in = _player_card_summary(move_in_row, promoted, period_end)
-    move_out = _player_card_summary(move_out_row, demoted, period_end)
+    move_in = _player_card_summary(move_in_row, promoted, period_end, period_start)
+    move_out = _player_card_summary(move_out_row, demoted, period_end, period_start)
     points_delta = _number(action.get("points_delta")) or 0.0
     win_delta = _number(action.get("win_probability_delta")) or 0.0
     base_win = _number((base_projection or {}).get("win_probability"))
@@ -811,8 +830,9 @@ def _player_card_summary(
     row: dict[str, Any],
     step: dict[str, Any],
     period_end: date | None,
+    period_start: date | None = None,
 ) -> dict[str, Any]:
-    games = _games_remaining(row, period_end) if period_end else None
+    games = _games_remaining(row, period_end, period_start) if period_end else None
     return {
         "id": _player_id(row),
         "name": row.get("name") or step.get("player_name") or "Unknown player",
@@ -979,6 +999,70 @@ def _quality_reason(data_quality: dict[str, Any]) -> str:
         return str(reasons[0]) if reasons else "Required snapshot data is incomplete"
 
 
+def _lineup_simulation_preflight_reason(data_quality: dict[str, Any] | None) -> str | None:
+    if not isinstance(data_quality, dict):
+        return "Data quality is unavailable"
+    if data_quality.get("recommendations_ready") is False:
+        return _quality_reason(data_quality)
+    if "lineup_slots" not in data_quality and data_quality.get("lineup_recommendations_ready") is not True:
+        return "Lineup recommendation readiness is not explicitly trusted"
+    required_sections = ["matchup", "my_roster", "all_team_rosters", "opponent_roster", "fppg", "future_games", "eligibility"]
+    for key in required_sections:
+        section = data_quality.get(key) if isinstance(data_quality.get(key), dict) else None
+        if section and section.get("state") != "ok":
+            return str(section.get("reason") or f"{key} incomplete")
+    return None
+
+
+def _participant_blocker(
+    chain: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    snapshot: dict[str, Any],
+) -> str | None:
+    by_id = {_player_id(row): row for row in rows if isinstance(row, dict) and _player_id(row)}
+    matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
+    period_start = _parse_date(matchup.get("start"))
+    period_end = _parse_date(matchup.get("end"))
+
+    for step in chain:
+        row = by_id.get(str(step.get("player_id") or ""))
+        if not isinstance(row, dict):
+            return "proposal participant row is missing from the roster snapshot"
+        name = str(row.get("name") or row.get("id") or "unknown player")
+        if _is_protected_lineup_row(row):
+            return f"{name} is protected and cannot be used in a hot swap"
+        if not _has_trusted_slot_source(row):
+            return f"slot provenance is untrusted for {name}"
+        if period_end and not _has_proposal_future_game_provenance(row, period_end, period_start):
+            return f"future-game provenance is not trusted for {name}"
+    return None
+
+
+def _has_trusted_slot_source(row: dict[str, Any]) -> bool:
+    source = str(row.get("slot_source") or "").strip().casefold()
+    return bool(source) and source not in {"", "position_fallback", "unknown", "fallback"}
+
+
+def _has_proposal_future_game_provenance(
+    row: dict[str, Any],
+    period_end: date,
+    period_start: date | None,
+) -> bool:
+    status = str(row.get("future_games_status") or "").strip()
+    source = str(row.get("future_games_source") or "").strip()
+    if status in sandlot_future_games.FAILED_FUTURE_GAME_STATUSES:
+        return False
+    if source == sandlot_future_games.SCHEDULE_SOURCE:
+        if _is_pitcher_row(row):
+            return (
+                status == "ok"
+                and str(row.get("future_games_scope") or "") == "pitcher_probable_starts"
+                and _games_remaining(row, period_end, period_start) > 0
+            )
+        return status in sandlot_future_games.OK_FUTURE_GAME_STATUSES
+    return _games_remaining(row, period_end, period_start) > 0
+
+
 def _no_action_result(
     *,
     base_projection: dict[str, Any] | None,
@@ -1004,7 +1088,7 @@ def _active_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _games_remaining(row: dict[str, Any], period_end: date) -> int:
+def _games_remaining(row: dict[str, Any], period_end: date, period_start: date | None = None) -> int:
     if _is_unavailable(row):
         return 0
 
@@ -1015,6 +1099,8 @@ def _games_remaining(row: dict[str, Any], period_end: date) -> int:
             continue
         game_date = _parse_date(game.get("date"))
         if game_date is None or game_date > period_end:
+            continue
+        if period_start is not None and game_date < period_start:
             continue
         if is_pitcher and not _has_pitcher_specific_appearance(row, game):
             continue
@@ -1110,12 +1196,13 @@ def _team_projection(
     rows: list[dict[str, Any]],
     current_score: float,
     period_end: date,
+    period_start: date | None = None,
 ) -> tuple[float, float, int]:
     mean_delta = 0.0
     variance = 0.0
     games_remaining = 0
     for row in _active_rows(rows):
-        games = _games_remaining(row, period_end)
+        games = _games_remaining(row, period_end, period_start)
         fppg = _row_fppg(row)
         delta = fppg * games
         mean_delta += delta

@@ -454,11 +454,11 @@ def _matchup_recommendations(
     data: dict[str, Any],
     data_quality: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    """Same gating as sandlot_api._snapshot_payload."""
+    """Derive read-only matchup recommendations with proposal-scoped gates."""
     matchup = data.get("matchup")
     if not isinstance(matchup, dict) or not matchup:
         return None
-    if not _lineup_recommendations_ready(data_quality):
+    if isinstance(data_quality, dict) and data_quality.get("recommendations_ready") is False:
         return None
     return sandlot_matchup.rank_matchup_improvement_actions(data, data_quality)
 
@@ -476,7 +476,7 @@ def attention_items(data: dict[str, Any], recommendations: Any = _UNSET) -> list
     health = roster_health(roster)
     # Recommendations can be injected by tests, but the public queue entry
     # point still owns the final safety gate before action payloads appear.
-    allow_replacement = lineup_recommendations_ready
+    allow_replacement = isinstance(data_quality, dict) and data_quality.get("recommendations_ready") is True
     if recommendations is _UNSET:
         recommendations = _matchup_recommendations(data, data_quality)
     return build_queue(

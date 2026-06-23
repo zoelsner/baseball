@@ -408,6 +408,38 @@
   data-integrity recovery plus honest pause, not Hot Swaps readiness; accepted
   cheap fixes for stale object-path stat mapping and direct `fxpa/req`
   status-before-JSON handling.
+- 2026-06-22: Opened the focused Hot Swaps data-readiness loop on
+  `feature/hot-swaps-data-readiness`. Claude Opus xhigh reviewed the two
+  remaining blockers: future-game schedule provenance and trusted active-slot
+  provenance. Accepted plan changes: keep global future-game coverage as
+  diagnostics, gate emitted Hot Swap proposals by the specific participating
+  rows, implement hitter-ready future-game math first, keep pitchers blocked
+  unless explicit probable-start provenance exists, and require Fantrax-id DOM
+  slot proof for swap participants. Artifacts:
+  `docs/quality/hot-swaps-data-readiness-plan-2026-06-22.md`,
+  `docs/quality/second-opinion/hot-swaps-slices-1-2-implementation-2026-06-22.md`,
+  and
+  `docs/quality/second-opinion/hot-swaps-slices-1-2-implementation-2026-06-22-result.md`.
+- 2026-06-22: Implemented the local Hot Swaps data-readiness slice on
+  `feature/hot-swaps-data-readiness`. Added MLB schedule helpers in
+  `mlb_stats.py` for team-id resolution, schedule normalization, status/time
+  filtering, doubleheaders, and probable pitchers. Added
+  `sandlot_future_games.py` to enrich both my roster and all-team rosters
+  during refresh with provenance-backed future-game data: hitters receive
+  countable team games, while pitchers receive only explicit probable-start
+  games and keep team schedule context separate. Tightened
+  `sandlot_data_quality.py` so empty future-game arrays only pass when they
+  are schedule-backed and mapped, not when mapping/fetch failed. Updated
+  `sandlot_matchup.py` so projections honor the matchup lower date bound and
+  Hot Swap cards are proposal-participant gated: unrelated untrusted rows do
+  not block a trusted OUT/IN pair, but participant slot failures, failed
+  future-game provenance, protected rows, and pitchers without probable-start
+  provenance block the proposal. Hardened `sandlot_refresh.py` DOM diagnostics
+  with active-row before/after trusted counts and active DOM applications.
+  Verification: targeted backend suite passed (`73` tests), full Python suite
+  passed (`173` tests), `git diff --check` passed, and direct `esbuild`
+  rebuild passed. Production deploy, refresh, API, and browser verification
+  remain pending before the goal can be complete.
 
 ## Next Loop Phase
 

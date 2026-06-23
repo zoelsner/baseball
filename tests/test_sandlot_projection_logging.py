@@ -221,6 +221,12 @@ class ProjectionLoggingTests(unittest.TestCase):
         self.assertEqual(updated["slot_provenance"]["dom_slots_found"], 3)
         self.assertEqual(updated["slot_provenance"]["dom_slots_applied"], 1)
         self.assertEqual(updated["slot_provenance"]["dom_slots_conflicted"], 1)
+        self.assertEqual(updated["slot_provenance"]["active_rows_before"], 2)
+        self.assertEqual(updated["slot_provenance"]["active_trusted_before"], 0)
+        self.assertEqual(updated["slot_provenance"]["active_rows_after"], 2)
+        self.assertEqual(updated["slot_provenance"]["active_trusted_after"], 1)
+        self.assertEqual(updated["slot_provenance"]["active_dom_slots_applied"], 1)
+        self.assertEqual(updated["slot_provenance"]["active_untrusted_examples_after"], ["conflict"])
         self.assertEqual(updated["slot_provenance"]["raw_status"], "kept")
 
     def test_dom_slot_proof_failure_is_non_fatal_and_fail_closed(self):
@@ -244,6 +250,8 @@ class ProjectionLoggingTests(unittest.TestCase):
         self.assertEqual(updated["roster"]["rows"][0]["slot_source"], "position_fallback")
         self.assertEqual(updated.get("errors"), snapshot.get("errors"))
         self.assertEqual(updated["slot_provenance"]["dom_slots_applied"], 0)
+        self.assertEqual(updated["slot_provenance"]["active_rows_before"], 1)
+        self.assertEqual(updated["slot_provenance"]["active_trusted_after"], 0)
         self.assertIn("browser unavailable", updated["slot_provenance"]["dom_capture_error"])
 
     def test_completed_refresh_fills_actuals_for_prior_logs(self):

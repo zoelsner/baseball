@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import sandlot_future_games
+
 
 INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH", "INJ", "INJ RES", "MIN", "MINORS"}
 GENERIC_POSITIONS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "MIN", "MINORS", "HIT", "PIT", "ALL", "UTIL"}
@@ -166,9 +168,23 @@ def _future_games_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
     quality = _coverage_section("Future-game", rows, _has_future_games)
     game_count = sum(_future_game_count(row) for row in rows)
     quality["remaining_game_count"] = game_count
-    if quality.get("state") == "ok" and game_count <= 0:
+    status_counts: dict[str, int] = {}
+    failed_examples: list[str] = []
+    for row in rows:
+        status = _future_game_status(row)
+        if status:
+            status_counts[status] = status_counts.get(status, 0) + 1
+            if status in sandlot_future_games.FAILED_FUTURE_GAME_STATUSES and len(failed_examples) < 5:
+                failed_examples.append(str(row.get("name") or row.get("id") or "unknown"))
+    if status_counts:
+        quality["status_counts"] = status_counts
+    if failed_examples:
+        quality["failed_examples"] = failed_examples
+    if quality.get("state") == "ok" and game_count <= 0 and not _all_rows_schedule_backed(rows):
         quality["state"] = "missing"
         quality["reason"] = "No future games in snapshot"
+    elif quality.get("state") == "ok" and game_count <= 0:
+        quality["zero_remaining_games"] = True
     return quality
 
 
@@ -277,10 +293,17 @@ def _has_fppg(row: dict[str, Any]) -> bool:
 
 def _has_future_games(row: dict[str, Any]) -> bool:
     raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    status = _future_game_status(row)
+    if status in sandlot_future_games.FAILED_FUTURE_GAME_STATUSES:
+        return False
+    if _future_game_source(row) == sandlot_future_games.SCHEDULE_SOURCE:
+        return status in sandlot_future_games.OK_FUTURE_GAME_STATUSES
     if "future_games" in row:
-        return isinstance(row.get("future_games"), (dict, list))
+        value = row.get("future_games")
+        return isinstance(value, dict) or (isinstance(value, list) and len(value) > 0)
     if "future_games" in raw:
-        return isinstance(raw.get("future_games"), (dict, list))
+        value = raw.get("future_games")
+        return isinstance(value, dict) or (isinstance(value, list) and len(value) > 0)
     return False
 
 
@@ -292,6 +315,27 @@ def _future_game_count(row: dict[str, Any]) -> int:
     if isinstance(future_games, list):
         return len(future_games)
     return 0
+
+
+def _future_game_status(row: dict[str, Any]) -> str:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    return str(row.get("future_games_status") or raw.get("future_games_status") or "").strip()
+
+
+def _future_game_source(row: dict[str, Any]) -> str:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    return str(row.get("future_games_source") or raw.get("future_games_source") or "").strip()
+
+
+def _all_rows_schedule_backed(rows: list[dict[str, Any]]) -> bool:
+    if not rows:
+        return False
+    return all(
+        isinstance(row, dict)
+        and _future_game_source(row) == sandlot_future_games.SCHEDULE_SOURCE
+        and _future_game_status(row) in sandlot_future_games.OK_FUTURE_GAME_STATUSES
+        for row in rows
+    )
 
 
 def _has_position(row: dict[str, Any]) -> bool:
