@@ -1210,10 +1210,16 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
   const execution = card.execution || item.blockedAction || {};
   const proposal = item.proposal || card.proposal || {};
   const safetyChecks = Array.isArray(proposal.safety_checks) ? proposal.safety_checks : [];
+  const movability = card.movability || {};
   const benefitText = v2Signed(benefit.points, 1);
   const confidenceTone = String(confidence).toLowerCase() === 'high'
     ? { fg:V2.ok, bg:V2.okSoft }
     : String(confidence).toLowerCase() === 'light' || String(confidence).toLowerCase() === 'low'
+      ? { fg:V2.warn, bg:V2.warnSoft }
+      : { fg:V2.body, bg:V2.surface2 };
+  const movabilityTone = movability.state === 'movable'
+    ? { fg:V2.ok, bg:V2.okSoft }
+    : movability.state === 'locked'
       ? { fg:V2.warn, bg:V2.warnSoft }
       : { fg:V2.body, bg:V2.surface2 };
   return (
@@ -1259,12 +1265,18 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
         <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
           {card.provenance?.source || 'latest Fantrax snapshot'}
         </span>
+        {movability.label ? (
+          <span style={{ background:movabilityTone.bg, color:movabilityTone.fg, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
+            {movability.label}
+          </span>
+        ) : null}
       </div>
 
       <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
         <V2ReasonLine color={V2.ok} label="Why" text={card.reason || item.reason}/>
         <V2ReasonLine color={V2.accent} label="Outlook" text={card.short_term_outlook}/>
         <V2ReasonLine color={V2.warn} label="Risk" text={card.risk}/>
+        <V2ReasonLine color={movabilityTone.fg} label="Movability" text={movability.reason}/>
         <V2ReasonLine
           color={V2.muted}
           label="Source"
@@ -1349,28 +1361,35 @@ function V2ProposalSafetyChecklist({ proposal, checks }) {
         </div>
       </div>
       <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:5 }}>
-        {checks.map((check, index)=>(
-          <div key={check.key || `${check.label}-${index}`} style={{
-            display:'grid',
-            gridTemplateColumns:'12px 1fr',
-            gap:7,
-            alignItems:'start',
-            minHeight:24,
-          }}>
-            <span aria-hidden="true" style={{
-              width:8,
-              height:8,
-              borderRadius:999,
-              marginTop:5,
-              background:check.state === 'blocked' ? V2.warn : V2.ok,
-              boxShadow:`0 0 0 3px ${check.state === 'blocked' ? V2.warnSoft : V2.okSoft}`,
-            }}/>
-            <span style={{ minWidth:0, color:V2.body, fontSize:11.5, lineHeight:1.28, fontWeight:800, textWrap:'pretty' }}>
-              <span style={{ color:V2.ink }}>{check.label}</span>
-              {check.detail ? <span style={{ color:V2.muted, fontWeight:750 }}> - {check.detail}</span> : null}
-            </span>
-          </div>
-        ))}
+        {checks.map((check, index) => {
+          const tone = check.state === 'blocked'
+            ? { fg:V2.warn, bg:V2.warnSoft }
+            : check.state === 'warning'
+              ? { fg:V2.accent, bg:V2.accentSoft }
+              : { fg:V2.ok, bg:V2.okSoft };
+          return (
+            <div key={check.key || `${check.label}-${index}`} style={{
+              display:'grid',
+              gridTemplateColumns:'12px 1fr',
+              gap:7,
+              alignItems:'start',
+              minHeight:24,
+            }}>
+              <span aria-hidden="true" style={{
+                width:8,
+                height:8,
+                borderRadius:999,
+                marginTop:5,
+                background:tone.fg,
+                boxShadow:`0 0 0 3px ${tone.bg}`,
+              }}/>
+              <span style={{ minWidth:0, color:V2.body, fontSize:11.5, lineHeight:1.28, fontWeight:800, textWrap:'pretty' }}>
+                <span style={{ color:V2.ink }}>{check.label}</span>
+                {check.detail ? <span style={{ color:V2.muted, fontWeight:750 }}> - {check.detail}</span> : null}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
