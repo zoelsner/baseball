@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import math
-from datetime import date
+import hashlib
+import json
+from datetime import date, datetime, timezone
 from typing import Any
 
 import sandlot_future_games
@@ -728,7 +730,7 @@ def _lineup_replacement_card(
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
     period_start = _parse_date(matchup.get("start"))
     period_end = _parse_date(matchup.get("end"))
-    movability = _lineup_movability(move_in_row, move_out_row)
+    movability = _lineup_movability(move_in_row, move_out_row, now=_movability_now(snapshot))
     move_in = _player_card_summary(move_in_row, promoted, period_end, period_start)
     move_out = _player_card_summary(move_out_row, demoted, period_end, period_start)
     points_delta = _number(action.get("points_delta")) or 0.0
@@ -741,7 +743,15 @@ def _lineup_replacement_card(
 
     return {
         "type": "lineup_hot_swap",
-        "proposal": _lineup_swap_proposal(move_in, move_out, movability),
+        "proposal": _lineup_swap_proposal(
+            move_in,
+            move_out,
+            movability,
+            snapshot=snapshot,
+            chain=chain,
+            points_delta=points_delta,
+            win_delta=win_delta,
+        ),
         "move_in": move_in,
         "move_out": move_out,
         "movability": movability,
@@ -789,6 +799,11 @@ def _lineup_swap_proposal(
     move_in: dict[str, Any],
     move_out: dict[str, Any],
     movability: dict[str, Any] | None = None,
+    *,
+    snapshot: dict[str, Any] | None = None,
+    chain: list[dict[str, Any]] | None = None,
+    points_delta: float = 0.0,
+    win_delta: float = 0.0,
 ) -> dict[str, Any]:
     proposal_id = "lineup-swap:{out_id}:{in_id}:{slot}".format(
         out_id=move_out.get("id") or "unknown-out",
@@ -799,9 +814,20 @@ def _lineup_swap_proposal(
         "id": proposal_id,
         "type": "lineup_swap",
         "status": "blocked",
+        "executable": False,
         "writes_enabled": False,
         "confirmation_required": True,
         "summary": f"Move {move_out.get('name', 'OUT player')} out and {move_in.get('name', 'IN player')} in.",
+        "contract": _lineup_swap_contract(
+            proposal_id=proposal_id,
+            move_in=move_in,
+            move_out=move_out,
+            movability=movability,
+            snapshot=snapshot or {},
+            chain=chain or [],
+            points_delta=points_delta,
+            win_delta=win_delta,
+        ),
         "safety_checks": [
             {
                 "key": "trusted_slots",
@@ -832,63 +858,85 @@ def _lineup_swap_proposal(
     }
 
 
-def _lineup_movability(move_in_row: dict[str, Any], move_out_row: dict[str, Any]) -> dict[str, Any]:
+def _lineup_movability(
+    move_in_row: dict[str, Any],
+    move_out_row: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
     participants = {
-        "move_in": _player_movability(move_in_row),
-        "move_out": _player_movability(move_out_row),
+        "move_in": _player_movability(move_in_row, now=now),
+        "move_out": _player_movability(move_out_row, now=now),
     }
     locked = [item for item in participants.values() if item["state"] == "locked"]
     unknown = [item for item in participants.values() if item["state"] == "unknown"]
     if locked:
         names = _name_list(item.get("name") for item in locked)
+        detail = str(locked[0].get("reason") or "one or more participants are unavailable")
         return {
             "state": "locked",
             "label": "Locked",
-            "reason": f"Fantrax currently marks {names} unavailable for lineup changes.",
-            "source": "fantrax.raw.scorer.disableLineupChange",
+            "reason": f"Lineup movability is blocked for {names}: {detail}",
+            "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
             "participants": participants,
         }
     if unknown:
         names = _name_list(item.get("name") for item in unknown)
+        detail = str(unknown[0].get("reason") or "movability data is incomplete")
         return {
             "state": "unknown",
             "label": "Movability unknown",
-            "reason": f"Fantrax movability data is missing for {names}.",
-            "source": "fantrax.raw.scorer.disableLineupChange",
+            "reason": f"Lineup movability is uncertain for {names}: {detail}",
+            "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
             "participants": participants,
         }
     return {
         "state": "movable",
         "label": "Movable",
-        "reason": "Fantrax raw data does not mark either participant unavailable for lineup changes.",
-        "source": "fantrax.raw.scorer.disableLineupChange",
+        "reason": "Fantrax raw data and MLB game-start timing do not mark either participant unavailable.",
+        "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
         "participants": participants,
     }
 
 
-def _player_movability(row: dict[str, Any]) -> dict[str, Any]:
+def _player_movability(row: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     name = str(row.get("name") or row.get("id") or "unknown player")
-    value = _raw_disable_lineup_change(row)
-    if value is True:
+    now = now or datetime.now(timezone.utc)
+    provider_value = _raw_disable_lineup_change(row)
+    schedule = _schedule_movability(row, now)
+    if provider_value is True:
         state = "locked"
         label = "Locked"
         reason = f"{name} is marked unavailable for lineup changes by Fantrax."
-    elif value is False:
+    elif schedule["state"] == "locked":
+        state = "locked"
+        label = "Locked"
+        reason = schedule["reason"]
+    elif provider_value is False and schedule["state"] == "movable":
         state = "movable"
         label = "Movable"
-        reason = f"{name} is not marked unavailable for lineup changes by Fantrax."
+        reason = f"{name} is not marked unavailable by Fantrax and has no started MLB game in this snapshot."
     else:
         state = "unknown"
         label = "Movability unknown"
-        reason = f"{name} is missing a boolean Fantrax lineup-change flag."
+        if provider_value is None:
+            reason = f"{name} is missing a boolean Fantrax lineup-change flag."
+        else:
+            reason = schedule["reason"]
     return {
         "id": _player_id(row),
         "name": name,
         "state": state,
         "label": label,
         "reason": reason,
-        "source": "fantrax.raw.scorer.disableLineupChange",
-        "raw_value": value,
+        "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
+        "provider": {
+            "source": "fantrax.raw.scorer.disableLineupChange",
+            "raw_value": provider_value,
+        },
+        "schedule": schedule,
+        "raw_value": provider_value,
     }
 
 
@@ -897,6 +945,206 @@ def _raw_disable_lineup_change(row: dict[str, Any]) -> bool | None:
     scorer = raw.get("scorer") if isinstance(raw.get("scorer"), dict) else {}
     value = scorer.get("disableLineupChange")
     return value if isinstance(value, bool) else None
+
+
+def _lineup_swap_contract(
+    *,
+    proposal_id: str,
+    move_in: dict[str, Any],
+    move_out: dict[str, Any],
+    movability: dict[str, Any] | None,
+    snapshot: dict[str, Any],
+    chain: list[dict[str, Any]],
+    points_delta: float,
+    win_delta: float,
+) -> dict[str, Any]:
+    movability_state = str((movability or {}).get("state") or "unknown")
+    blocked_by = ["executor_ready"]
+    if movability_state != "movable":
+        blocked_by.insert(0, "fantrax_movability")
+    slot_moves = _contract_slot_moves(chain)
+
+    contract = {
+        "version": 1,
+        "proposal_id": proposal_id,
+        "type": "lineup_swap",
+        "executable": False,
+        "writes_enabled": False,
+        "action": "change_slot",
+        "snapshot_id": snapshot.get("snapshot_id") or snapshot.get("id"),
+        "league_id": snapshot.get("league_id"),
+        "team_id": snapshot.get("team_id"),
+        "move_out": _contract_player(move_out),
+        "move_in": _contract_player(move_in),
+        "target_slot": move_in.get("to_slot"),
+        "fallback_slot": move_out.get("to_slot"),
+        "slot_moves": slot_moves,
+        "requires_multi_step": len(slot_moves) > 2,
+        "projected_benefit": {
+            "points": round(points_delta, 1),
+            "win_probability_delta": round(win_delta, 4),
+        },
+        "movability": {
+            "state": movability_state,
+            "source": (movability or {}).get("source"),
+            "reason": (movability or {}).get("reason"),
+        },
+        "blocked_by": blocked_by,
+        "confirmation_copy": (
+            f"Confirm lineup-only swap: move {move_out.get('name', 'OUT player')} "
+            f"from {move_out.get('from_slot') or '?'} to {move_out.get('to_slot') or '?'} "
+            f"and move {move_in.get('name', 'IN player')} from {move_in.get('from_slot') or '?'} "
+            f"to {move_in.get('to_slot') or '?'}."
+        ),
+    }
+    contract["input_hash"] = _contract_input_hash(contract)
+    return contract
+
+
+def _contract_slot_moves(chain: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    moves: list[dict[str, Any]] = []
+    for index, step in enumerate(chain, start=1):
+        if not isinstance(step, dict):
+            continue
+        moves.append({
+            "order": index,
+            "player_id": step.get("player_id"),
+            "player_name": step.get("player_name"),
+            "from_slot": step.get("from_slot"),
+            "to_slot": step.get("to_slot"),
+        })
+    return moves
+
+
+def _contract_player(player: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": player.get("id"),
+        "name": player.get("name"),
+        "team": player.get("team"),
+        "positions": player.get("positions"),
+        "from_slot": player.get("from_slot"),
+        "to_slot": player.get("to_slot"),
+        "fppg": player.get("fppg"),
+        "remaining_games": player.get("remaining_games"),
+        "slot_source": player.get("slot_source"),
+    }
+
+
+def _contract_input_hash(contract: dict[str, Any]) -> str:
+    payload = {key: value for key, value in contract.items() if key != "input_hash"}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _movability_now(snapshot: dict[str, Any]) -> datetime:
+    for key in ("movability_now", "_movability_now", "_now"):
+        parsed = _parse_game_start(snapshot.get(key))
+        if parsed:
+            return parsed
+    return datetime.now(timezone.utc)
+
+
+def _schedule_movability(row: dict[str, Any], now: datetime) -> dict[str, Any]:
+    games = list(_iter_lock_games(row))
+    if not games:
+        return {
+            "state": "movable",
+            "source": "mlb_schedule.gameDate",
+            "reason": f"{row.get('name') or row.get('id') or 'player'} has no scheduled game rows that block movement.",
+            "game": None,
+        }
+
+    unknown_games: list[dict[str, Any]] = []
+    for game in games:
+        if not isinstance(game, dict):
+            continue
+        starts_at = _parse_game_start(_game_start_value(game))
+        if starts_at:
+            if starts_at <= now:
+                return {
+                    "state": "locked",
+                    "source": "mlb_schedule.gameDate",
+                    "reason": f"MLB schedule shows {_game_label(game)} already started.",
+                    "game": game,
+                    "started_at": starts_at.isoformat(),
+                }
+            continue
+
+        game_date = _parse_date(game.get("date") or game.get("officialDate") or game.get("gameDate"))
+        if game_date is None:
+            unknown_games.append(game)
+            continue
+        if game_date < now.date():
+            return {
+                "state": "locked",
+                "source": "mlb_schedule.date",
+                "reason": f"MLB schedule shows {_game_label(game)} is from an earlier date.",
+                "game": game,
+            }
+        if game_date == now.date():
+            unknown_games.append(game)
+
+    if unknown_games:
+        return {
+            "state": "unknown",
+            "source": "mlb_schedule.gameDate",
+            "reason": f"MLB schedule is missing a start time for {_game_label(unknown_games[0])}.",
+            "game": unknown_games[0],
+        }
+    return {
+        "state": "movable",
+        "source": "mlb_schedule.gameDate",
+        "reason": f"{row.get('name') or row.get('id') or 'player'} has no started MLB game in this snapshot.",
+        "game": None,
+    }
+
+
+def _iter_lock_games(row: dict[str, Any]):
+    seen: set[str] = set()
+    for source in (_future_games(row), row.get("team_future_games") if isinstance(row.get("team_future_games"), list) else []):
+        for game in source:
+            if not isinstance(game, dict):
+                continue
+            key = str(game.get("game_pk") or game.get("gamePk") or game.get("eventId") or game.get("gameDate") or game.get("date") or id(game))
+            if key in seen:
+                continue
+            seen.add(key)
+            yield game
+
+
+def _game_start_value(game: dict[str, Any]) -> Any:
+    for key in ("gameDate", "game_date", "game_datetime", "dateTime", "startTime", "start_time"):
+        value = game.get(key)
+        if value:
+            return value
+    return None
+
+
+def _parse_game_start(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _game_label(game: dict[str, Any]) -> str:
+    date_text = _text(game.get("date") or game.get("officialDate") or game.get("gameDate")) or "a scheduled game"
+    opponent = _text(game.get("opponent") or game.get("away") or game.get("home"))
+    if opponent:
+        return f"{date_text} vs {opponent}"
+    return date_text
 
 
 def _lineup_movability_safety_check(movability: dict[str, Any] | None) -> dict[str, Any]:
@@ -1526,6 +1774,8 @@ def _text(value: Any) -> str | None:
 
 
 def _parse_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
     if not value:

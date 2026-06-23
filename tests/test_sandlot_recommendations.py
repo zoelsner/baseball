@@ -4,7 +4,7 @@ import sandlot_matchup
 
 
 def future_game(day=14, **extra):
-    return {"date": f"2026-05-{day:02d}", **extra}
+    return {"date": f"2026-05-{day:02d}", "gameDate": f"2026-05-{day:02d}T23:05:00Z", **extra}
 
 
 def player(pid, *, slot, positions, fppg, games=1, name=None, slot_source=None, **extra):
@@ -21,10 +21,12 @@ def player(pid, *, slot, positions, fppg, games=1, name=None, slot_source=None, 
     }
 
 
-def snapshot(rows):
-    return {
+def snapshot(rows, **overrides):
+    data = {
+        "snapshot_id": "test-snapshot",
         "league_id": "league",
         "team_id": "me",
+        "movability_now": "2026-05-13T12:00:00Z",
         "matchup": {
             "my_score": 0,
             "opponent_score": 0,
@@ -37,6 +39,8 @@ def snapshot(rows):
             "opp": {"rows": [player("opp", slot="SS", positions="SS", fppg=1.0)]},
         },
     }
+    data.update(overrides)
+    return data
 
 
 def raw_lineup_change(value):
@@ -69,8 +73,22 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(card["execution"]["label"], "Propose swap")
         self.assertEqual(card["proposal"]["id"], "lineup-swap:weak1b:bench3b:3B")
         self.assertEqual(card["proposal"]["status"], "blocked")
+        self.assertFalse(card["proposal"]["executable"])
         self.assertFalse(card["proposal"]["writes_enabled"])
         self.assertTrue(card["proposal"]["confirmation_required"])
+        contract = card["proposal"]["contract"]
+        self.assertEqual(contract["snapshot_id"], "test-snapshot")
+        self.assertEqual(contract["move_out"]["id"], "weak1b")
+        self.assertEqual(contract["move_in"]["id"], "bench3b")
+        self.assertEqual(contract["target_slot"], "3B")
+        self.assertFalse(contract["executable"])
+        self.assertFalse(contract["writes_enabled"])
+        self.assertEqual(len(contract["input_hash"]), 64)
+        self.assertTrue(contract["requires_multi_step"])
+        self.assertEqual(
+            [(move["player_id"], move["from_slot"], move["to_slot"]) for move in contract["slot_moves"]],
+            [("corner", "3B", "1B"), ("bench3b", "BN", "3B"), ("weak1b", "1B", "BN")],
+        )
         self.assertEqual(card["movability"]["state"], "unknown")
         self.assertEqual(
             [check["state"] for check in card["proposal"]["safety_checks"]],
@@ -99,6 +117,7 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(card["proposal"]["safety_checks"][3]["key"], "fantrax_movability")
         self.assertEqual(card["proposal"]["safety_checks"][3]["state"], "blocked")
         self.assertEqual(card["proposal"]["status"], "blocked")
+        self.assertFalse(card["proposal"]["executable"])
         self.assertFalse(card["proposal"]["writes_enabled"])
         self.assertIn("unavailable for lineup changes", card["execution"]["reason"])
 
@@ -116,6 +135,67 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(card["proposal"]["safety_checks"][-1]["state"], "blocked")
         self.assertEqual(card["execution"]["state"], "blocked")
         self.assertIn("does not mark", card["execution"]["reason"])
+        self.assertEqual(card["proposal"]["contract"]["movability"]["state"], "movable")
+        self.assertEqual(card["proposal"]["contract"]["blocked_by"], ["executor_ready"])
+        self.assertFalse(card["proposal"]["contract"]["requires_multi_step"])
+        self.assertEqual(len(card["proposal"]["contract"]["slot_moves"]), 2)
+
+    def test_started_mlb_game_locks_even_when_provider_says_movable(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player(
+                "weak2b",
+                slot="2B",
+                positions="2B",
+                fppg=1.0,
+                raw=raw_lineup_change(False),
+                future_games=[future_game(14, gameDate="2026-05-14T10:00:00Z")],
+            ),
+            player(
+                "bench2b",
+                slot="BN",
+                positions="2B",
+                fppg=4.0,
+                raw=raw_lineup_change(False),
+                future_games=[future_game(14, gameDate="2026-05-14T23:05:00Z")],
+            ),
+        ], movability_now="2026-05-14T12:00:00Z"))
+
+        card = result["recommendations"][0]["replacement_card"]
+
+        self.assertEqual(card["movability"]["state"], "locked")
+        self.assertEqual(card["movability"]["participants"]["move_out"]["provider"]["raw_value"], False)
+        self.assertEqual(card["movability"]["participants"]["move_out"]["schedule"]["state"], "locked")
+        self.assertIn("already started", card["movability"]["participants"]["move_out"]["schedule"]["reason"])
+        self.assertEqual(card["proposal"]["safety_checks"][3]["state"], "blocked")
+        self.assertEqual(card["proposal"]["contract"]["blocked_by"], ["fantrax_movability", "executor_ready"])
+
+    def test_missing_mlb_game_start_is_unknown_when_provider_says_movable(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player(
+                "weak2b",
+                slot="2B",
+                positions="2B",
+                fppg=1.0,
+                raw=raw_lineup_change(False),
+                future_games=[future_game(14, gameDate=None)],
+            ),
+            player(
+                "bench2b",
+                slot="BN",
+                positions="2B",
+                fppg=4.0,
+                raw=raw_lineup_change(False),
+                future_games=[future_game(15)],
+            ),
+        ], movability_now="2026-05-14T12:00:00Z"))
+
+        card = result["recommendations"][0]["replacement_card"]
+
+        self.assertEqual(card["movability"]["state"], "unknown")
+        self.assertEqual(card["movability"]["participants"]["move_out"]["schedule"]["state"], "unknown")
+        self.assertIn("missing a start time", card["movability"]["participants"]["move_out"]["schedule"]["reason"])
+        self.assertEqual(card["proposal"]["safety_checks"][3]["state"], "warning")
+        self.assertEqual(card["proposal"]["contract"]["blocked_by"], ["fantrax_movability", "executor_ready"])
 
     def test_missing_movability_field_is_unknown_warning(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([

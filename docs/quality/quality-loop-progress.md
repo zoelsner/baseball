@@ -494,6 +494,28 @@
   those live rows emitted the same OUT/IN pair with `movability.state =
   locked`, `fantrax_movability = blocked`, `executor_ready = blocked`, and
   `writes_enabled = false`.
+- 2026-06-23: Squash-merged PR #86 into `main` as `627aa58` and verified the
+  deployed Railway app after the payload reached production. `/api/health`
+  reported healthy snapshot `221`; `/api/snapshot/latest` had 37 roster rows,
+  trusted lineup slots, and future-game coverage `40/40 ok`;
+  `/api/hot-swaps/latest` returned the TJ Friedl/Ildemaro Vargas proposal with
+  `movability.state = locked`, `fantrax_movability = blocked`, and
+  `writes_enabled = false`; production Today rendered the `Locked` hot-swap
+  card and blocked proposal action.
+- 2026-06-23: Started `feature/hot-swap-time-aware-contract`, the next
+  read-only safety slice before any executor work. The branch makes
+  movability conservative across both `raw.scorer.disableLineupChange` and MLB
+  schedule game-start timing, and adds a non-executable proposal contract with
+  stable OUT/IN players, ordered `slot_moves`, projected benefit, movability
+  state, blocked gates, confirmation copy, and deterministic `input_hash`.
+  `claude -p --model opus --effort xhigh` was attempted for the checkpoint,
+  but tenant policy blocked sending repo-derived implementation details to an
+  external service. Internal review caught and fixed two issues before commit:
+  multi-step "free up a slot" swaps must preserve the complete ordered chain,
+  and `_parse_date()` must handle `datetime` before `date`. Verification:
+  py_compile passed, focused recommendation/attention tests passed (`41`
+  tests), full Python suite passed (`179` tests), `git diff --check` passed,
+  and direct native `esbuild` rebuild passed with no bundle diff.
 
 ## Next Loop Phase
 

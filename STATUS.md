@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-23** (hot-swap movability gate in progress).
+> Last updated: **2026-06-23** (time-aware hot-swap proposal contract in progress).
 
 ## Where things stand
 
@@ -185,13 +185,34 @@
   `esbuild` rebuild passed, and a production-shaped local check against live
   snapshot `221` labeled the current TJ/Ildemaro proposal `locked` because
   both rows have `raw.scorer.disableLineupChange: true`.
+- **PR #86 merged + production verified:** [PR #86](https://github.com/zoelsner/baseball/pull/86)
+  was squash-merged into `main` as `627aa58`. Main checks passed, Railway
+  deployed the new payload, and direct production verification showed
+  `/api/hot-swaps/latest` returning the current TJ Friedl/Ildemaro Vargas
+  proposal with `movability.state = locked`, `fantrax_movability = blocked`,
+  `writes_enabled = false`, and the Today UI rendering `Locked`, `Fantrax
+  movability`, and `Propose swap blocked`.
+- **Time-aware hot-swap contract:** branch
+  `feature/hot-swap-time-aware-contract` adds the next read-only safety layer.
+  The proposal now carries a non-executable contract with stable OUT/IN
+  players, ordered slot moves for direct and multi-step chains, projected
+  benefit, movability state, blocked gates, confirmation copy, and input hash.
+  Movability is now conservative across Fantrax raw lock data plus MLB schedule
+  game-start timing: a started game locks the proposal even if Fantrax says the
+  row is movable, and a same-day game missing start time stays `unknown`.
+  Claude Opus xhigh review was blocked by tenant policy; the recorded internal
+  checkpoint fixed the multi-step contract gap and a datetime/date parser edge
+  case. Verification so far: focused recommendation/attention tests passed
+  (`41` tests), full Python suite passed (`179` tests), `git diff --check`
+  passed, and direct native `esbuild` rebuild passed with no bundle diff.
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 
-1. **Finish the movability proof** — merge the read-only movability gate, then
-   verify production shows the current TJ/Ildemaro proposal as `Locked` when
-   Fantrax raw data reports `disableLineupChange: true`. Next proof is a live
-   Fantrax DOM comparison for at least one locked and one movable row.
+1. **Finish the time-aware contract proof** — open/merge the read-only
+   proposal-contract branch, then verify production `/api/hot-swaps/latest`
+   includes `proposal.contract`, `proposal.executable = false`, complete
+   `slot_moves`, and conservative locked/unknown movability against the real
+   Railway app.
 2. **Wire the hot-swap proposal confirmation path** — keep `Propose swap`
    disabled until #63's executor safety can accept a lineup-only proposal with
    named OUT/IN players, trusted slot provenance, trusted movability, a
