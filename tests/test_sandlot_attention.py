@@ -518,11 +518,9 @@ class HotSwapRouteTests(unittest.TestCase):
             "taken_at": datetime.now(timezone.utc),
             "data": data,
         }
-        with mock.patch("sandlot_db.latest_successful_snapshot", return_value=row), \
-            mock.patch.object(sandlot_attention.sandlot_matchup, "rank_matchup_improvement_actions") as ranked:
+        with mock.patch("sandlot_db.latest_successful_snapshot", return_value=row):
             payload = latest_hot_swaps()
 
-        ranked.assert_not_called()
         self.assertEqual(payload["state"], "paused")
         self.assertFalse(payload["writes_enabled"])
         self.assertEqual(payload["proposals"], [])

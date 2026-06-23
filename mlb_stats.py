@@ -15,6 +15,8 @@ import logging
 import re
 import threading
 from datetime import date as _date
+from datetime import datetime as _datetime
+from datetime import timezone as _timezone
 from typing import Any
 
 import requests
@@ -32,13 +34,39 @@ _CACHE_LOCK = threading.Lock()
 
 _TEAM_ABBREV_ALIASES = {
     # Fantrax sometimes uses different abbreviations than MLB Stats API.
-    "WSH": "WSH", "WAS": "WSH",
-    "CHW": "CWS", "CWS": "CWS",
+    "WSH": "WSH", "WAS": "WSH", "WSN": "WSH",
+    "CHW": "CWS", "CWS": "CWS", "CHA": "CWS",
+    "CHC": "CHC", "CHN": "CHC",
     "KC":  "KC",  "KCR": "KC",
-    "SD":  "SD",  "SDP": "SD",
-    "SF":  "SF",  "SFG": "SF",
+    "LAA": "LAA", "ANA": "LAA",
+    "MIA": "MIA", "FLA": "MIA",
+    "SD":  "SD",  "SDP": "SD", "SDN": "SD",
+    "SF":  "SF",  "SFG": "SF", "SFN": "SF",
     "TB":  "TB",  "TBR": "TB",
+    "NYM": "NYM", "NYN": "NYM",
+    "NYY": "NYY", "NYA": "NYY",
     "ARI": "ARI", "AZ":  "ARI",
+}
+
+_STATIC_TEAM_IDS_BY_ABBREV = {
+    # Stable MLB Stats API team ids. Used as a fallback if /teams is
+    # unavailable during a refresh.
+    "ARI": 109, "ATL": 144, "BAL": 110, "BOS": 111, "CHC": 112,
+    "CIN": 113, "CLE": 114, "COL": 115, "CWS": 145, "DET": 116,
+    "HOU": 117, "KC": 118, "LAA": 108, "LAD": 119, "MIA": 146,
+    "MIL": 158, "MIN": 142, "NYM": 121, "NYY": 147, "OAK": 133,
+    "ATH": 133, "PHI": 143, "PIT": 134, "SD": 135, "SEA": 136,
+    "SF": 137, "STL": 138, "TB": 139, "TEX": 140, "TOR": 141,
+    "WSH": 120,
+}
+
+_EXCLUDED_SCHEDULE_STATES = {
+    "cancelled",
+    "canceled",
+    "final",
+    "game over",
+    "postponed",
+    "suspended",
 }
 
 
@@ -145,6 +173,82 @@ def _get_team_abbreviations(season: int) -> dict[int, str]:
             mapping = {}
         _TEAM_ABBREV_CACHE[season] = mapping
         return mapping
+
+
+def team_id_by_abbreviation(team_abbr: str | None, season: int | None = None) -> int | None:
+    """Resolve an MLB team abbreviation to the Stats API numeric team id.
+
+    Fantrax and MLB disagree on a few abbreviations, so callers should use this
+    instead of silently treating an unknown abbreviation as an empty schedule.
+    """
+    normalized = _normalize_team(team_abbr)
+    if not normalized:
+        return None
+    season = season or current_season()
+    try:
+        for team_id, abbrev in _get_team_abbreviations(season).items():
+            if _normalize_team(abbrev) == normalized:
+                return int(team_id)
+    except Exception as exc:
+        log.warning("MLB team id lookup failed for %s/%s: %s", team_abbr, season, exc)
+    return _STATIC_TEAM_IDS_BY_ABBREV.get(normalized)
+
+
+def fetch_team_schedule(
+    team_id: int,
+    start_date: _date | str,
+    end_date: _date | str,
+    *,
+    season: int | None = None,
+    now: _datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch remaining MLB games for one team in a date window.
+
+    The returned list is normalized and excludes games that have already
+    started by `now`, plus postponed/cancelled/suspended/final games.
+    """
+    start = _date_param(start_date)
+    end = _date_param(end_date)
+    url = f"{BASE_URL}/schedule"
+    params = {
+        "sportId": 1,
+        "teamId": int(team_id),
+        "startDate": start,
+        "endDate": end,
+        "hydrate": "probablePitcher",
+    }
+    resp = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT)
+    resp.raise_for_status()
+    year = season or _parse_date_only(start).year
+    return normalize_schedule_games(
+        resp.json(),
+        team_id=int(team_id),
+        team_abbrev=_get_team_abbreviations(year),
+        now=now,
+    )
+
+
+def normalize_schedule_games(
+    payload: dict[str, Any],
+    *,
+    team_id: int,
+    team_abbrev: dict[int, str] | None = None,
+    now: _datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Normalize MLB schedule payloads into projection-safe game rows."""
+    if now is None:
+        now = _datetime.now(_timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=_timezone.utc)
+
+    games: list[dict[str, Any]] = []
+    for date_entry in payload.get("dates") or []:
+        for game in date_entry.get("games") or []:
+            normalized = _normalize_schedule_game(game, team_id=team_id, team_abbrev=team_abbrev or {}, now=now)
+            if normalized:
+                games.append(normalized)
+    games.sort(key=lambda game: (game.get("gameDate") or "", game.get("game_pk") or 0))
+    return games
 
 
 def fetch_game_log(
@@ -386,6 +490,137 @@ def _pitching_fpts(ip: float, k: int, er: int, bb: int, h: int, win: bool, save:
         + (5.0 if win else 0.0) + (5.0 if save else 0.0),
         2,
     )
+
+
+def _normalize_schedule_game(
+    game: dict[str, Any],
+    *,
+    team_id: int,
+    team_abbrev: dict[int, str],
+    now: _datetime,
+) -> dict[str, Any] | None:
+    teams = game.get("teams") if isinstance(game.get("teams"), dict) else {}
+    home = teams.get("home") if isinstance(teams.get("home"), dict) else {}
+    away = teams.get("away") if isinstance(teams.get("away"), dict) else {}
+    home_team = home.get("team") if isinstance(home.get("team"), dict) else {}
+    away_team = away.get("team") if isinstance(away.get("team"), dict) else {}
+    home_id = _to_int(home_team.get("id"))
+    away_id = _to_int(away_team.get("id"))
+    if team_id not in {home_id, away_id}:
+        return None
+
+    status = game.get("status") if isinstance(game.get("status"), dict) else {}
+    detailed_state = str(status.get("detailedState") or status.get("abstractGameState") or "").strip()
+    if _schedule_state_excluded(detailed_state):
+        return None
+
+    game_dt = _parse_mlb_datetime(game.get("gameDate"))
+    if game_dt is not None and game_dt <= now:
+        return None
+
+    is_home = team_id == home_id
+    opponent_id = away_id if is_home else home_id
+    home_abbr = _team_abbrev(home_id, home_team, team_abbrev)
+    away_abbr = _team_abbrev(away_id, away_team, team_abbrev)
+    home_probable = _probable_pitcher(home.get("probablePitcher"))
+    away_probable = _probable_pitcher(away.get("probablePitcher"))
+    team_probable = home_probable if is_home else away_probable
+
+    normalized: dict[str, Any] = {
+        "date": game.get("officialDate") or (game_dt.date().isoformat() if game_dt else None),
+        "gameDate": _format_mlb_datetime(game_dt) if game_dt else game.get("gameDate"),
+        "game_pk": game.get("gamePk"),
+        "status": detailed_state or None,
+        "home": is_home,
+        "opponent": _team_abbrev(opponent_id, away_team if is_home else home_team, team_abbrev),
+        "home_team_id": home_id or None,
+        "away_team_id": away_id or None,
+        "home_team": home_abbr,
+        "away_team": away_abbr,
+        "doubleheader": game.get("doubleHeader") or None,
+        "source": "mlb_schedule",
+    }
+    if home_probable:
+        normalized["home_probable_pitcher"] = home_probable
+    if away_probable:
+        normalized["away_probable_pitcher"] = away_probable
+    if team_probable:
+        normalized["probable_pitcher"] = team_probable
+    return {key: value for key, value in normalized.items() if value not in (None, "")}
+
+
+def _schedule_state_excluded(state: str) -> bool:
+    state_cf = state.strip().casefold()
+    if not state_cf:
+        return False
+    return any(excluded in state_cf for excluded in _EXCLUDED_SCHEDULE_STATES)
+
+
+def _team_abbrev(team_id: int, team: dict[str, Any], team_abbrev: dict[int, str]) -> str:
+    return (
+        team_abbrev.get(int(team_id))
+        or team.get("abbreviation")
+        or team.get("teamCode")
+        or team.get("fileCode")
+        or team.get("name")
+        or str(team_id)
+    )
+
+
+def _probable_pitcher(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    pitcher = {
+        "id": value.get("id"),
+        "name": value.get("fullName") or value.get("firstLastName") or value.get("name"),
+    }
+    pitcher = {key: val for key, val in pitcher.items() if val not in (None, "")}
+    return pitcher or None
+
+
+def _date_param(value: _date | str) -> str:
+    if isinstance(value, _date):
+        return value.isoformat()
+    parsed = _parse_date_only(value)
+    return parsed.isoformat()
+
+
+def _parse_date_only(value: Any) -> _date:
+    if isinstance(value, _date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("date value is required")
+    if "T" in text:
+        dt = _parse_mlb_datetime(text)
+        if dt is None:
+            raise ValueError(f"invalid date value: {value!r}")
+        return dt.date()
+    return _date.fromisoformat(text[:10])
+
+
+def _parse_mlb_datetime(value: Any) -> _datetime | None:
+    if not value:
+        return None
+    if isinstance(value, _datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            dt = _datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_timezone.utc)
+    return dt.astimezone(_timezone.utc)
+
+
+def _format_mlb_datetime(value: _datetime) -> str:
+    return value.astimezone(_timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _to_int(v: Any) -> int:

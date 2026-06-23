@@ -128,14 +128,9 @@ test.describe('Today — Attention Queue', () => {
     await waitForAppMount(page);
     await skipIfAttentionQueueNotDeployed(page);
 
-    const expectBranchHotSwap = process.env.SANDLOT_EXPECT_SLOT_GATE === '1';
-    if (expectBranchHotSwap) {
-      await expect(page.getByText('1 hot swap')).toBeVisible();
-      await expect(page.getByText('Best lineup-only move from the latest matchup simulation.')).toBeVisible();
-      await expect(page.getByText('1 urgent · 1 check · 1 review')).toBeVisible();
-    } else {
-      await expect(page.getByText('1 urgent · 1 check · 2 review')).toBeVisible();
-    }
+    await expect(page.getByText('1 hot swap')).toBeVisible();
+    await expect(page.getByText('Best lineup-only move from the latest matchup simulation.')).toBeVisible();
+    await expect(page.getByText('1 urgent · 1 check · 1 review')).toBeVisible();
     await expect(page.getByText('Day-to-day on OF. Inspect replacement risk before lock.')).toBeVisible();
     await expect(page.getByText('No projected output. Confirm the active slot before leaving this player in.')).toBeVisible();
 
@@ -147,44 +142,35 @@ test.describe('Today — Attention Queue', () => {
     const judge = await yOf(page.getByRole('button', { name: /Aaron Judge/ }));
     const webb = await yOf(page.getByRole('button', { name: /Logan Webb/ }));
     const cold = await yOf(page.getByRole('button', { name: /Cold Corner Review Output/ }));
-    const replacement = await yOf(expectBranchHotSwap
-      ? page.getByText('Bench Bat for Cold Corner')
-      : page.getByText(/Review lineup move|Bench Bat for Cold Corner/)
-    );
+    const replacement = await yOf(page.getByText('Bench Bat for Cold Corner'));
 
-    if (expectBranchHotSwap) {
-      expect(replacement).toBeLessThan(judge);
-    } else {
-      expect(replacement).toBeGreaterThan(cold);
-    }
+    expect(replacement).toBeLessThan(judge);
     expect(webb).toBeGreaterThan(judge);
     expect(cold).toBeGreaterThan(webb);
 
-    if (expectBranchHotSwap) {
-      await expect(page.getByText('Bench Bat for Cold Corner')).toBeVisible();
-      await expect(page.getByText('OUT', { exact: true })).toBeVisible();
-      await expect(page.getByText('IN', { exact: true })).toBeVisible();
-      await expect(page.getByText('+2.4')).toBeVisible();
-      await expect(page.getByText('high confidence', { exact: true })).toBeVisible();
-      await expect(page.getByText('medium risk', { exact: true })).toBeVisible();
-      await expect(page.getByText('latest Fantrax snapshot', { exact: true })).toBeVisible();
-      const queueSection = page.locator('section').filter({ hasText: 'Bench Bat for Cold Corner' });
-      await expect(queueSection.getByText('Proposal safety', { exact: true })).toBeVisible();
-      await expect(queueSection.getByText('Trusted slot data', { exact: true })).toBeVisible();
-      await expect(queueSection.getByText('Lineup-only move', { exact: true })).toBeVisible();
-      await expect(queueSection.getByText('Protected players excluded', { exact: true })).toBeVisible();
-      await expect(queueSection.getByText('Execution safety', { exact: true })).toBeVisible();
-      await expect(queueSection.getByRole('button', { name: /Propose swap blocked/i })).toBeDisabled();
-      await expect(queueSection.getByRole('button', { name: /Ask Skipper/i })).toBeVisible();
-      await expect(queueSection.getByRole('button', { name: /Deep research/i })).toBeVisible();
+    await expect(page.getByText('Bench Bat for Cold Corner')).toBeVisible();
+    await expect(page.getByText('OUT', { exact: true })).toBeVisible();
+    await expect(page.getByText('IN', { exact: true })).toBeVisible();
+    await expect(page.getByText('+2.4')).toBeVisible();
+    await expect(page.getByText('high confidence', { exact: true })).toBeVisible();
+    await expect(page.getByText('medium risk', { exact: true })).toBeVisible();
+    await expect(page.getByText('latest Fantrax snapshot', { exact: true })).toBeVisible();
+    const queueSection = page.locator('section').filter({ hasText: 'Bench Bat for Cold Corner' });
+    await expect(queueSection.getByText('Proposal safety', { exact: true })).toBeVisible();
+    await expect(queueSection.getByText('Trusted slot data', { exact: true })).toBeVisible();
+    await expect(queueSection.getByText('Lineup-only move', { exact: true })).toBeVisible();
+    await expect(queueSection.getByText('Protected players excluded', { exact: true })).toBeVisible();
+    await expect(queueSection.getByText('Execution safety', { exact: true })).toBeVisible();
+    await expect(queueSection.getByRole('button', { name: /Propose swap blocked/i })).toBeDisabled();
+    await expect(queueSection.getByRole('button', { name: /Ask Skipper/i })).toBeVisible();
+    await expect(queueSection.getByRole('button', { name: /Deep research/i })).toBeVisible();
 
-      await queueSection.getByRole('button', { name: /Ask Skipper/i }).click();
-      await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Pressure-test this lineup-only hot swap/);
-      await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Move IN: Bench Bat/);
-      await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Move OUT: Cold Corner/);
-      await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/lineup-swap:corner:bench-bat:UT/);
-      await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/writes enabled: no/);
-    }
+    await queueSection.getByRole('button', { name: /Ask Skipper/i }).click();
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Pressure-test this lineup-only hot swap/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Move IN: Bench Bat/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Move OUT: Cold Corner/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/lineup-swap:corner:bench-bat:UT/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/writes enabled: no/);
   });
 
   test('shows a clear empty state when the snapshot has no queue items', async ({ page }) => {
@@ -208,10 +194,8 @@ test.describe('Today — Attention Queue', () => {
     await waitForAppMount(page);
     await skipIfAttentionQueueNotDeployed(page);
 
-    if (process.env.SANDLOT_EXPECT_SLOT_GATE === '1') {
-      await expect(page.getByText('No hot swaps')).toBeVisible();
-      await expect(page.getByText('No lineup-only move clears the meaningful-gain threshold right now.')).toBeVisible();
-    }
+    await expect(page.getByText('No hot swaps')).toBeVisible();
+    await expect(page.getByText('No lineup-only move clears the meaningful-gain threshold right now.')).toBeVisible();
     await expect(page.getByText('No current issues')).toBeVisible();
     await expect(page.getByText('No injury, lineup, output, or replacement issue needs action in the current snapshot.')).toBeVisible();
   });

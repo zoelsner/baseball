@@ -92,6 +92,36 @@ class SnapshotDataQualityTests(unittest.TestCase):
         self.assertEqual(quality["future_games"]["remaining_game_count"], 0)
         self.assertFalse(quality["projection_ready"])
 
+    def test_schedule_backed_empty_future_games_are_real_coverage(self):
+        snapshot = good_snapshot()
+        for row in [snapshot["roster"]["rows"][0], snapshot["all_team_rosters"]["opp"]["rows"][0]]:
+            row["future_games"] = []
+            row["future_games_source"] = "mlb_schedule"
+            row["future_games_status"] = "ok"
+            row["future_games_scope"] = "team_games"
+
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+        self.assertEqual(quality["future_games"]["state"], "ok")
+        self.assertEqual(quality["future_games"]["covered_players"], 2)
+        self.assertEqual(quality["future_games"]["remaining_game_count"], 0)
+        self.assertTrue(quality["future_games"]["zero_remaining_games"])
+
+    def test_failed_schedule_mapping_does_not_count_as_future_game_coverage(self):
+        snapshot = good_snapshot()
+        for row in [snapshot["roster"]["rows"][0], snapshot["all_team_rosters"]["opp"]["rows"][0]]:
+            row["future_games"] = []
+            row["future_games_source"] = "mlb_schedule"
+            row["future_games_status"] = "unresolved_team"
+            row["future_games_reason"] = "could not resolve Fantrax team abbreviation XXX"
+
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+        self.assertEqual(quality["future_games"]["state"], "missing")
+        self.assertEqual(quality["future_games"]["covered_players"], 0)
+        self.assertEqual(quality["future_games"]["status_counts"], {"unresolved_team": 2})
+        self.assertFalse(quality["projection_ready"])
+
     def test_missing_fppg_marks_projection_not_ready(self):
         snapshot = good_snapshot()
         snapshot["roster"]["rows"][0].pop("fppg")

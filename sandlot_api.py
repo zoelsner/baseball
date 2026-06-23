@@ -594,9 +594,10 @@ def _hot_swap_payload(row: dict[str, Any]) -> dict[str, Any]:
         "state": state,
         "writes_enabled": False,
         "proposals": proposals,
-        "paused_reason": None if lineup_ready else sandlot_data_quality.short_reason(data_quality, purpose="lineup"),
+        "paused_reason": None if (proposals or lineup_ready) else sandlot_data_quality.short_reason(data_quality, purpose="lineup"),
         "data_quality": {
             "lineup_recommendations_ready": lineup_ready,
+            "proposal_scoped_ready": bool(proposals),
             "lineup_slots": data_quality.get("lineup_slots"),
             "lineup_recommendation_reasons": data_quality.get("lineup_recommendation_reasons") or [],
         },

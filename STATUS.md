@@ -134,10 +134,46 @@
   plus honest pause, not Hot Swaps enablement.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.
+- **Hot Swaps data-readiness loop:** branch `feature/hot-swaps-data-readiness`
+  is scoped to the two production blockers still pausing Hot Swaps: future-game
+  schedule provenance and trusted active-slot provenance. Claude Opus xhigh
+  reviewed the focused plan and pushed one important architecture change:
+  global future-game coverage should be diagnostic, while actual Hot Swap
+  readiness should be proposal-participant scoped. The accepted plan is
+  hitter-ready first, pitcher-safe by construction, and read-only throughout:
+  pitchers cannot consume hitter team-game counts, and pitcher swap proposals
+  stay blocked unless explicit probable-start provenance exists. Local
+  implementation progress on this branch now adds MLB schedule/team-id
+  normalization, refresh-time schedule enrichment for my roster and opponent
+  rosters, provenance-aware future-game quality, lower-bound projection
+  counting, proposal-participant hot-swap gates, and active-row DOM slot proof
+  diagnostics. Verification so far: targeted backend tests passed (`73`
+  tests), full Python suite passed (`173` tests), `git diff --check` passed,
+  and direct `esbuild` rebuild passed. Production deploy/refresh/browser
+  verification is still pending.
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 
-1. **Finish #67 real-slot proof** — with valid local Fantrax cookies, a saved
+1. **Unpause read-only Hot Swaps safely** — implement MLB schedule enrichment
+   with row-level provenance, proposal-scoped future-game gating, hitter-first
+   readiness, pitcher-safe projection semantics, and narrowed pause reasons.
+   Then harden the existing read-only Fantrax DOM slot proof so active
+   swap-participating rows require trusted slot provenance before a proposal
+   can emit. Local code and tests for this slice are in place; next proof is
+   PR #84 CI and then a real Railway refresh showing schedule provenance and
+   slot diagnostics on the production snapshot. The first PR #84 Railway
+   Playwright run exposed a stale production-smoke assertion: production now
+   renders the seeded Hot Swaps card in its own section, while the test still
+   expected that replacement to count as a second generic Attention Queue
+   review item when `SANDLOT_EXPECT_SLOT_GATE` was unset. The spec now asserts
+   the current split behavior for both Railway and local runs. Local evidence:
+   `git diff --check` passed and `.venv/bin/python -m unittest
+   tests.test_sandlot_attention` passed (`26` tests). Local Playwright remains
+   blocked by this shell having no `node` binary, so GitHub Actions provided
+   the browser proof: PR #84 commit `09fe527` passed CI run `147` (frontend
+   build plus Python import/unit suite) and Playwright run `171` (Railway
+   production E2E plus local frontend E2E).
+2. **Finish #67 real-slot proof** — with valid local Fantrax cookies, a saved
    raw `getTeamRosterInfo` payload, or a saved roster-page HTML file plus
    matching snapshot, refresh/read-only inspect `slot_source` coverage from raw
    `statusId`/slot fields and/or `dom.lineup-btn` slots. If active lineup slots
@@ -145,13 +181,13 @@
    `--capture-roster-dom`; if that proves trusted active slots, integrate the
    read-only `lineup-btn` DOM slot parser into the scrape. Keep recommendation
    gates fail-closed until this is proven.
-2. **Wire the hot-swap proposal confirmation path** — keep `Propose swap`
+3. **Wire the hot-swap proposal confirmation path** — keep `Propose swap`
    disabled until #63's executor safety can accept a lineup-only proposal with
    named OUT/IN players, slot provenance proof, and Zach confirmation.
-3. **Rework #63's Selenium flows** against the DOM map on the PR. Add the hard guard: refuse `drop_player` for `Min`/IL-slot players. Cloud-friendly to write; not to test.
-4. **Re-run write scenarios (3/5/6/7b) locally, headful, with Zach watching.** Judge is the real IL-move target. Local-only — needs Mac + Fantrax creds.
-5. **Set Railway tokens**, verify 503→401 behavior by curl.
-6. **Merge #63, wire Zo** — phase 1 vocabulary only (`move_to_il`, `change_slot`). One real end-to-end loop (queue → Telegram → yes → executed → `action_logs` row) closes #66.
+4. **Rework #63's Selenium flows** against the DOM map on the PR. Add the hard guard: refuse `drop_player` for `Min`/IL-slot players. Cloud-friendly to write; not to test.
+5. **Re-run write scenarios (3/5/6/7b) locally, headful, with Zach watching.** Judge is the real IL-move target. Local-only — needs Mac + Fantrax creds.
+6. **Set Railway tokens**, verify 503→401 behavior by curl.
+7. **Merge #63, wire Zo** — phase 1 vocabulary only (`move_to_il`, `change_slot`). One real end-to-end loop (queue → Telegram → yes → executed → `action_logs` row) closes #66.
 
 ## Safety rules (non-negotiable — full text on [#66](https://github.com/zoelsner/baseball/issues/66#issuecomment-4695871271))
 

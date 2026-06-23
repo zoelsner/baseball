@@ -167,6 +167,49 @@ class MatchupProjectionTests(unittest.TestCase):
         self.assertEqual(projection["my_remaining_games"], 1)
         self.assertEqual(projection["opp_remaining_games"], 0)
 
+    def test_excludes_games_before_matchup_window_start(self):
+        snapshot = {
+            "matchup": {
+                "my_score": 0,
+                "opponent_score": 0,
+                "opponent_team_id": "opp",
+                "start": "2026-05-15",
+                "end": "2026-05-20",
+                "complete": False,
+            },
+            "roster": {
+                "rows": [
+                    {
+                        "id": "mine-hitter",
+                        "slot": "OF",
+                        "positions": "OF",
+                        "fppg": 2.0,
+                        "future_games": [future_game(14), future_game(15), future_game(16)],
+                    },
+                ],
+            },
+            "all_team_rosters": {
+                "opp": {
+                    "rows": [
+                        {
+                            "id": "opp-hitter",
+                            "slot": "SS",
+                            "positions": "SS",
+                            "fppg": 1.0,
+                            "future_games": [future_game(14), future_game(16)],
+                        },
+                    ],
+                },
+            },
+        }
+
+        projection = sandlot_matchup.compute_projection(snapshot)
+
+        self.assertEqual(projection["projected_my"], 4.0)
+        self.assertEqual(projection["projected_opp"], 1.0)
+        self.assertEqual(projection["my_remaining_games"], 2)
+        self.assertEqual(projection["opp_remaining_games"], 1)
+
     def test_returns_completed_projection_without_future_game_requirements(self):
         projection = sandlot_matchup.compute_projection({
             "matchup": {

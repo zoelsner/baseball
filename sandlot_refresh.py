@@ -20,6 +20,7 @@ import fantrax_data
 import fantrax_dom
 import sandlot_data_quality
 import sandlot_db
+import sandlot_future_games
 import sandlot_matchup
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ def _run_refresh_unlocked(source: str, started: float) -> RefreshResult:
         team_id = os.environ["FANTRAX_TEAM_ID"]
         session, cookies, cookie_source = _session_from_available_cookies()
         snapshot = fantrax_data.collect_all(session, league_id, team_id)
+        snapshot = sandlot_future_games.enrich_snapshot_future_games(snapshot)
         snapshot = _maybe_apply_dom_slot_proof(snapshot, cookies, league_id, team_id)
         duration_ms = int((time.perf_counter() - started) * 1000)
         section_errors = [str(e) for e in (snapshot.get("errors") or [])]
@@ -208,6 +210,11 @@ def _maybe_apply_dom_slot_proof(
         updated["slot_provenance"] = metadata
         return updated
 
+    before_summary = _slot_provenance_summary(roster)
+    metadata["active_rows_before"] = before_summary["active_rows"]
+    metadata["active_trusted_before"] = before_summary["active_trusted"]
+    metadata["active_untrusted_examples_before"] = before_summary["active_untrusted_examples"]
+
     try:
         wait_seconds = float(os.environ.get("SANDLOT_ROSTER_DOM_WAIT_SECONDS", "20"))
         html = fantrax_dom.capture_roster_html(
@@ -222,17 +229,38 @@ def _maybe_apply_dom_slot_proof(
         before = _slot_source_map(roster)
         enriched_roster = fantrax_data.apply_trusted_slot_overrides(roster, slot_overrides)
         after = _slot_source_map(enriched_roster)
+        after_summary = _slot_provenance_summary(enriched_roster)
         updated["roster"] = enriched_roster
         metadata["dom_slots_found"] = len(slot_overrides)
         metadata["dom_slots_conflicted"] = sum(1 for value in slot_overrides.values() if value.get("conflicts"))
+        metadata["dom_slots_matched_roster_rows"] = sum(1 for player_id in slot_overrides if str(player_id) in before)
+        metadata["dom_slots_unknown_player_ids"] = [
+            str(player_id)
+            for player_id in slot_overrides
+            if str(player_id) not in before
+        ][:5]
         metadata["dom_slots_applied"] = sum(
             1
             for player_id, current in after.items()
             if current.get("slot_source") == "dom.lineup-btn" and before.get(player_id) != current
         )
+        metadata["active_rows_after"] = after_summary["active_rows"]
+        metadata["active_trusted_after"] = after_summary["active_trusted"]
+        metadata["active_untrusted_examples_after"] = after_summary["active_untrusted_examples"]
+        metadata["active_dom_slots_applied"] = sum(
+            1
+            for row in enriched_roster.get("rows") or []
+            if isinstance(row, dict)
+            and _is_active_slot(row.get("slot"))
+            and row.get("slot_source") == "dom.lineup-btn"
+            and before.get(str(row.get("id") or "")) != after.get(str(row.get("id") or ""))
+        )
     except Exception as exc:
         metadata["dom_capture_error"] = str(exc)
         log.warning("Read-only Fantrax roster DOM slot proof failed: %s", exc)
+        metadata["active_rows_after"] = before_summary["active_rows"]
+        metadata["active_trusted_after"] = before_summary["active_trusted"]
+        metadata["active_untrusted_examples_after"] = before_summary["active_untrusted_examples"]
 
     updated["slot_provenance"] = metadata
     return updated
@@ -247,6 +275,34 @@ def _slot_source_map(roster: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for row in roster.get("rows") or []
         if isinstance(row, dict) and row.get("id") is not None
     }
+
+
+def _slot_provenance_summary(roster: dict[str, Any]) -> dict[str, Any]:
+    active_rows = [
+        row
+        for row in roster.get("rows") or []
+        if isinstance(row, dict) and _is_active_slot(row.get("slot"))
+    ]
+    trusted = [row for row in active_rows if _has_trusted_slot_source(row)]
+    untrusted = [row for row in active_rows if not _has_trusted_slot_source(row)]
+    return {
+        "active_rows": len(active_rows),
+        "active_trusted": len(trusted),
+        "active_untrusted_examples": [
+            str(row.get("name") or row.get("id") or "unknown")
+            for row in untrusted[:5]
+        ],
+    }
+
+
+def _is_active_slot(value: Any) -> bool:
+    slot = str(value or "").strip().upper()
+    return slot not in sandlot_data_quality.INACTIVE_SLOTS
+
+
+def _has_trusted_slot_source(row: dict[str, Any]) -> bool:
+    source = str(row.get("slot_source") or "").strip().casefold()
+    return bool(source) and source not in sandlot_data_quality.UNTRUSTED_SLOT_SOURCES
 
 
 def _session_from_available_cookies() -> tuple[requests.Session, list[dict[str, Any]] | None, str]:
