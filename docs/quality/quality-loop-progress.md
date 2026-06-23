@@ -516,6 +516,18 @@
   py_compile passed, focused recommendation/attention tests passed (`41`
   tests), full Python suite passed (`179` tests), `git diff --check` passed,
   and direct native `esbuild` rebuild passed with no bundle diff.
+- 2026-06-23: PR #88 passed GitHub checks (`Local frontend E2E`, `E2E against
+  Railway`, `Python import smoke`, and `Frontend build`) and was squash-merged
+  into `main` as `fcdc1e2`. Production deployed the new payload. Direct
+  Railway API verification on snapshot `221` showed `/api/hot-swaps/latest`
+  returning `proposal.contract`, `proposal.executable = false`,
+  `writes_enabled = false`, `requires_multi_step = true`, `movability.state =
+  locked`, and the complete ordered slot chain: Ezequiel Duran `UT -> OF`,
+  Ildemaro Vargas `RES -> UT`, and TJ Friedl `OF -> RES`. Browser verification
+  on the real Railway URL showed the locked Ildemaro Vargas for TJ Friedl card,
+  Fantrax movability safety row, blocked proposal action, Ask Skipper, Deep
+  research, no `first snapshot was empty`, no `Waiting for roster data`, and
+  no console errors.
 
 ## Next Loop Phase
 

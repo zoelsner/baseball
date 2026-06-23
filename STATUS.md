@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-23** (time-aware hot-swap proposal contract in progress).
+> Last updated: **2026-06-23** (time-aware hot-swap proposal contract production verified).
 
 ## Where things stand
 
@@ -192,8 +192,9 @@
   proposal with `movability.state = locked`, `fantrax_movability = blocked`,
   `writes_enabled = false`, and the Today UI rendering `Locked`, `Fantrax
   movability`, and `Propose swap blocked`.
-- **Time-aware hot-swap contract:** branch
-  `feature/hot-swap-time-aware-contract` adds the next read-only safety layer.
+- **Time-aware hot-swap contract production verified:** [PR #88](https://github.com/zoelsner/baseball/pull/88)
+  was squash-merged into `main` as `fcdc1e2`. This added the next read-only
+  safety layer.
   The proposal now carries a non-executable contract with stable OUT/IN
   players, ordered slot moves for direct and multi-step chains, projected
   benefit, movability state, blocked gates, confirmation copy, and input hash.
@@ -202,28 +203,30 @@
   row is movable, and a same-day game missing start time stays `unknown`.
   Claude Opus xhigh review was blocked by tenant policy; the recorded internal
   checkpoint fixed the multi-step contract gap and a datetime/date parser edge
-  case. Verification so far: focused recommendation/attention tests passed
-  (`41` tests), full Python suite passed (`179` tests), `git diff --check`
-  passed, and direct native `esbuild` rebuild passed with no bundle diff.
+  case. Verification: focused recommendation/attention tests passed (`41`
+  tests), full Python suite passed (`179` tests), `git diff --check` passed,
+  direct native `esbuild` rebuild passed with no bundle diff, PR #88 checks
+  passed, and production `/api/hot-swaps/latest` now returns
+  `proposal.contract`, `proposal.executable = false`, complete ordered
+  `slot_moves`, `requires_multi_step = true`, `movability.state = locked`, and
+  `writes_enabled = false`. Browser verification on the real Railway URL shows
+  the locked Ildemaro Vargas for TJ Friedl card, safety checklist, Ask
+  Skipper, Deep research, no `first snapshot was empty`, no waiting-roster
+  error, and no console errors.
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 
-1. **Finish the time-aware contract proof** — open/merge the read-only
-   proposal-contract branch, then verify production `/api/hot-swaps/latest`
-   includes `proposal.contract`, `proposal.executable = false`, complete
-   `slot_moves`, and conservative locked/unknown movability against the real
-   Railway app.
-2. **Wire the hot-swap proposal confirmation path** — keep `Propose swap`
+1. **Wire the hot-swap proposal confirmation path** — keep `Propose swap`
    disabled until #63's executor safety can accept a lineup-only proposal with
    named OUT/IN players, trusted slot provenance, trusted movability, a
    preflight refresh, Zach confirmation, and post-write verification.
-3. **Finish #67 real-slot proof archival** — the production gate is now clear
+2. **Finish #67 real-slot proof archival** — the production gate is now clear
    via raw `posId`, but keep `diagnose_slot_provenance.py` available for DOM
    slot proof if Fantrax changes raw roster semantics.
-4. **Rework #63's Selenium flows** against the DOM map on the PR. Add the hard guard: refuse `drop_player` for `Min`/IL-slot players. Cloud-friendly to write; not to test.
-5. **Re-run write scenarios (3/5/6/7b) locally, headful, with Zach watching.** Judge is the real IL-move target. Local-only — needs Mac + Fantrax creds.
-6. **Set Railway tokens**, verify 503→401 behavior by curl.
-7. **Merge #63, wire Zo** — phase 1 vocabulary only (`move_to_il`, `change_slot`). One real end-to-end loop (queue → Telegram → yes → executed → `action_logs` row) closes #66.
+3. **Rework #63's Selenium flows** against the DOM map on the PR. Add the hard guard: refuse `drop_player` for `Min`/IL-slot players. Cloud-friendly to write; not to test.
+4. **Re-run write scenarios (3/5/6/7b) locally, headful, with Zach watching.** Judge is the real IL-move target. Local-only — needs Mac + Fantrax creds.
+5. **Set Railway tokens**, verify 503→401 behavior by curl.
+6. **Merge #63, wire Zo** — phase 1 vocabulary only (`move_to_il`, `change_slot`). One real end-to-end loop (queue → Telegram → yes → executed → `action_logs` row) closes #66.
 
 ## Safety rules (non-negotiable — full text on [#66](https://github.com/zoelsner/baseball/issues/66#issuecomment-4695871271))
 
