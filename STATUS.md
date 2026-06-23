@@ -121,10 +121,17 @@
   scraper error, so the active follow-up patch makes raw helper failures fall
   back to `FantraxAPI._request`, then to a direct authenticated `fxpa/req`
   call, before touching the upstream `Roster` parser. Verification for that
-  patch: roster regression tests passed (`12 tests`), focused scraper /
-  refresh / recommendation tests passed (`67 tests`), full Python suite passed
-  (`162 tests`), and import smoke passed. Final Railway production verification
-  is still pending.
+  patch: roster regression tests passed, focused scraper / refresh /
+  recommendation tests passed, full Python suite passed, and import smoke
+  passed. Final Railway production verification succeeded on commit `ffb2b32`:
+  manual refresh run `298` stored successful snapshot `217` with 37 roster
+  rows, `errors: []`, sane FPts/FP/G values, and `/api/attention` returned no
+  unsafe items. The browser no longer shows `first snapshot was empty` or
+  `Waiting for roster data`. Hot Swaps is now truthfully paused, not broken:
+  `/api/hot-swaps/latest` reports `state: paused` because future-game coverage
+  is missing and lineup-slot provenance is still partial. Claude Opus xhigh
+  reviewed the checkpoint and agreed to frame this as data-integrity recovery
+  plus honest pause, not Hot Swaps enablement.
 - **Zo hot-swap safety issue:** [#82](https://github.com/zoelsner/baseball/issues/82)
   tracks the future Zo confirmation/protected-player action architecture.
 

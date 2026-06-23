@@ -393,6 +393,21 @@
   refresh / recommendation tests passed (`67 tests`), full Python suite passed
   (`162 tests`), and import smoke passed. Next step is deploy this follow-up
   and verify a new real production refresh returns non-empty my-roster rows.
+- 2026-06-22: Final production verification succeeded after deploying
+  `ffb2b32`. Manual production refresh run `298` returned HTTP 200, stored
+  successful snapshot `217`, and `/api/snapshot/latest` showed 37 roster rows,
+  `errors: []`, and sane live samples: Salvador Perez 142.0 FPts / 1.95 FP/G,
+  Christian Walker 231.0 FPts / 2.92 FP/G, TJ Friedl 64.0 FPts / 1.36 FP/G,
+  and Bryan Hudson `RES` / `raw.statusId` / 107.5 FPts / 2.99 FP/G.
+  `/api/attention` returned zero items. `/api/hot-swaps/latest` returned
+  `state: paused` with zero proposals because future-game coverage is missing
+  and lineup-slot provenance remains partial. Browser verification on the real
+  Railway URL showed no `first snapshot was empty`, no `Waiting for roster
+  data`, Hot Swaps visible and paused, and no console errors. Claude Opus
+  xhigh checkpoint reviewed the recovery and recommended framing this as
+  data-integrity recovery plus honest pause, not Hot Swaps readiness; accepted
+  cheap fixes for stale object-path stat mapping and direct `fxpa/req`
+  status-before-JSON handling.
 
 ## Next Loop Phase
 

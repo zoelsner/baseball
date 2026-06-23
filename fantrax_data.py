@@ -75,13 +75,13 @@ def _direct_fxpa_request(api: Any, method: str, **data: Any) -> Any:
         json={"msgs": [{"method": method, "data": request_data}]},
         timeout=30,
     )
+    if getattr(response, "status_code", 200) >= 400:
+        reason = getattr(response, "reason", "")
+        raise RuntimeError(f"HTTP {response.status_code} {reason}".strip())
     try:
         response_json = response.json()
     except ValueError as exc:
         raise RuntimeError(f"invalid JSON from {method}") from exc
-    if getattr(response, "status_code", 200) >= 400:
-        reason = getattr(response, "reason", "")
-        raise RuntimeError(f"HTTP {response.status_code} {reason}".strip())
     page_error = response_json.get("pageError") if isinstance(response_json, dict) else None
     if page_error:
         raise RuntimeError(str(page_error))
@@ -361,11 +361,16 @@ def _patched_roster_row_init(self, api: Any, data: dict) -> None:  # type: ignor
     scorer = self._data.get("scorer") if isinstance(self._data.get("scorer"), dict) else None
     if scorer:
         self.player = Player(api, scorer)
-        self.fppg = _floatish(_cell_content(self._data, 3))
+        self.total_fantasy_points = _floatish(_cell_content(self._data, 1))
+        self.fantasy_points = self.total_fantasy_points
+        self.fpts = self.total_fantasy_points
+        self.fppg = _floatish(_cell_content(self._data, 2))
+        if self.fppg is None:
+            self.fppg = _floatish(_cell_content(self._data, 3))
         self.fantasy_points_per_game = self.fppg
 
     content = str(_cell_content(self._data, 1) or "")
-    parts = _game_content_parts({"content": content})
+    parts = _game_content_parts({"content": content}) if re.search(r"[A-Za-z@]|<br", content) else []
     self.opponent = _clean_team_token(parts[0]) if parts else None
     self.time = _parse_game_time({"content": content})
 

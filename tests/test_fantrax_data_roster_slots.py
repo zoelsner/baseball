@@ -540,6 +540,35 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(row.fppg, 3.5)
         self.assertEqual(row.fantasy_points_per_game, 3.5)
 
+    def test_current_roster_row_patch_uses_live_stat_table_columns(self):
+        row = RosterRow(FakeRowApi(), {
+            "statusId": "1",
+            "posId": "OF",
+            "scorer": {
+                "scorerId": "player-raw-stats",
+                "name": "Raw Stats Row",
+                "shortName": "Raw Stats Row",
+                "teamName": "Atlanta",
+                "teamShortName": "ATL",
+                "posShortNames": "OF",
+                "posIdsNoFlex": ["OF"],
+                "posIds": ["OF", "UT"],
+            },
+            "cells": [
+                {"content": "36"},
+                {"content": "142"},
+                {"content": "1.95"},
+                {"content": "285"},
+            ],
+        })
+
+        self.assertEqual(row.total_fantasy_points, 142.0)
+        self.assertEqual(row.fpts, 142.0)
+        self.assertEqual(row.fppg, 1.95)
+        self.assertEqual(row.fantasy_points_per_game, 1.95)
+        self.assertIsNone(row.opponent)
+        self.assertIsNone(row.time)
+
     def test_current_roster_row_patch_parses_spaced_future_game_time(self):
         row = RosterRow(FakeRowApi(), {
             "statusId": "1",
