@@ -96,6 +96,13 @@ class FakePosition:
 
 class FakeRowApi:
     positions = {
+        "001": FakePosition("C", "Catcher"),
+        "002": FakePosition("1B", "First Base"),
+        "003": FakePosition("2B", "Second Base"),
+        "004": FakePosition("3B", "Third Base"),
+        "005": FakePosition("SS", "Shortstop"),
+        "012": FakePosition("OF", "Outfield"),
+        "014": FakePosition("UT", "Utility"),
         "OF": FakePosition("OF", "Outfield"),
         "UT": FakePosition("UT", "Utility"),
     }
@@ -237,7 +244,7 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(data["rows"][0]["slot_full"], "Outfield")
         self.assertEqual(data["rows"][0]["slot_source"], "position_fallback")
 
-    def test_active_status_label_does_not_replace_lineup_position(self):
+    def test_active_status_uses_raw_pos_id_as_trusted_lineup_slot(self):
         player = obj(
             id="starter",
             name="Starter",
@@ -286,7 +293,57 @@ class FantraxRosterSlotTests(unittest.TestCase):
         data = fantrax_data.extract_roster(FakeApi(roster), "team")
 
         self.assertEqual(data["rows"][0]["slot"], "SS")
-        self.assertEqual(data["rows"][0]["slot_source"], "position_fallback")
+        self.assertEqual(data["rows"][0]["slot_source"], "raw.posId")
+
+    def test_active_raw_pos_id_can_differ_from_default_position(self):
+        roster = obj(
+            rows=[],
+            active=1,
+            active_max=1,
+            reserve=0,
+            reserve_max=0,
+            injured=0,
+            injured_max=0,
+            period_number=1,
+            period_date="2026-06-18",
+            _data={
+                "miscData": {"statusTotals": [{"id": "1", "name": "Active"}]},
+                "tables": [
+                    {
+                        "rows": [
+                            {
+                                "posId": "003",
+                                "statusId": "1",
+                                "scorer": {
+                                    "scorerId": "brooks",
+                                    "name": "Brooks Lee",
+                                    "shortName": "B. Lee",
+                                    "teamShortName": "MIN",
+                                    "defaultPosId": "005",
+                                    "posShortNames": "2B,3B,SS",
+                                    "posIds": ["003", "014", "004", "005"],
+                                    "posIdsNoFlex": ["003", "004", "005"],
+                                },
+                                "cells": [
+                                    {"content": "25"},
+                                    {"content": "100.0"},
+                                    {"content": "2.5"},
+                                ],
+                            }
+                        ]
+                    }
+                ],
+            },
+        )
+
+        api = FakeApi(roster)
+        api.positions = FakeRowApi.positions
+        data = fantrax_data.extract_roster(api, "team")
+
+        self.assertEqual(data["rows"][0]["slot"], "2B")
+        self.assertEqual(data["rows"][0]["slot_full"], "2B")
+        self.assertEqual(data["rows"][0]["slot_source"], "raw.posId")
+        self.assertEqual(data["rows"][0]["positions"], "2B,3B,SS")
 
     def test_external_trusted_slot_override_upgrades_position_fallback(self):
         player = obj(
@@ -458,7 +515,7 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(data["rows"][0]["positions"], "OF")
         self.assertEqual(data["rows"][0]["all_positions"], ["OF", "UT"])
         self.assertEqual(data["rows"][0]["slot"], "OF")
-        self.assertEqual(data["rows"][0]["slot_source"], "position_fallback")
+        self.assertEqual(data["rows"][0]["slot_source"], "raw.posId")
         self.assertEqual(data["rows"][0]["fppg"], 4.25)
         self.assertEqual(data["rows"][0]["fpts"], 42.5)
         self.assertEqual(data["rows"][0]["future_games"][0]["eventId"], "evt-1")

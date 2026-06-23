@@ -565,7 +565,11 @@ def _row_player_id(row: dict[str, Any]) -> str | None:
     return None
 
 
-def _assigned_slot_from_raw(row: dict[str, Any], status_lookup: dict[str, str]) -> tuple[str | None, str | None]:
+def _assigned_slot_from_raw(
+    row: dict[str, Any],
+    status_lookup: dict[str, str],
+    api: Any | None = None,
+) -> tuple[str | None, str | None]:
     for key in RAW_ASSIGNED_SLOT_KEYS:
         normalized = _normalize_slot_label(row.get(key))
         if normalized and normalized not in ACTIVE_SLOT_LABELS:
@@ -577,17 +581,21 @@ def _assigned_slot_from_raw(row: dict[str, Any], status_lookup: dict[str, str]) 
         label = status_lookup.get(str(status_id))
         if label and label not in ACTIVE_SLOT_LABELS:
             return label, "raw.statusId"
+        if label in ACTIVE_SLOT_LABELS:
+            normalized = _normalize_slot_label(_position_label(api, row.get("posId")))
+            if normalized and normalized not in ACTIVE_SLOT_LABELS:
+                return normalized, "raw.posId"
     return None, None
 
 
-def _assigned_slot_overrides(roster: Any) -> dict[str, tuple[str, str]]:
+def _assigned_slot_overrides(roster: Any, api: Any | None = None) -> dict[str, tuple[str, str]]:
     status_lookup = _status_lookup(roster)
     overrides: dict[str, tuple[str, str]] = {}
     for raw_row in _raw_roster_rows(roster):
         player_id = _row_player_id(raw_row)
         if not player_id:
             continue
-        slot, source = _assigned_slot_from_raw(raw_row, status_lookup)
+        slot, source = _assigned_slot_from_raw(raw_row, status_lookup, api)
         if slot and source:
             overrides[player_id] = (slot, source)
     return overrides
@@ -798,7 +806,7 @@ def extract_roster(api: FantraxAPI, team_id: str, slot_overrides: dict[str, dict
     """Returns dict with `rows` (list of normalized players) plus roster
     capacity totals (active/reserve/IR)."""
     roster = _team_roster(api, team_id)
-    assigned_slots = _assigned_slot_overrides(roster)
+    assigned_slots = _assigned_slot_overrides(roster, api)
 
     rows = []
     raw_rows = _raw_roster_rows(roster)
