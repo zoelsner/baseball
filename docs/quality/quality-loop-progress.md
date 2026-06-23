@@ -554,6 +554,20 @@
   `git diff --check` passed, and `.venv/bin/python -m unittest
   tests.test_sandlot_attention` passed (`26` tests). Local npm Playwright is
   unavailable in this shell, so GitHub's PR rerun remains the browser proof.
+- 2026-06-23: Completed the production-first Today verification loop after
+  merging PR #89. Railway initially served a stale bundle, so `main` was
+  redeployed and then verified directly. Final production bundle:
+  `app.js?v=33b257ebc7c8`. GitHub checks on the final `main` commit passed
+  (`Frontend build`, `Python import smoke`, `Local frontend E2E`, and `E2E
+  against Railway`). Direct production API verification showed `/api/health`
+  healthy, `/api/snapshot/latest` on snapshot `221` with 37/37 trusted lineup
+  slots, 40/40 eligibility and FP/G coverage, and `/api/hot-swaps/latest`
+  returning the read-only TJ Friedl/Ildemaro Vargas proposal under
+  `proposals`. Browser verification on the real Railway URL showed Matchup
+  above Hot Swaps, Hot Swaps above Attention Queue, causal matchup/projection
+  copy, blocked `Propose swap`, `Ask Skipper`, and `Deep research` actions
+  visible above the long evidence section, no empty-snapshot regression, and
+  no console errors.
 
 ## Next Loop Phase
 
