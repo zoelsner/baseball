@@ -56,6 +56,7 @@ def today_page_recommendations(chain=None):
                             {"key": "trusted_slots", "label": "Trusted slot data", "state": "passed"},
                             {"key": "lineup_only", "label": "Lineup-only move", "state": "passed"},
                             {"key": "protected_players", "label": "Protected players excluded", "state": "passed"},
+                            {"key": "fantrax_movability", "label": "Fantrax movability", "state": "blocked"},
                             {"key": "executor_ready", "label": "Execution safety", "state": "blocked"},
                         ],
                     },
@@ -80,6 +81,16 @@ def today_page_recommendations(chain=None):
                         "fppg": 0.8,
                         "remaining_games": 1,
                         "slot_source": "raw.lineupSlot",
+                    },
+                    "movability": {
+                        "state": "locked",
+                        "label": "Locked",
+                        "reason": "Fantrax currently marks Cold Corner unavailable for lineup changes.",
+                        "source": "fantrax.raw.scorer.disableLineupChange",
+                        "participants": {
+                            "move_in": {"id": "bench-bat", "name": "Bench Bat", "state": "movable"},
+                            "move_out": {"id": "corner", "name": "Cold Corner", "state": "locked"},
+                        },
                     },
                     "projected_benefit": {"points": 2.4, "win_probability_delta": 0.02},
                     "reason": "Move Bench Bat into UT and Cold Corner to BN because the lineup-only simulation sees bench upgrade.",
@@ -293,10 +304,11 @@ class AttentionActionPayloadTests(unittest.TestCase):
         self.assertFalse(replacement["proposal"]["writes_enabled"])
         self.assertEqual(
             [check["state"] for check in replacement["proposal"]["safety_checks"]],
-            ["passed", "passed", "passed", "blocked"],
+            ["passed", "passed", "passed", "blocked", "blocked"],
         )
         self.assertEqual(replacement["replacement"]["move_in"]["name"], "Bench Bat")
         self.assertEqual(replacement["replacement"]["move_out"]["name"], "Cold Corner")
+        self.assertEqual(replacement["replacement"]["movability"]["state"], "locked")
         self.assertFalse(replacement["replacement"]["safety"]["live_writes"])
 
 
@@ -507,6 +519,7 @@ class HotSwapRouteTests(unittest.TestCase):
         self.assertFalse(proposal["writes_enabled"])
         self.assertEqual(payload["proposals"][0]["blocked_action"]["state"], "blocked")
         self.assertEqual(payload["proposals"][0]["source_item"]["kind"], "replacement")
+        self.assertEqual(payload["proposals"][0]["replacement"]["movability"]["state"], "locked")
 
     def test_latest_hot_swaps_pauses_when_slot_provenance_is_untrusted(self):
         data = snapshot_data(today_page_roster())

@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-23** (raw `posId` slot provenance follow-up in progress).
+> Last updated: **2026-06-23** (hot-swap movability gate in progress).
 
 ## Where things stand
 
@@ -163,26 +163,42 @@
   data-quality check changes lineup slots from `partial` 17/37 to `ok` 37/37.
   Verification on the branch: full Python suite passed (`174` tests) and
   `git diff --check` passed.
+- **PR #85 merged + production Hot Swaps unpaused:** [PR #85](https://github.com/zoelsner/baseball/pull/85)
+  was squash-merged into `main` as `940ee4f`. Railway refresh run `301`
+  stored snapshot `220` with 37 roster rows, `errors: []`, lineup slots
+  `37/37 ok`, and future-game coverage `40/40 ok`. `/api/hot-swaps/latest`
+  returned `state: ready` with one read-only lineup proposal: move TJ Friedl
+  out and Ildemaro Vargas in for a projected `+9.1` points. Production Today
+  renders the OUT/IN card, source/provenance, safety checklist, Ask Skipper,
+  and Deep research, while `Propose swap` remains blocked.
+- **Hot-swap movability gate:** branch `feature/hot-swap-movability-gate`
+  adds a read-only lock/movability layer before any future execution work.
+  `raw.scorer.disableLineupChange === true` is treated as `locked`,
+  explicit `false` as `movable`, and missing/non-boolean data as
+  `unknown`. Locked or unknown proposals remain visible as recommendation
+  candidates but never executable; the card and safety checklist now surface
+  the movability state. Claude Opus xhigh review was attempted but blocked by
+  environment privacy policy, so the same review questions were handled in
+  `docs/quality/second-opinion/hot-swap-movability-gate-2026-06-23-result.md`.
+  Verification so far: focused backend tests passed (`39` tests), full Python
+  suite passed (`177` tests), `git diff --check` passed, direct native
+  `esbuild` rebuild passed, and a production-shaped local check against live
+  snapshot `221` labeled the current TJ/Ildemaro proposal `locked` because
+  both rows have `raw.scorer.disableLineupChange: true`.
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 
-1. **Unpause read-only Hot Swaps safely** — future-game schedule provenance is
-   now fixed in production by PR #84. Finish the narrow raw `posId` slot
-   provenance follow-up, open the PR, let CI/browser checks run, merge after
-   review, then trigger a real Railway refresh and verify `/api/snapshot/latest`,
-   `/api/hot-swaps/latest`, `/api/attention`, and the Today page on the
-   production URL.
-2. **Finish #67 real-slot proof** — with valid local Fantrax cookies, a saved
-   raw `getTeamRosterInfo` payload, or a saved roster-page HTML file plus
-   matching snapshot, refresh/read-only inspect `slot_source` coverage from raw
-   `statusId`/slot fields and/or `dom.lineup-btn` slots. If active lineup slots
-   still resolve as `position_fallback`, run the live diagnostic with
-   `--capture-roster-dom`; if that proves trusted active slots, integrate the
-   read-only `lineup-btn` DOM slot parser into the scrape. Keep recommendation
-   gates fail-closed until this is proven.
-3. **Wire the hot-swap proposal confirmation path** — keep `Propose swap`
+1. **Finish the movability proof** — merge the read-only movability gate, then
+   verify production shows the current TJ/Ildemaro proposal as `Locked` when
+   Fantrax raw data reports `disableLineupChange: true`. Next proof is a live
+   Fantrax DOM comparison for at least one locked and one movable row.
+2. **Wire the hot-swap proposal confirmation path** — keep `Propose swap`
    disabled until #63's executor safety can accept a lineup-only proposal with
-   named OUT/IN players, slot provenance proof, and Zach confirmation.
+   named OUT/IN players, trusted slot provenance, trusted movability, a
+   preflight refresh, Zach confirmation, and post-write verification.
+3. **Finish #67 real-slot proof archival** — the production gate is now clear
+   via raw `posId`, but keep `diagnose_slot_provenance.py` available for DOM
+   slot proof if Fantrax changes raw roster semantics.
 4. **Rework #63's Selenium flows** against the DOM map on the PR. Add the hard guard: refuse `drop_player` for `Min`/IL-slot players. Cloud-friendly to write; not to test.
 5. **Re-run write scenarios (3/5/6/7b) locally, headful, with Zach watching.** Judge is the real IL-move target. Local-only — needs Mac + Fantrax creds.
 6. **Set Railway tokens**, verify 503→401 behavior by curl.

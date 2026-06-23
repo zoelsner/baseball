@@ -39,6 +39,13 @@ def snapshot(rows):
     }
 
 
+def raw_lineup_change(value):
+    raw = {"scorer": {}}
+    if value != "missing":
+        raw["scorer"]["disableLineupChange"] = value
+    return raw
+
+
 class MatchupRecommendationTests(unittest.TestCase):
     def test_ranks_meaningful_actions_by_delta(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
@@ -64,14 +71,64 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(card["proposal"]["status"], "blocked")
         self.assertFalse(card["proposal"]["writes_enabled"])
         self.assertTrue(card["proposal"]["confirmation_required"])
+        self.assertEqual(card["movability"]["state"], "unknown")
         self.assertEqual(
             [check["state"] for check in card["proposal"]["safety_checks"]],
-            ["passed", "passed", "passed", "blocked"],
+            ["passed", "passed", "passed", "warning", "blocked"],
         )
         self.assertFalse(card["safety"]["live_writes"])
         self.assertFalse(card["safety"]["add_drop"])
+        self.assertEqual(card["safety"]["movability"], "unknown")
         self.assertIn("latest Fantrax snapshot", card["provenance"]["source"])
         self.assertIsNone(result["no_action"])
+
+    def test_locked_movability_surfaces_but_keeps_recommendation_non_executable(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player("weak2b", slot="2B", positions="2B", fppg=1.0, raw=raw_lineup_change(True)),
+            player("bench2b", slot="BN", positions="2B", fppg=4.0, raw=raw_lineup_change(False)),
+        ]))
+
+        card = result["recommendations"][0]["replacement_card"]
+
+        self.assertEqual(card["move_in"]["id"], "bench2b")
+        self.assertEqual(card["move_out"]["id"], "weak2b")
+        self.assertEqual(card["movability"]["state"], "locked")
+        self.assertIn("weak2b", card["movability"]["reason"])
+        self.assertEqual(card["movability"]["participants"]["move_out"]["state"], "locked")
+        self.assertEqual(card["movability"]["participants"]["move_in"]["state"], "movable")
+        self.assertEqual(card["proposal"]["safety_checks"][3]["key"], "fantrax_movability")
+        self.assertEqual(card["proposal"]["safety_checks"][3]["state"], "blocked")
+        self.assertEqual(card["proposal"]["status"], "blocked")
+        self.assertFalse(card["proposal"]["writes_enabled"])
+        self.assertIn("unavailable for lineup changes", card["execution"]["reason"])
+
+    def test_movable_participants_pass_movability_but_executor_remains_blocked(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player("weak2b", slot="2B", positions="2B", fppg=1.0, raw=raw_lineup_change(False)),
+            player("bench2b", slot="BN", positions="2B", fppg=4.0, raw=raw_lineup_change(False)),
+        ]))
+
+        card = result["recommendations"][0]["replacement_card"]
+
+        self.assertEqual(card["movability"]["state"], "movable")
+        self.assertEqual(card["proposal"]["safety_checks"][3]["state"], "passed")
+        self.assertEqual(card["proposal"]["safety_checks"][-1]["key"], "executor_ready")
+        self.assertEqual(card["proposal"]["safety_checks"][-1]["state"], "blocked")
+        self.assertEqual(card["execution"]["state"], "blocked")
+        self.assertIn("does not mark", card["execution"]["reason"])
+
+    def test_missing_movability_field_is_unknown_warning(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player("weak2b", slot="2B", positions="2B", fppg=1.0, raw=raw_lineup_change("missing")),
+            player("bench2b", slot="BN", positions="2B", fppg=4.0, raw=raw_lineup_change(False)),
+        ]))
+
+        card = result["recommendations"][0]["replacement_card"]
+
+        self.assertEqual(card["movability"]["state"], "unknown")
+        self.assertEqual(card["proposal"]["safety_checks"][3]["state"], "warning")
+        self.assertIn("missing", card["movability"]["reason"])
+        self.assertEqual(card["execution"]["state"], "blocked")
 
     def test_suppresses_moves_below_meaningful_threshold(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([

@@ -46,6 +46,7 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
                 { key: 'trusted_slots', label: 'Trusted slot data', state: 'passed', detail: 'Recommendation is only emitted after lineup slot provenance is trusted.' },
                 { key: 'lineup_only', label: 'Lineup-only move', state: 'passed', detail: 'No add, drop, trade, or roster-pool mutation is attached to this proposal.' },
                 { key: 'protected_players', label: 'Protected players excluded', state: 'passed', detail: 'Minors, IL/IR, and other protected rows are not eligible swap targets.' },
+                { key: 'fantrax_movability', label: 'Fantrax movability', state: 'blocked', detail: 'Fantrax currently marks Cold Corner unavailable for lineup changes.' },
                 { key: 'executor_ready', label: 'Execution safety', state: 'blocked', detail: 'Fantrax write execution still needs a separate confirmed executor contract.' },
               ],
             },
@@ -70,6 +71,16 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
               fppg: 0.8,
               remaining_games: 1,
               slot_source: 'raw.lineupSlot',
+            },
+            movability: {
+              state: 'locked',
+              label: 'Locked',
+              reason: 'Fantrax currently marks Cold Corner unavailable for lineup changes.',
+              source: 'fantrax.raw.scorer.disableLineupChange',
+              participants: {
+                move_in: { id: 'bench-bat', name: 'Bench Bat', state: 'movable' },
+                move_out: { id: 'corner', name: 'Cold Corner', state: 'locked' },
+              },
             },
             projected_benefit: { points: 2.4, win_probability_delta: 0.02 },
             reason: 'Move Bench Bat into UT and Cold Corner to BN because the lineup-only simulation sees bench upgrade.',
@@ -156,10 +167,15 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('medium risk', { exact: true })).toBeVisible();
     await expect(page.getByText('latest Fantrax snapshot', { exact: true })).toBeVisible();
     const queueSection = page.locator('section').filter({ hasText: 'Bench Bat for Cold Corner' });
+    if (process.env.SANDLOT_EXPECT_SLOT_GATE === '1') {
+      await expect(page.getByText('Locked', { exact: true })).toBeVisible();
+      await expect(queueSection.getByText('Movability. Fantrax currently marks Cold Corner unavailable for lineup changes.')).toBeVisible();
+    }
     await expect(queueSection.getByText('Proposal safety', { exact: true })).toBeVisible();
     await expect(queueSection.getByText('Trusted slot data', { exact: true })).toBeVisible();
     await expect(queueSection.getByText('Lineup-only move', { exact: true })).toBeVisible();
     await expect(queueSection.getByText('Protected players excluded', { exact: true })).toBeVisible();
+    await expect(queueSection.getByText('Fantrax movability', { exact: true })).toBeVisible();
     await expect(queueSection.getByText('Execution safety', { exact: true })).toBeVisible();
     await expect(queueSection.getByRole('button', { name: /Propose swap blocked/i })).toBeDisabled();
     await expect(queueSection.getByRole('button', { name: /Ask Skipper/i })).toBeVisible();

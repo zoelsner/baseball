@@ -728,6 +728,7 @@ def _lineup_replacement_card(
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
     period_start = _parse_date(matchup.get("start"))
     period_end = _parse_date(matchup.get("end"))
+    movability = _lineup_movability(move_in_row, move_out_row)
     move_in = _player_card_summary(move_in_row, promoted, period_end, period_start)
     move_out = _player_card_summary(move_out_row, demoted, period_end, period_start)
     points_delta = _number(action.get("points_delta")) or 0.0
@@ -736,12 +737,14 @@ def _lineup_replacement_card(
     new_win = _number(action.get("new_win_probability"))
     chips = action.get("reason_chips") if isinstance(action.get("reason_chips"), list) else []
     reason_chip_text = ", ".join(str(chip) for chip in chips[:2] if chip) or "lineup simulation edge"
+    execution = _lineup_execution_state(movability)
 
     return {
         "type": "lineup_hot_swap",
-        "proposal": _lineup_swap_proposal(move_in, move_out),
+        "proposal": _lineup_swap_proposal(move_in, move_out, movability),
         "move_in": move_in,
         "move_out": move_out,
+        "movability": movability,
         "projected_benefit": {
             "points": round(points_delta, 1),
             "win_probability_delta": round(win_delta, 4),
@@ -767,6 +770,7 @@ def _lineup_replacement_card(
             "slot_provenance": "trusted",
             "move_in_slot_source": move_in.get("slot_source"),
             "move_out_slot_source": move_out.get("slot_source"),
+            "movability_source": movability.get("source"),
             "scoring": "snapshot FP/G and remaining-games projection",
         },
         "safety": {
@@ -774,17 +778,18 @@ def _lineup_replacement_card(
             "add_drop": False,
             "live_writes": False,
             "protected_players_excluded": True,
+            "movability": movability.get("state"),
         },
-        "execution": {
-            "state": "blocked",
-            "label": "Propose swap",
-            "reason": "Lineup execution is disabled until the Fantrax write path has separate confirmation safety.",
-        },
-        "blocked_reason": "Propose swap is disabled until execution safety is ready.",
+        "execution": execution,
+        "blocked_reason": execution["reason"],
     }
 
 
-def _lineup_swap_proposal(move_in: dict[str, Any], move_out: dict[str, Any]) -> dict[str, Any]:
+def _lineup_swap_proposal(
+    move_in: dict[str, Any],
+    move_out: dict[str, Any],
+    movability: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     proposal_id = "lineup-swap:{out_id}:{in_id}:{slot}".format(
         out_id=move_out.get("id") or "unknown-out",
         in_id=move_in.get("id") or "unknown-in",
@@ -816,6 +821,7 @@ def _lineup_swap_proposal(move_in: dict[str, Any], move_out: dict[str, Any]) -> 
                 "state": "passed",
                 "detail": "Minors, IL/IR, and other protected rows are not eligible swap targets.",
             },
+            _lineup_movability_safety_check(movability),
             {
                 "key": "executor_ready",
                 "label": "Execution safety",
@@ -824,6 +830,119 @@ def _lineup_swap_proposal(move_in: dict[str, Any], move_out: dict[str, Any]) -> 
             },
         ],
     }
+
+
+def _lineup_movability(move_in_row: dict[str, Any], move_out_row: dict[str, Any]) -> dict[str, Any]:
+    participants = {
+        "move_in": _player_movability(move_in_row),
+        "move_out": _player_movability(move_out_row),
+    }
+    locked = [item for item in participants.values() if item["state"] == "locked"]
+    unknown = [item for item in participants.values() if item["state"] == "unknown"]
+    if locked:
+        names = _name_list(item.get("name") for item in locked)
+        return {
+            "state": "locked",
+            "label": "Locked",
+            "reason": f"Fantrax currently marks {names} unavailable for lineup changes.",
+            "source": "fantrax.raw.scorer.disableLineupChange",
+            "participants": participants,
+        }
+    if unknown:
+        names = _name_list(item.get("name") for item in unknown)
+        return {
+            "state": "unknown",
+            "label": "Movability unknown",
+            "reason": f"Fantrax movability data is missing for {names}.",
+            "source": "fantrax.raw.scorer.disableLineupChange",
+            "participants": participants,
+        }
+    return {
+        "state": "movable",
+        "label": "Movable",
+        "reason": "Fantrax raw data does not mark either participant unavailable for lineup changes.",
+        "source": "fantrax.raw.scorer.disableLineupChange",
+        "participants": participants,
+    }
+
+
+def _player_movability(row: dict[str, Any]) -> dict[str, Any]:
+    name = str(row.get("name") or row.get("id") or "unknown player")
+    value = _raw_disable_lineup_change(row)
+    if value is True:
+        state = "locked"
+        label = "Locked"
+        reason = f"{name} is marked unavailable for lineup changes by Fantrax."
+    elif value is False:
+        state = "movable"
+        label = "Movable"
+        reason = f"{name} is not marked unavailable for lineup changes by Fantrax."
+    else:
+        state = "unknown"
+        label = "Movability unknown"
+        reason = f"{name} is missing a boolean Fantrax lineup-change flag."
+    return {
+        "id": _player_id(row),
+        "name": name,
+        "state": state,
+        "label": label,
+        "reason": reason,
+        "source": "fantrax.raw.scorer.disableLineupChange",
+        "raw_value": value,
+    }
+
+
+def _raw_disable_lineup_change(row: dict[str, Any]) -> bool | None:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    scorer = raw.get("scorer") if isinstance(raw.get("scorer"), dict) else {}
+    value = scorer.get("disableLineupChange")
+    return value if isinstance(value, bool) else None
+
+
+def _lineup_movability_safety_check(movability: dict[str, Any] | None) -> dict[str, Any]:
+    state = str((movability or {}).get("state") or "unknown")
+    check_state = "passed" if state == "movable" else ("blocked" if state == "locked" else "warning")
+    return {
+        "key": "fantrax_movability",
+        "label": "Fantrax movability",
+        "state": check_state,
+        "detail": (movability or {}).get("reason") or "Fantrax movability data is unavailable.",
+    }
+
+
+def _lineup_execution_state(movability: dict[str, Any]) -> dict[str, str]:
+    state = str(movability.get("state") or "unknown")
+    if state == "locked":
+        reason = (
+            f"{movability.get('reason')} Fantrax write execution also remains disabled until "
+            "the lineup executor has separate confirmation safety."
+        )
+    elif state == "unknown":
+        reason = (
+            f"{movability.get('reason')} Fantrax write execution remains disabled until "
+            "movability is trusted and the lineup executor has separate confirmation safety."
+        )
+    else:
+        reason = (
+            "Fantrax raw data does not mark the participants unavailable, but write execution "
+            "remains disabled until the lineup executor has separate confirmation safety."
+        )
+    return {
+        "state": "blocked",
+        "label": "Propose swap",
+        "reason": reason,
+    }
+
+
+def _name_list(values) -> str:
+    names = [str(value) for value in values if value]
+    if not names:
+        return "one or more participants"
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return f"{', '.join(names[:-1])}, and {names[-1]}"
 
 
 def _player_card_summary(

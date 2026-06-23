@@ -467,6 +467,33 @@
   20 active `position_fallback` rows, and the local data-quality check moves
   lineup slots from `partial` 17/37 to `ok` 37/37. Verification so far: full
   Python suite passed (`174` tests) and `git diff --check` passed.
+- 2026-06-23: Opened the next Hot Swaps safety slice on
+  `feature/hot-swap-movability-gate`. Claude Opus xhigh review was attempted
+  with `claude --model opus --effort xhigh --tools ""`, but the environment
+  privacy policy blocked sending private repo and production design context to
+  an external service; no workaround was attempted. Internal skeptical review
+  accepted a fail-closed movability gate: preserve useful OUT/IN
+  recommendations, but label each proposal `movable`, `locked`, or `unknown`
+  from `raw.scorer.disableLineupChange`, surface that state on the Hot Swaps
+  card and safety checklist, and keep `writes_enabled: false` regardless of
+  movability until the executor contract is separately proven.
+- 2026-06-23: Implemented the read-only movability gate. Unit coverage now
+  proves locked participants yield `fantrax_movability = blocked`, explicit
+  movable participants pass that check while `executor_ready` remains blocked,
+  and missing/non-boolean Fantrax flags become an `unknown` warning. Today's
+  Hot Swaps card renders the movability chip and reason line, with warning
+  safety checks visually distinct from blocked checks. Verification: full
+  Python suite passed (`177` tests), `py_compile` passed with
+  `PYTHONPYCACHEPREFIX=/tmp/sandlot-pyc`, direct native `esbuild` rebuild
+  passed, and `git diff --check` passed.
+- 2026-06-23: Production-shaped verification against live Railway snapshot
+  `221` found `/api/health` healthy and `/api/hot-swaps/latest` still `ready`
+  with the TJ Friedl/Ildemaro Vargas read-only proposal. Inspecting the live
+  roster rows showed both participants have
+  `raw.scorer.disableLineupChange: true`. A deterministic local fixture using
+  those live rows emitted the same OUT/IN pair with `movability.state =
+  locked`, `fantrax_movability = blocked`, `executor_ready = blocked`, and
+  `writes_enabled = false`.
 
 ## Next Loop Phase
 
