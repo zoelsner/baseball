@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-22** (production roster scrape recovery in progress).
+> Last updated: **2026-06-23** (raw `posId` slot provenance follow-up in progress).
 
 ## Where things stand
 
@@ -151,28 +151,27 @@
   tests), full Python suite passed (`173` tests), `git diff --check` passed,
   and direct `esbuild` rebuild passed. Production deploy/refresh/browser
   verification is still pending.
+- **PR #84 merged + production checkpoint:** [PR #84](https://github.com/zoelsner/baseball/pull/84)
+  was squash-merged into `main` as `01ab4dc`. A real Railway refresh run
+  `300` stored snapshot `219` with 37 roster rows, `errors: []`, and
+  future-game coverage `ok` for 40/40 players. Hot Swaps is still read-only
+  and paused for one remaining reason: lineup-slot provenance is trusted for
+  only 17/37 roster rows. Follow-up branch `fix/raw-posid-slot-provenance`
+  treats active Fantrax raw rows with `statusId=1` and `posId` as trusted
+  `raw.posId` lineup-slot evidence. Against production snapshot `219`, that
+  upgrades the 20 active `position_fallback` rows and the local
+  data-quality check changes lineup slots from `partial` 17/37 to `ok` 37/37.
+  Verification on the branch: full Python suite passed (`174` tests) and
+  `git diff --check` passed.
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 
-1. **Unpause read-only Hot Swaps safely** — implement MLB schedule enrichment
-   with row-level provenance, proposal-scoped future-game gating, hitter-first
-   readiness, pitcher-safe projection semantics, and narrowed pause reasons.
-   Then harden the existing read-only Fantrax DOM slot proof so active
-   swap-participating rows require trusted slot provenance before a proposal
-   can emit. Local code and tests for this slice are in place; next proof is
-   PR #84 CI and then a real Railway refresh showing schedule provenance and
-   slot diagnostics on the production snapshot. The first PR #84 Railway
-   Playwright run exposed a stale production-smoke assertion: production now
-   renders the seeded Hot Swaps card in its own section, while the test still
-   expected that replacement to count as a second generic Attention Queue
-   review item when `SANDLOT_EXPECT_SLOT_GATE` was unset. The spec now asserts
-   the current split behavior for both Railway and local runs. Local evidence:
-   `git diff --check` passed and `.venv/bin/python -m unittest
-   tests.test_sandlot_attention` passed (`26` tests). Local Playwright remains
-   blocked by this shell having no `node` binary, so GitHub Actions provided
-   the browser proof: PR #84 commit `09fe527` passed CI run `147` (frontend
-   build plus Python import/unit suite) and Playwright run `171` (Railway
-   production E2E plus local frontend E2E).
+1. **Unpause read-only Hot Swaps safely** — future-game schedule provenance is
+   now fixed in production by PR #84. Finish the narrow raw `posId` slot
+   provenance follow-up, open the PR, let CI/browser checks run, merge after
+   review, then trigger a real Railway refresh and verify `/api/snapshot/latest`,
+   `/api/hot-swaps/latest`, `/api/attention`, and the Today page on the
+   production URL.
 2. **Finish #67 real-slot proof** — with valid local Fantrax cookies, a saved
    raw `getTeamRosterInfo` payload, or a saved roster-page HTML file plus
    matching snapshot, refresh/read-only inspect `slot_source` coverage from raw

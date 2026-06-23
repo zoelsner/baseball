@@ -456,6 +456,17 @@
   commit `09fe527` passed CI run `147` (frontend build plus Python
   import/unit suite) and Playwright run `171` (Railway production E2E plus
   local frontend E2E).
+- 2026-06-23: Merged PR #84 into `main` as squash commit `01ab4dc` and verified
+  the deployed Railway app with a real refresh. Refresh run `300` stored
+  snapshot `219` with 37 roster rows, `errors: []`, and future-game coverage
+  `ok` for 40/40 players. The remaining production pause is now isolated to
+  lineup-slot provenance: current production trusts 17/37 roster rows. On
+  follow-up branch `fix/raw-posid-slot-provenance`, active Fantrax raw rows
+  with `statusId=1` and `posId` are normalized as trusted `raw.posId` lineup
+  slots. Production-shaped analysis of snapshot `219` shows this upgrades all
+  20 active `position_fallback` rows, and the local data-quality check moves
+  lineup slots from `partial` 17/37 to `ok` 37/37. Verification so far: full
+  Python suite passed (`174` tests) and `git diff --check` passed.
 
 ## Next Loop Phase
 

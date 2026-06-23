@@ -164,7 +164,7 @@ class SlotProvenanceDiagnosticTests(unittest.TestCase):
         self.assertEqual(report["raw"]["status_id_counts"], {"9": 1})
         self.assertEqual(report["raw"]["slot_key_counts_by_status"]["9"]["lineupSlot"], 1)
 
-    def test_raw_roster_file_payload_reports_key_coverage_without_trusting_slots(self):
+    def test_raw_roster_file_payload_reports_key_coverage_with_active_posid_assignments(self):
         report = diagnostic.raw_roster_report(
             {
                 "data": {
@@ -208,12 +208,15 @@ class SlotProvenanceDiagnosticTests(unittest.TestCase):
         self.assertIn("cannot prove normalized Sandlot slot provenance", report["note"])
         self.assertEqual(report["raw"]["slot_key_counts_by_status"]["1"]["lineupSlot"], 1)
         self.assertEqual(report["raw"]["slot_key_counts_by_status"]["2"]["posId"], 1)
-        self.assertEqual(report["assignment"]["assigned_slot_rows"], 2)
-        self.assertEqual(report["assignment"]["unassigned_slot_rows"], 1)
-        self.assertEqual(report["assignment"]["assigned_slot_counts"], {"OF": 1, "RES": 1})
-        self.assertEqual(report["assignment"]["assigned_slot_source_counts"], {"raw.lineupSlot": 1, "raw.statusId": 1})
+        self.assertEqual(report["assignment"]["assigned_slot_rows"], 3)
+        self.assertEqual(report["assignment"]["unassigned_slot_rows"], 0)
+        self.assertEqual(report["assignment"]["assigned_slot_counts"], {"OF": 1, "RES": 1, "SS": 1})
+        self.assertEqual(
+            report["assignment"]["assigned_slot_source_counts"],
+            {"raw.lineupSlot": 1, "raw.posId": 1, "raw.statusId": 1},
+        )
         self.assertEqual(report["assignment"]["status_lookup"], {"1": "ACTIVE", "2": "RES", "Active": "ACTIVE", "Reserve": "RES"})
-        self.assertEqual(report["assignment"]["unassigned_examples"][0]["id"], "pos-only")
+        self.assertEqual(report["assignment"]["assigned_examples"][-1]["id"], "pos-only")
 
     def test_raw_roster_file_exit_code_cannot_satisfy_require_trusted(self):
         path = self._write_snapshot({
