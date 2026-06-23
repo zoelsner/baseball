@@ -658,6 +658,7 @@ function v2MatchupInfo(matchup) {
     }
   }
   if (daysLeft === null && matchup.daysLeft !== undefined) daysLeft = v2Number(matchup.daysLeft);
+  if (daysLeft === null && matchup.days_left !== undefined) daysLeft = v2Number(matchup.days_left);
   const leading = margin > 0;
   return { my, opp, margin, opponent, week, daysLeft, leading, projection:matchup.projection || null };
 }
@@ -986,11 +987,24 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
         </button>
       </div>
 
+      <V2MatchupStatusCard
+        matchup={matchup}
+        projectionInfo={projectionInfo}
+        showProjection={showProjection}
+        showProjectionFallback={showProjectionFallback}
+        dataQuality={dataQuality}
+        hasRealData={hasRealData}
+        sync={sync}
+        staleCopy={staleCopy}
+        rosterCount={health.roster.length}
+      />
+
       <V2HotSwapsPanel
         items={hotSwapItems}
         hasRealData={hasRealData}
         sync={sync}
         pausedReason={lineupPausedReason}
+        matchup={matchup}
         onAskSkipper={onAskSkipper}
       />
 
@@ -1005,52 +1019,6 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
       {sync.notice && sync.state !== 'refreshing' && (
         <V2Caution eyebrow="Heads up" tone="warn">{sync.notice}</V2Caution>
       )}
-
-      <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:20, padding:'16px 18px' }}>
-        {matchup ? (
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
-            <div style={{ minWidth:0 }}>
-              <V2Eyebrow color={matchup.leading ? V2.accent : V2.bad}>Matchup · {matchup.leading ? 'Leading' : matchup.margin < 0 ? 'Trailing' : 'Tied'}</V2Eyebrow>
-              <div style={{ marginTop:8, fontSize:25, lineHeight:1, fontWeight:800, letterSpacing:'-0.045em', fontFamily:V2.fontMono }}>
-                {matchup.my.toFixed(1)} <span style={{ color:'#b8afa0', fontFamily:V2.fontDisplay, fontWeight:700 }}>·</span> <span style={{ color:'#b8afa0' }}>{matchup.opp.toFixed(1)}</span>
-              </div>
-              {showProjection ? (
-                <div style={{ marginTop:7, color:projectionInfo.color, fontSize:12.5, fontWeight:800, fontFamily:V2.fontMono, whiteSpace:'nowrap' }}>
-                  Projected {projectionInfo.projectedMy} — {projectionInfo.projectedOpp}
-                </div>
-              ) : null}
-              {showProjectionFallback ? (
-                <div style={{ marginTop:7, color:V2.warn, fontSize:12, fontWeight:800, lineHeight:1.35 }}>
-                  Projection paused: {v2QualityReason(dataQuality, 'projection')}.
-                </div>
-              ) : null}
-              <div style={{ marginTop:8, color:V2.muted, fontSize:13, fontWeight:800, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                vs {matchup.opponent}{matchup.daysLeft !== null ? ` · ${matchup.daysLeft}d left` : ''}
-              </div>
-            </div>
-            <div style={{ display:'flex', alignItems:'center', gap:11, flexShrink:0 }}>
-              {showProjection ? <V2WinProbabilityRing projection={projection}/> : null}
-              <div style={{ textAlign:'right', flexShrink:0 }}>
-                <div style={{ color:matchup.margin >= 0 ? V2.accent : V2.bad, fontSize:28, lineHeight:1, fontWeight:800, letterSpacing:'-0.04em', fontFamily:V2.fontDisplay }}>
-                  {matchup.margin >= 0 ? '+' : ''}{matchup.margin.toFixed(1)}
-                </div>
-                <div style={{ marginTop:6, color:V2.muted, fontSize:12, fontWeight:800 }}>margin</div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
-            <div>
-              <V2Eyebrow>{hasRealData ? 'Latest snapshot' : 'Fantrax snapshot'}</V2Eyebrow>
-              <div style={{ marginTop:8, fontSize:19, fontWeight:700, fontFamily:V2.fontDisplay }}>{staleCopy}</div>
-            </div>
-            <div style={{ textAlign:'right' }}>
-              <div style={{ fontSize:25, fontWeight:800, fontFamily:V2.fontMono }}>{health.roster.length || '—'}</div>
-              <div style={{ color:V2.muted, fontSize:11, fontWeight:800, textTransform:'uppercase', letterSpacing:'0.08em' }}>players</div>
-            </div>
-          </div>
-        )}
-      </div>
 
       {showRecommendationFallback ? (
         <V2Caution eyebrow="Advice paused" tone="warn">
@@ -1070,7 +1038,96 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
   );
 }
 
-function V2HotSwapsPanel({ items, hasRealData, sync, pausedReason, onAskSkipper }) {
+function V2MatchupStatusCard({
+  matchup,
+  projectionInfo,
+  showProjection,
+  showProjectionFallback,
+  dataQuality,
+  hasRealData,
+  sync,
+  staleCopy,
+  rosterCount,
+}) {
+  const freshness = v2SnapshotFreshnessText(sync);
+  return (
+    <section style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, padding:'16px 18px', overflow:'hidden' }}>
+      {matchup ? (
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+          <div style={{ minWidth:0 }}>
+            <div style={{ display:'flex', alignItems:'center', flexWrap:'wrap', gap:7 }}>
+              <V2Eyebrow color={matchup.leading ? V2.accent : V2.bad}>Matchup · {matchup.leading ? 'Leading' : matchup.margin < 0 ? 'Trailing' : 'Tied'}</V2Eyebrow>
+              <span style={{ color:V2.muted, fontSize:10.5, fontWeight:800, letterSpacing:'0.06em', textTransform:'uppercase' }}>
+                {freshness}
+              </span>
+            </div>
+            <div style={{ marginTop:8, fontSize:27, lineHeight:1, fontWeight:850, letterSpacing:0, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums' }}>
+              {matchup.my.toFixed(1)} <span style={{ color:'#b8afa0', fontFamily:V2.fontDisplay, fontWeight:700 }}>·</span> <span style={{ color:'#b8afa0' }}>{matchup.opp.toFixed(1)}</span>
+            </div>
+            {showProjection ? (
+              <div style={{ marginTop:7, color:projectionInfo.color, fontSize:12.5, fontWeight:850, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums', whiteSpace:'nowrap' }}>
+                Projected {projectionInfo.projectedMy} - {projectionInfo.projectedOpp}
+              </div>
+            ) : null}
+            {showProjectionFallback ? (
+              <div style={{ marginTop:7, color:V2.warn, fontSize:12, fontWeight:800, lineHeight:1.35, textWrap:'pretty' }}>
+                Projection paused: {v2QualityReason(dataQuality, 'projection')}.
+              </div>
+            ) : null}
+            <div style={{ marginTop:8, color:V2.muted, fontSize:13, fontWeight:800, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+              vs {matchup.opponent}{matchup.daysLeft !== null ? ` · ${matchup.daysLeft}d left` : ''}
+            </div>
+          </div>
+          <div style={{ display:'flex', alignItems:'center', gap:11, flexShrink:0 }}>
+            {showProjection ? <V2WinProbabilityRing projection={matchup.projection}/> : null}
+            <div style={{ textAlign:'right', flexShrink:0 }}>
+              <div style={{ color:matchup.margin >= 0 ? V2.accent : V2.bad, fontSize:30, lineHeight:1, fontWeight:850, letterSpacing:0, fontFamily:V2.fontDisplay, fontVariantNumeric:'tabular-nums' }}>
+                {v2Signed(matchup.margin, 1)}
+              </div>
+              <div style={{ marginTop:6, color:V2.muted, fontSize:12, fontWeight:800 }}>margin</div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+          <div>
+            <V2Eyebrow>{hasRealData ? 'Latest snapshot' : 'Fantrax snapshot'}</V2Eyebrow>
+            <div style={{ marginTop:8, fontSize:19, lineHeight:1.15, fontWeight:700, fontFamily:V2.fontDisplay, textWrap:'balance' }}>{staleCopy}</div>
+          </div>
+          <div style={{ textAlign:'right' }}>
+            <div style={{ fontSize:25, fontWeight:800, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums' }}>{rosterCount || '—'}</div>
+            <div style={{ color:V2.muted, fontSize:11, fontWeight:800, textTransform:'uppercase', letterSpacing:'0.08em' }}>players</div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function v2SnapshotFreshnessText(sync) {
+  if (sync.state === 'refreshing') return 'syncing';
+  if (sync.state === 'failed') return 'last scrape failed';
+  const label = sync.label || 'fresh';
+  if (label === 'now') return 'snapshot now';
+  return `snapshot ${label} old`;
+}
+
+function v2HotSwapContextLine(matchup, item) {
+  const card = item?.replacement || {};
+  const benefit = v2Number(card.projected_benefit?.points);
+  const benefitText = benefit ? `${v2Signed(benefit, 1)} projected points` : 'the top projected gain';
+  if (!matchup) return `Best lineup-only move from the latest matchup simulation, worth ${benefitText}.`;
+  const days = matchup.daysLeft !== null ? ` · ${matchup.daysLeft}d left` : '';
+  if (matchup.margin < 0) {
+    return `Trailing by ${Math.abs(matchup.margin).toFixed(1)}${days}; this swap adds ${benefitText} before execution gates.`;
+  }
+  if (matchup.margin > 0) {
+    return `Leading by ${matchup.margin.toFixed(1)}${days}; this swap adds ${benefitText} to protect the edge.`;
+  }
+  return `Tied${days}; this swap adds ${benefitText} from the latest lineup simulation.`;
+}
+
+function V2HotSwapsPanel({ items, hasRealData, sync, pausedReason, matchup, onAskSkipper }) {
   const paused = Boolean(pausedReason);
   const tone = paused
     ? { color:V2.warn, bg:V2.warnSoft }
@@ -1085,7 +1142,7 @@ function V2HotSwapsPanel({ items, hasRealData, sync, pausedReason, onAskSkipper 
         ? 'No hot swaps'
         : 'Waiting for roster data';
   const detail = items.length
-    ? 'Best lineup-only move from the latest matchup simulation.'
+    ? v2HotSwapContextLine(matchup, items[0])
     : paused
       ? `Lineup swap advice is paused: ${pausedReason}.`
       : hasRealData

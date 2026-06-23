@@ -131,16 +131,25 @@ async function skipIfAttentionQueueNotDeployed(page: Page) {
   test.skip(count === 0, 'Target deploy does not have the #58 Attention Queue UI yet.');
 }
 
+const isLocalBundle = process.env.SANDLOT_EXPECT_SLOT_GATE === '1';
+
 test.describe('Today — Attention Queue', () => {
   test('orders roster issues by consequence', async ({ page }) => {
+    test.skip(
+      !isLocalBundle,
+      'Mocked branch-only Today ordering is verified against the rebuilt local bundle; Railway PR E2E remains a live production smoke.',
+    );
+
     await mockSnapshot(page, baseSnapshot());
 
     await page.goto('/');
     await waitForAppMount(page);
     await skipIfAttentionQueueNotDeployed(page);
 
+    await expect(page.getByText('Matchup · Leading')).toBeVisible();
+    await expect(page.getByText('snapshot 12m old')).toBeVisible();
     await expect(page.getByText('1 hot swap')).toBeVisible();
-    await expect(page.getByText('Best lineup-only move from the latest matchup simulation.')).toBeVisible();
+    await expect(page.getByText('Leading by 6.1 · 2d left; this swap adds +2.4 projected points to protect the edge.')).toBeVisible();
     await expect(page.getByText('1 urgent · 1 check · 1 review')).toBeVisible();
     await expect(page.getByText('Day-to-day on OF. Inspect replacement risk before lock.')).toBeVisible();
     await expect(page.getByText('No projected output. Confirm the active slot before leaving this player in.')).toBeVisible();
@@ -150,23 +159,26 @@ test.describe('Today — Attention Queue', () => {
       expect(box).not.toBeNull();
       return box!.y;
     };
+    const matchupTop = await yOf(page.getByText('Matchup · Leading'));
+    const hotSwapsTop = await yOf(page.getByText('1 hot swap'));
     const judge = await yOf(page.getByRole('button', { name: /Aaron Judge/ }));
     const webb = await yOf(page.getByRole('button', { name: /Logan Webb/ }));
     const cold = await yOf(page.getByRole('button', { name: /Cold Corner Review Output/ }));
     const replacement = await yOf(page.getByText('Bench Bat for Cold Corner'));
 
+    expect(matchupTop).toBeLessThan(hotSwapsTop);
     expect(replacement).toBeLessThan(judge);
     expect(webb).toBeGreaterThan(judge);
     expect(cold).toBeGreaterThan(webb);
 
+    const queueSection = page.locator('section').filter({ hasText: 'Bench Bat for Cold Corner' });
     await expect(page.getByText('Bench Bat for Cold Corner')).toBeVisible();
     await expect(page.getByText('OUT', { exact: true })).toBeVisible();
     await expect(page.getByText('IN', { exact: true })).toBeVisible();
-    await expect(page.getByText('+2.4')).toBeVisible();
+    await expect(queueSection.getByText('+2.4', { exact: true })).toBeVisible();
     await expect(page.getByText('high confidence', { exact: true })).toBeVisible();
     await expect(page.getByText('medium risk', { exact: true })).toBeVisible();
     await expect(page.getByText('latest Fantrax snapshot', { exact: true })).toBeVisible();
-    const queueSection = page.locator('section').filter({ hasText: 'Bench Bat for Cold Corner' });
     if (process.env.SANDLOT_EXPECT_SLOT_GATE === '1') {
       await expect(page.getByText('Locked', { exact: true })).toBeVisible();
       await expect(queueSection.getByText('Movability. Fantrax currently marks Cold Corner unavailable for lineup changes.')).toBeVisible();
@@ -190,6 +202,11 @@ test.describe('Today — Attention Queue', () => {
   });
 
   test('shows a clear empty state when the snapshot has no queue items', async ({ page }) => {
+    test.skip(
+      !isLocalBundle,
+      'Mocked branch-only Today empty state is verified against the rebuilt local bundle; Railway PR E2E remains a live production smoke.',
+    );
+
     await mockSnapshot(page, baseSnapshot({
       roster: [
         { id: 'healthy-a', name: 'Healthy Bat', positions: 'OF', team: 'LAD', slot: 'OF', slot_source: 'raw.statusId', fppg: 5.8 },
@@ -218,7 +235,7 @@ test.describe('Today — Attention Queue', () => {
 
   test('pauses swap guidance when lineup slot provenance is untrusted', async ({ page }) => {
     test.skip(
-      process.env.SANDLOT_EXPECT_SLOT_GATE !== '1',
+      !isLocalBundle,
       'Slot-provenance pause UI is verified against the rebuilt local bundle, not the current Railway deploy.',
     );
 
@@ -266,7 +283,7 @@ test.describe('Today — Attention Queue', () => {
 
   test('pauses swap guidance when explicit lineup readiness is missing', async ({ page }) => {
     test.skip(
-      process.env.SANDLOT_EXPECT_SLOT_GATE !== '1',
+      !isLocalBundle,
       'Slot-provenance pause UI is verified against the rebuilt local bundle, not the current Railway deploy.',
     );
 
@@ -286,5 +303,31 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('Advice paused')).toBeVisible();
     await expect(page.getByText('Lineup and replacement advice is paused: Lineup recommendation readiness is not explicitly trusted.')).toBeVisible();
     await expect(page.getByText('Review lineup move')).toHaveCount(0);
+  });
+
+  test('production Today smoke keeps matchup and advice visible', async ({ page }) => {
+    test.skip(isLocalBundle, 'Railway smoke runs only against the deployed production app.');
+
+    await page.goto('/');
+    await waitForAppMount(page);
+    await skipIfAttentionQueueNotDeployed(page);
+
+    const matchup = page.getByText(/Matchup · (Leading|Trailing|Tied)/i).first();
+    const hotSwaps = page.getByText('Hot Swaps', { exact: true }).first();
+    const attention = page.getByText('Attention Queue', { exact: true }).first();
+
+    await expect(matchup).toBeVisible();
+    await expect(hotSwaps).toBeVisible();
+    await expect(attention).toBeVisible();
+    await expect(page.getByText(/first snapshot was empty/i)).toHaveCount(0);
+
+    if (process.env.GITHUB_EVENT_NAME === 'push') {
+      const yOf = async (locator: ReturnType<Page['locator']>) => {
+        const box = await locator.boundingBox();
+        expect(box).not.toBeNull();
+        return box!.y;
+      };
+      expect(await yOf(matchup)).toBeLessThan(await yOf(hotSwaps));
+    }
   });
 });

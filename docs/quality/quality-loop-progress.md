@@ -528,6 +528,32 @@
   Fantrax movability safety row, blocked proposal action, Ask Skipper, Deep
   research, no `first snapshot was empty`, no `Waiting for roster data`, and
   no console errors.
+- 2026-06-23: Started the Ramp-oriented Today operating-context slice on
+  `feature/today-operating-context`. Claude Opus reviewed the approach and
+  pushed one important product fix: simply reordering widgets is not enough;
+  Hot Swaps must causally reference the matchup state. Accepted changes move
+  the Matchup card above Hot Swaps, show snapshot freshness on the matchup
+  card, and change Hot Swaps detail copy to reference current margin, days
+  left, and projected benefit. Verification so far: direct `esbuild` rebuild
+  passed, `git diff --check` passed, and browser verification against a local
+  mock API using production snapshot `221` showed Matchup first, Hot Swaps
+  second, Attention Queue third, causal trailing/benefit copy, and no console
+  errors. Local npm Playwright could not run because this shell has no
+  `npm`/`node`; the Playwright spec is updated for CI.
+- 2026-06-23: Fixed the first PR #89 Playwright failures. Root cause was split:
+  production E2E was asserting exact mocked branch-only copy against the live
+  Railway deploy before the branch was merged, and the local mocked fixture
+  exposed a real compatibility bug where `v2MatchupInfo()` read `daysLeft` but
+  not backend-style `days_left`. Updated
+  `tests/playwright/specs/today-attention.spec.ts` so exact mocked Today
+  ordering/copy runs only in `Local frontend E2E`; Railway keeps a live smoke
+  for Matchup, Hot Swaps, Attention Queue, and no empty-snapshot regression,
+  with stricter Matchup-before-Hot-Swaps ordering only on `main` push after
+  Railway deploys. Updated `web/sandlot/v2-pages.jsx` to accept
+  `matchup.days_left`. Verification: direct native `esbuild` rebuild passed,
+  `git diff --check` passed, and `.venv/bin/python -m unittest
+  tests.test_sandlot_attention` passed (`26` tests). Local npm Playwright is
+  unavailable in this shell, so GitHub's PR rerun remains the browser proof.
 
 ## Next Loop Phase
 

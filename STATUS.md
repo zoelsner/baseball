@@ -213,6 +213,24 @@
   the locked Ildemaro Vargas for TJ Friedl card, safety checklist, Ask
   Skipper, Deep research, no `first snapshot was empty`, no waiting-roster
   error, and no console errors.
+- **Ramp-oriented Today context slice:** branch
+  `feature/today-operating-context` reframes Today as an operating loop:
+  Matchup status first, Hot Swaps as the recommended next action second, and
+  Attention Queue as secondary monitoring. Claude's second-opinion pass pushed
+  one product requirement that is now implemented locally: Hot Swaps copy must
+  reference the matchup state, not just sit below it. Verification so far:
+  direct `esbuild` rebuild passed, `git diff --check` passed, and local browser
+  verification against production snapshot `221` showed Matchup first, Hot
+  Swaps second, Attention Queue third, causal trailing/benefit copy, and no
+  console errors. Local npm Playwright is unavailable in this shell; the spec
+  is updated for CI. First PR #89 Playwright run found the intended CI-boundary
+  issue: exact mocked branch-only UI assertions were running against the live
+  Railway PR smoke before the branch was deployed. The fix keeps exact mocked
+  Today ordering/copy assertions in `Local frontend E2E`, keeps Railway as a
+  live production smoke, and only asserts production ordering on `main` push
+  after Railway deploys the merged branch. The same patch also fixes
+  `matchup.days_left` handling so backend-style payloads keep `Nd left` in the
+  causal Hot Swaps copy.
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 
@@ -220,13 +238,20 @@
    disabled until #63's executor safety can accept a lineup-only proposal with
    named OUT/IN players, trusted slot provenance, trusted movability, a
    preflight refresh, Zach confirmation, and post-write verification.
-2. **Finish #67 real-slot proof archival** — the production gate is now clear
+2. **Finish the Ramp-oriented Today context PR** — push
+   `feature/today-operating-context`, let CI run the updated Playwright spec,
+   merge if green, then production-verify the real Railway Today page shows
+   Matchup first and causal Hot Swaps copy.
+3. **Add the eval/decision receipt surface** — expose source, model version,
+   input hash, accepted/rejected outcome, and later hindsight result so the app
+   demonstrates AI evaluation and QA principles for the Ramp story.
+4. **Finish #67 real-slot proof archival** — the production gate is now clear
    via raw `posId`, but keep `diagnose_slot_provenance.py` available for DOM
    slot proof if Fantrax changes raw roster semantics.
-3. **Rework #63's Selenium flows** against the DOM map on the PR. Add the hard guard: refuse `drop_player` for `Min`/IL-slot players. Cloud-friendly to write; not to test.
-4. **Re-run write scenarios (3/5/6/7b) locally, headful, with Zach watching.** Judge is the real IL-move target. Local-only — needs Mac + Fantrax creds.
-5. **Set Railway tokens**, verify 503→401 behavior by curl.
-6. **Merge #63, wire Zo** — phase 1 vocabulary only (`move_to_il`, `change_slot`). One real end-to-end loop (queue → Telegram → yes → executed → `action_logs` row) closes #66.
+5. **Rework #63's Selenium flows** against the DOM map on the PR. Add the hard guard: refuse `drop_player` for `Min`/IL-slot players. Cloud-friendly to write; not to test.
+6. **Re-run write scenarios (3/5/6/7b) locally, headful, with Zach watching.** Judge is the real IL-move target. Local-only — needs Mac + Fantrax creds.
+7. **Set Railway tokens**, verify 503→401 behavior by curl.
+8. **Merge #63, wire Zo** — phase 1 vocabulary only (`move_to_il`, `change_slot`). One real end-to-end loop (queue → Telegram → yes → executed → `action_logs` row) closes #66.
 
 ## Safety rules (non-negotiable — full text on [#66](https://github.com/zoelsner/baseball/issues/66#issuecomment-4695871271))
 
