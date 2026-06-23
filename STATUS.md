@@ -223,7 +223,14 @@
   verification against production snapshot `221` showed Matchup first, Hot
   Swaps second, Attention Queue third, causal trailing/benefit copy, and no
   console errors. Local npm Playwright is unavailable in this shell; the spec
-  is updated for CI.
+  is updated for CI. First PR #89 Playwright run found the intended CI-boundary
+  issue: exact mocked branch-only UI assertions were running against the live
+  Railway PR smoke before the branch was deployed. The fix keeps exact mocked
+  Today ordering/copy assertions in `Local frontend E2E`, keeps Railway as a
+  live production smoke, and only asserts production ordering on `main` push
+  after Railway deploys the merged branch. The same patch also fixes
+  `matchup.days_left` handling so backend-style payloads keep `Nd left` in the
+  causal Hot Swaps copy.
 
 ## Next steps, in order ([#66](https://github.com/zoelsner/baseball/issues/66) tracks activation)
 

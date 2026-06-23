@@ -658,6 +658,7 @@ function v2MatchupInfo(matchup) {
     }
   }
   if (daysLeft === null && matchup.daysLeft !== undefined) daysLeft = v2Number(matchup.daysLeft);
+  if (daysLeft === null && matchup.days_left !== undefined) daysLeft = v2Number(matchup.days_left);
   const leading = margin > 0;
   return { my, opp, margin, opponent, week, daysLeft, leading, projection:matchup.projection || null };
 }

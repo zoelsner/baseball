@@ -540,6 +540,20 @@
   second, Attention Queue third, causal trailing/benefit copy, and no console
   errors. Local npm Playwright could not run because this shell has no
   `npm`/`node`; the Playwright spec is updated for CI.
+- 2026-06-23: Fixed the first PR #89 Playwright failures. Root cause was split:
+  production E2E was asserting exact mocked branch-only copy against the live
+  Railway deploy before the branch was merged, and the local mocked fixture
+  exposed a real compatibility bug where `v2MatchupInfo()` read `daysLeft` but
+  not backend-style `days_left`. Updated
+  `tests/playwright/specs/today-attention.spec.ts` so exact mocked Today
+  ordering/copy runs only in `Local frontend E2E`; Railway keeps a live smoke
+  for Matchup, Hot Swaps, Attention Queue, and no empty-snapshot regression,
+  with stricter Matchup-before-Hot-Swaps ordering only on `main` push after
+  Railway deploys. Updated `web/sandlot/v2-pages.jsx` to accept
+  `matchup.days_left`. Verification: direct native `esbuild` rebuild passed,
+  `git diff --check` passed, and `.venv/bin/python -m unittest
+  tests.test_sandlot_attention` passed (`26` tests). Local npm Playwright is
+  unavailable in this shell, so GitHub's PR rerun remains the browser proof.
 
 ## Next Loop Phase
 
