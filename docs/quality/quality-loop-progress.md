@@ -452,8 +452,10 @@
   pause tests gated. Verification: `git diff --check` passed and
   `.venv/bin/python -m unittest tests.test_sandlot_attention` passed (`26`
   tests). Local Playwright could not run because this shell has no `node`
-  binary; GitHub Actions remains the browser verification path for the pushed
-  spec fix.
+  binary; GitHub Actions supplied the browser verification after push. PR #84
+  commit `09fe527` passed CI run `147` (frontend build plus Python
+  import/unit suite) and Playwright run `171` (Railway production E2E plus
+  local frontend E2E).
 
 ## Next Loop Phase
 

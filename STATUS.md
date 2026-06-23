@@ -169,8 +169,10 @@
    the current split behavior for both Railway and local runs. Local evidence:
    `git diff --check` passed and `.venv/bin/python -m unittest
    tests.test_sandlot_attention` passed (`26` tests). Local Playwright remains
-   blocked by this shell having no `node` binary, so GitHub Actions is the
-   browser proof for the Playwright change.
+   blocked by this shell having no `node` binary, so GitHub Actions provided
+   the browser proof: PR #84 commit `09fe527` passed CI run `147` (frontend
+   build plus Python import/unit suite) and Playwright run `171` (Railway
+   production E2E plus local frontend E2E).
 2. **Finish #67 real-slot proof** — with valid local Fantrax cookies, a saved
    raw `getTeamRosterInfo` payload, or a saved roster-page HTML file plus
    matching snapshot, refresh/read-only inspect `slot_source` coverage from raw
