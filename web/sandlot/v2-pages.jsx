@@ -1408,7 +1408,7 @@ function V2ProposalSafetyChecklist({ proposal, checks }) {
     <div aria-label="Proposal safety" style={{
       display:'flex',
       flexDirection:'column',
-      gap:7,
+      gap:8,
       padding:'2px 0 1px',
     }}>
       <div style={{ display:'flex', justifyContent:'space-between', gap:10, alignItems:'baseline' }}>
@@ -1417,7 +1417,7 @@ function V2ProposalSafetyChecklist({ proposal, checks }) {
           {proposal.status || 'blocked'}
         </div>
       </div>
-      <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:5 }}>
+      <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
         {checks.map((check, index) => {
           const tone = check.state === 'blocked'
             ? { fg:V2.warn, bg:V2.warnSoft }
@@ -1426,28 +1426,52 @@ function V2ProposalSafetyChecklist({ proposal, checks }) {
               : { fg:V2.ok, bg:V2.okSoft };
           return (
             <div key={check.key || `${check.label}-${index}`} style={{
-              display:'grid',
-              gridTemplateColumns:'12px 1fr',
-              gap:7,
-              alignItems:'start',
-              minHeight:24,
+              display:'inline-flex',
+              alignItems:'center',
+              gap:6,
+              maxWidth:'100%',
+              borderRadius:999,
+              background:tone.bg,
+              color:tone.fg,
+              padding:'5px 8px',
+              fontSize:10.5,
+              lineHeight:1.15,
+              fontWeight:900,
             }}>
               <span aria-hidden="true" style={{
-                width:8,
-                height:8,
+                width:6,
+                height:6,
                 borderRadius:999,
-                marginTop:5,
                 background:tone.fg,
-                boxShadow:`0 0 0 3px ${tone.bg}`,
+                flexShrink:0,
               }}/>
-              <span style={{ minWidth:0, color:V2.body, fontSize:11.5, lineHeight:1.28, fontWeight:800, textWrap:'pretty' }}>
-                <span style={{ color:V2.ink }}>{check.label}</span>
-                {check.detail ? <span style={{ color:V2.muted, fontWeight:750 }}> - {check.detail}</span> : null}
-              </span>
+              <span style={{ minWidth:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{check.label}</span>
             </div>
           );
         })}
       </div>
+      <details style={{ marginTop:1 }}>
+        <summary style={{
+          minHeight:40,
+          display:'flex',
+          alignItems:'center',
+          color:V2.muted,
+          fontSize:11,
+          fontWeight:850,
+          cursor:'pointer',
+          textWrap:'pretty',
+        }}>
+          Show safety details
+        </summary>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:6, paddingTop:1 }}>
+          {checks.map((check, index) => (
+            <div key={check.key || `${check.label}-${index}`} style={{ color:V2.body, fontSize:11.5, lineHeight:1.35, fontWeight:750, textWrap:'pretty' }}>
+              <span style={{ color:V2.ink, fontWeight:900 }}>{check.label}</span>
+              {check.detail ? <span style={{ color:V2.muted }}> - {check.detail}</span> : null}
+            </div>
+          ))}
+        </div>
+      </details>
     </div>
   );
 }
@@ -1476,7 +1500,18 @@ function V2LineupSwapPlayer({ label, player, tone }) {
         {label}
       </div>
       <div style={{ minWidth:0 }}>
-        <div style={{ color:V2.ink, fontSize:15, lineHeight:1.1, fontWeight:800, fontFamily:V2.fontDisplay, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+        <div style={{
+          color:V2.ink,
+          fontSize:15,
+          lineHeight:1.1,
+          fontWeight:800,
+          fontFamily:V2.fontDisplay,
+          overflow:'hidden',
+          display:'-webkit-box',
+          WebkitLineClamp:2,
+          WebkitBoxOrient:'vertical',
+          textWrap:'balance',
+        }}>
           {player?.name || 'Unknown player'}
         </div>
         <div style={{ marginTop:3, color:V2.muted, fontSize:11, lineHeight:1.25, fontWeight:750, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
