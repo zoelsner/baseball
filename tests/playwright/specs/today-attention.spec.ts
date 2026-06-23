@@ -139,8 +139,10 @@ test.describe('Today — Attention Queue', () => {
     await waitForAppMount(page);
     await skipIfAttentionQueueNotDeployed(page);
 
+    await expect(page.getByText('Matchup · Leading')).toBeVisible();
+    await expect(page.getByText('snapshot 12m old')).toBeVisible();
     await expect(page.getByText('1 hot swap')).toBeVisible();
-    await expect(page.getByText('Best lineup-only move from the latest matchup simulation.')).toBeVisible();
+    await expect(page.getByText('Leading by 6.1 · 2d left; this swap adds +2.4 projected points to protect the edge.')).toBeVisible();
     await expect(page.getByText('1 urgent · 1 check · 1 review')).toBeVisible();
     await expect(page.getByText('Day-to-day on OF. Inspect replacement risk before lock.')).toBeVisible();
     await expect(page.getByText('No projected output. Confirm the active slot before leaving this player in.')).toBeVisible();
@@ -150,11 +152,14 @@ test.describe('Today — Attention Queue', () => {
       expect(box).not.toBeNull();
       return box!.y;
     };
+    const matchupTop = await yOf(page.getByText('Matchup · Leading'));
+    const hotSwapsTop = await yOf(page.getByText('1 hot swap'));
     const judge = await yOf(page.getByRole('button', { name: /Aaron Judge/ }));
     const webb = await yOf(page.getByRole('button', { name: /Logan Webb/ }));
     const cold = await yOf(page.getByRole('button', { name: /Cold Corner Review Output/ }));
     const replacement = await yOf(page.getByText('Bench Bat for Cold Corner'));
 
+    expect(matchupTop).toBeLessThan(hotSwapsTop);
     expect(replacement).toBeLessThan(judge);
     expect(webb).toBeGreaterThan(judge);
     expect(cold).toBeGreaterThan(webb);

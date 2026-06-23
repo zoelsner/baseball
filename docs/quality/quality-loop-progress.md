@@ -528,6 +528,18 @@
   Fantrax movability safety row, blocked proposal action, Ask Skipper, Deep
   research, no `first snapshot was empty`, no `Waiting for roster data`, and
   no console errors.
+- 2026-06-23: Started the Ramp-oriented Today operating-context slice on
+  `feature/today-operating-context`. Claude Opus reviewed the approach and
+  pushed one important product fix: simply reordering widgets is not enough;
+  Hot Swaps must causally reference the matchup state. Accepted changes move
+  the Matchup card above Hot Swaps, show snapshot freshness on the matchup
+  card, and change Hot Swaps detail copy to reference current margin, days
+  left, and projected benefit. Verification so far: direct `esbuild` rebuild
+  passed, `git diff --check` passed, and browser verification against a local
+  mock API using production snapshot `221` showed Matchup first, Hot Swaps
+  second, Attention Queue third, causal trailing/benefit copy, and no console
+  errors. Local npm Playwright could not run because this shell has no
+  `npm`/`node`; the Playwright spec is updated for CI.
 
 ## Next Loop Phase
 
