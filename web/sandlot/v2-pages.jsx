@@ -1466,7 +1466,7 @@ function V2ProposalSafetyChecklist({ proposal, checks }) {
         <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:6, paddingTop:1 }}>
           {checks.map((check, index) => (
             <div key={check.key || `${check.label}-${index}`} style={{ color:V2.body, fontSize:11.5, lineHeight:1.35, fontWeight:750, textWrap:'pretty' }}>
-              <span style={{ color:V2.ink, fontWeight:900 }}>{check.label}</span>
+              <span style={{ color:V2.ink, fontWeight:900 }}>Safety detail: {check.label}</span>
               {check.detail ? <span style={{ color:V2.muted }}> - {check.detail}</span> : null}
             </div>
           ))}
