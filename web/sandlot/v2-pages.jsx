@@ -1329,6 +1329,8 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
         ) : null}
       </div>
 
+      <V2LineupHotSwapActions execution={execution} card={card} onAskSkipper={onAskSkipper}/>
+
       <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
         <V2ReasonLine color={V2.ok} label="Why" text={card.reason || item.reason}/>
         <V2ReasonLine color={V2.accent} label="Outlook" text={card.short_term_outlook}/>
@@ -1346,59 +1348,63 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
       </div>
 
       {safetyChecks.length ? <V2ProposalSafetyChecklist proposal={proposal} checks={safetyChecks}/> : null}
+    </div>
+  );
+}
 
-      <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-        <button disabled title={execution.reason || card.blocked_reason || 'Execution safety is not ready'} style={{
-          flex:'1 1 135px',
-          minHeight:40,
-          border:'none',
-          borderRadius:999,
-          background:V2.surface2,
-          color:V2.muted,
-          fontFamily:'inherit',
-          fontSize:12.5,
-          fontWeight:900,
-          cursor:'not-allowed',
-        }}>
-          {execution.label || 'Propose swap'} blocked
-        </button>
-        <button onClick={()=>onAskSkipper?.(v2BuildLineupSwapSkipperPrompt(card, 'quick'))} style={{
-          flex:'1 1 120px',
-          minHeight:40,
-          display:'inline-flex',
-          alignItems:'center',
-          justifyContent:'center',
-          gap:7,
-          border:'none',
-          borderRadius:999,
-          background:V2.accentSoft,
-          color:V2.accent,
-          fontFamily:'inherit',
-          fontSize:12.5,
-          fontWeight:900,
-          cursor:'pointer',
-        }}>
-          {Icons.chat(V2.accent, 14)} Ask Skipper
-        </button>
-        <button onClick={()=>onAskSkipper?.(v2BuildLineupSwapSkipperPrompt(card, 'deep'))} style={{
-          flex:'1 1 125px',
-          minHeight:40,
-          display:'inline-flex',
-          alignItems:'center',
-          justifyContent:'center',
-          gap:7,
-          border:'none',
-          borderRadius:999,
-          background:V2.ink,
-          color:'#fff',
-          fontFamily:'inherit',
-          fontSize:12.5,
-          fontWeight:900,
-          cursor:'pointer',
-        }}>
-          {Icons.search('#fff', 14)} Deep research
-        </button>
-      </div>
+function V2LineupHotSwapActions({ execution, card, onAskSkipper }) {
+  return (
+    <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+      <button disabled title={execution.reason || card.blocked_reason || 'Execution safety is not ready'} style={{
+        flex:'1 1 135px',
+        minHeight:40,
+        border:'none',
+        borderRadius:999,
+        background:V2.surface2,
+        color:V2.muted,
+        fontFamily:'inherit',
+        fontSize:12.5,
+        fontWeight:900,
+        cursor:'not-allowed',
+      }}>
+        {execution.label || 'Propose swap'} blocked
+      </button>
+      <button onClick={()=>onAskSkipper?.(v2BuildLineupSwapSkipperPrompt(card, 'quick'))} style={{
+        flex:'1 1 120px',
+        minHeight:40,
+        display:'inline-flex',
+        alignItems:'center',
+        justifyContent:'center',
+        gap:7,
+        border:'none',
+        borderRadius:999,
+        background:V2.accentSoft,
+        color:V2.accent,
+        fontFamily:'inherit',
+        fontSize:12.5,
+        fontWeight:900,
+        cursor:'pointer',
+      }}>
+        {Icons.chat(V2.accent, 14)} Ask Skipper
+      </button>
+      <button onClick={()=>onAskSkipper?.(v2BuildLineupSwapSkipperPrompt(card, 'deep'))} style={{
+        flex:'1 1 125px',
+        minHeight:40,
+        display:'inline-flex',
+        alignItems:'center',
+        justifyContent:'center',
+        gap:7,
+        border:'none',
+        borderRadius:999,
+        background:V2.ink,
+        color:'#fff',
+        fontFamily:'inherit',
+        fontSize:12.5,
+        fontWeight:900,
+        cursor:'pointer',
+      }}>
+        {Icons.search('#fff', 14)} Deep research
+      </button>
     </div>
   );
 }
