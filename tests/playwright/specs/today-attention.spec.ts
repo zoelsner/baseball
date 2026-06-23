@@ -171,14 +171,14 @@ test.describe('Today — Attention Queue', () => {
     expect(webb).toBeGreaterThan(judge);
     expect(cold).toBeGreaterThan(webb);
 
+    const queueSection = page.locator('section').filter({ hasText: 'Bench Bat for Cold Corner' });
     await expect(page.getByText('Bench Bat for Cold Corner')).toBeVisible();
     await expect(page.getByText('OUT', { exact: true })).toBeVisible();
     await expect(page.getByText('IN', { exact: true })).toBeVisible();
-    await expect(page.getByText('+2.4')).toBeVisible();
+    await expect(queueSection.getByText('+2.4', { exact: true })).toBeVisible();
     await expect(page.getByText('high confidence', { exact: true })).toBeVisible();
     await expect(page.getByText('medium risk', { exact: true })).toBeVisible();
     await expect(page.getByText('latest Fantrax snapshot', { exact: true })).toBeVisible();
-    const queueSection = page.locator('section').filter({ hasText: 'Bench Bat for Cold Corner' });
     if (process.env.SANDLOT_EXPECT_SLOT_GATE === '1') {
       await expect(page.getByText('Locked', { exact: true })).toBeVisible();
       await expect(queueSection.getByText('Movability. Fantrax currently marks Cold Corner unavailable for lineup changes.')).toBeVisible();
