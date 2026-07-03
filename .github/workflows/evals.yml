@@ -1,0 +1,35 @@
+name: Skipper evals
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - claude/debug-railway-crash-AvUM7
+    paths:
+      - ".github/workflows/evals.yml"
+      - "scripts/run_skipper_evals.py"
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "psycopg[binary]" requests fastapi openai python-dotenv
+      - name: Run Skipper model evals
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python scripts/run_skipper_evals.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: skipper-evals
+          path: skipper_evals.json
+          if-no-files-found: ignore

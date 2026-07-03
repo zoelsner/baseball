@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
+import unicodedata
 from datetime import date as _date
 from datetime import datetime as _datetime
 from datetime import timezone as _timezone
@@ -28,9 +30,44 @@ DEFAULT_TIMEOUT = 12
 MEDIA_GAME_LIMIT = 5
 MEDIA_ITEM_LIMIT = 5
 
-_PLAYER_INDEX_CACHE: dict[int, list[dict[str, Any]]] = {}
-_TEAM_ABBREV_CACHE: dict[int, dict[int, str]] = {}
-_CACHE_LOCK = threading.Lock()
+_ERROR_TTL = 120.0  # seconds a failed fetch is cached before retrying
+
+
+class _TTLCache:
+    """Tiny per-process TTL cache for MLB Stats API responses.
+
+    Each instance has its own lock, held across the fetch so concurrent
+    callers don't duplicate a request — but a slow fetch for one cache no
+    longer serializes the others. `fetch` returns (value, ok): failures are
+    cached only for `error_ttl` seconds, and if a previous good value exists
+    it keeps being served through the outage until a retry succeeds.
+    """
+
+    def __init__(self, ttl: float, error_ttl: float = _ERROR_TTL):
+        self._ttl = ttl
+        self._error_ttl = error_ttl
+        self._lock = threading.Lock()
+        self._entries: dict[Any, tuple[float, Any]] = {}
+
+    def get_or_fetch(self, key: Any, fetch) -> Any:
+        entry = self._entries.get(key)
+        if entry is not None and entry[0] > time.monotonic():
+            return entry[1]
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None and entry[0] > time.monotonic():
+                return entry[1]
+            value, ok = fetch()
+            if not ok and entry is not None:
+                value = entry[1]
+            self._entries[key] = (time.monotonic() + (self._ttl if ok else self._error_ttl), value)
+            return value
+
+
+# Players get called up, traded, and activated mid-season, so the index
+# refreshes a few times a day. Team abbreviations are static within a season.
+_PLAYER_INDEX_CACHE = _TTLCache(ttl=6 * 3600)
+_TEAM_ABBREV_CACHE = _TTLCache(ttl=24 * 3600)
 
 _TEAM_ABBREV_ALIASES = {
     # Fantrax sometimes uses different abbreviations than MLB Stats API.
@@ -71,6 +108,10 @@ _EXCLUDED_SCHEDULE_STATES = {
 
 
 def _normalize(s: str) -> str:
+    # Transliterate accents first (Muñoz -> Munoz, Suárez -> Suarez) so
+    # Fantrax's unaccented names match MLB's accented ones; stripping the
+    # bytes instead would turn "Muñoz" into "muoz" and never match.
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
     s = s.lower().strip()
     s = re.sub(r"[^a-z\s]", "", s)
     s = re.sub(r"\s+", " ", s)
@@ -89,24 +130,23 @@ def current_season() -> int:
 
 
 def _get_active_players(season: int) -> list[dict[str, Any]]:
-    cached = _PLAYER_INDEX_CACHE.get(season)
-    if cached is not None:
-        return cached
-    with _CACHE_LOCK:
-        cached = _PLAYER_INDEX_CACHE.get(season)
-        if cached is not None:
-            return cached
-        url = f"{BASE_URL}/sports/1/players"
-        params = {
-            "season": season,
-            "fields": "people,id,fullName,firstLastName,currentTeam,abbreviation,name,primaryPosition,abbreviation,code,active",
-        }
-        resp = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT)
-        resp.raise_for_status()
-        people = resp.json().get("people") or []
-        _PLAYER_INDEX_CACHE[season] = people
-        log.info("MLB active player index loaded for season %s (%d players)", season, len(people))
-        return people
+    def fetch() -> tuple[list[dict[str, Any]], bool]:
+        try:
+            url = f"{BASE_URL}/sports/1/players"
+            params = {
+                "season": season,
+                "fields": "people,id,fullName,firstLastName,currentTeam,abbreviation,name,primaryPosition,code,active",
+            }
+            resp = requests.get(url, params=params, timeout=DEFAULT_TIMEOUT)
+            resp.raise_for_status()
+            people = resp.json().get("people") or []
+            log.info("MLB active player index loaded for season %s (%d players)", season, len(people))
+            return people, True
+        except Exception as exc:
+            log.warning("MLB active player fetch failed for season %s: %s", season, exc)
+            return [], False
+
+    return _PLAYER_INDEX_CACHE.get_or_fetch(season, fetch)
 
 
 def lookup_player_by_name(
@@ -121,11 +161,7 @@ def lookup_player_by_name(
     target_norm = _normalize(name)
     target_team = _normalize_team(team)
 
-    try:
-        people = _get_active_players(season)
-    except Exception as exc:
-        log.warning("MLB active player fetch failed: %s", exc)
-        return None
+    people = _get_active_players(season)
 
     matches: list[dict[str, Any]] = []
     for p in people:
@@ -148,13 +184,7 @@ def lookup_player_by_name(
 
 
 def _get_team_abbreviations(season: int) -> dict[int, str]:
-    cached = _TEAM_ABBREV_CACHE.get(season)
-    if cached is not None:
-        return cached
-    with _CACHE_LOCK:
-        cached = _TEAM_ABBREV_CACHE.get(season)
-        if cached is not None:
-            return cached
+    def fetch() -> tuple[dict[int, str], bool]:
         try:
             url = f"{BASE_URL}/teams"
             resp = requests.get(
@@ -168,11 +198,12 @@ def _get_team_abbreviations(season: int) -> dict[int, str]:
                 for t in (resp.json().get("teams") or [])
                 if t.get("id") is not None
             }
+            return mapping, bool(mapping)
         except Exception as exc:
             log.warning("MLB teams lookup failed for season %s: %s", season, exc)
-            mapping = {}
-        _TEAM_ABBREV_CACHE[season] = mapping
-        return mapping
+            return {}, False
+
+    return _TEAM_ABBREV_CACHE.get_or_fetch(season, fetch)
 
 
 def team_id_by_abbreviation(team_abbr: str | None, season: int | None = None) -> int | None:
@@ -413,10 +444,13 @@ def _normalize_split(
         runs = _to_int(stat.get("runs"))
         doubles = _to_int(stat.get("doubles"))
         triples = _to_int(stat.get("triples"))
+        hbp = _to_int(stat.get("hitByPitch"))
+        cs = _to_int(stat.get("caughtStealing"))
         avg_game = (h / ab) if ab else None
         base.update({
             "ab": ab, "h": h, "hr": hr, "rbi": rbi, "bb": bb, "k": k, "sb": sb,
             "r": runs, "doubles": doubles, "triples": triples,
+            "hbp": hbp, "cs": cs,
             "avg_game": round(avg_game, 3) if avg_game is not None else None,
             "line": _hitting_line(ab, h, hr, rbi, bb, k, sb, doubles, triples),
             "fpts_estimated": _hitting_fpts(h, doubles, triples, hr, rbi, bb, sb, k, runs),
@@ -430,9 +464,15 @@ def _normalize_split(
     k = _to_int(stat.get("strikeOuts"))
     win = _to_int(stat.get("wins")) > 0
     save = _to_int(stat.get("saves")) > 0
+    loss = _to_int(stat.get("losses")) > 0
+    hold = _to_int(stat.get("holds")) > 0
+    gs = _to_int(stat.get("gamesStarted")) > 0
     base.update({
         "ip": ip, "h": h, "er": er, "bb": bb, "k": k,
         "win": win, "save": save,
+        "loss": loss, "hold": hold, "gs": gs,
+        # Quality start: 6+ innings, 3 or fewer earned runs, as the starter.
+        "qs": bool(gs and ip >= 6.0 and er <= 3),
         "avg_game": None,
         "line": _pitching_line(ip, h, er, bb, k, win, save),
         "fpts_estimated": _pitching_fpts(ip, k, er, bb, h, win, save),
