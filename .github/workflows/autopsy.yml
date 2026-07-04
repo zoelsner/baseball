@@ -1,0 +1,37 @@
+name: Lineup autopsy
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - claude/debug-railway-crash-AvUM7
+    paths:
+      - ".github/workflows/autopsy.yml"
+      - "scripts/run_autopsy.py"
+      - "sandlot_autopsy.py"
+      - "sandlot_scoring.py"
+      - "mlb_stats.py"
+
+permissions:
+  contents: read
+
+jobs:
+  autopsy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "psycopg[binary]" requests
+      - name: Run autopsy
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/run_autopsy.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: autopsy-report
+          path: autopsy_report.json
+          if-no-files-found: ignore

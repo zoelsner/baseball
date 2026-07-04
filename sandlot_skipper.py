@@ -1,11 +1,10 @@
 """Skipper chat — roster Q&A grounded in the latest Fantrax snapshot.
 
 Uses OpenRouter's OpenAI-compatible API. DeepSeek V4 Flash is the primary
-model; Kimi (Moonshot) is the fallback. The `for model in model_order: try ...
-except: continue` loop in `SkipperClient.stream` retries the next model on any
-exception during streaming — pre-stream, mid-stream, or empty stream. Partial
-tokens from a failed primary may already be on the wire when the fallback
-takes over; the SSE consumer should treat the stream as best-effort.
+model; Kimi (Moonshot) is the fallback. `SkipperClient.stream` falls back to
+the next model only on pre-stream errors or an empty stream; once tokens have
+been yielded, a mid-stream failure raises instead of splicing a second
+model's full reply onto a partial one.
 
 Context tier:
 - Tier 2 (default): system prompt + my roster + standings
@@ -878,6 +877,7 @@ class SkipperClient:
         extra_body = _reasoning_extra_body(reasoning_effort)
         web_tool_attempted = False
         for model in (model_order or default_model_order()):
+            yielded_any = False
             try:
                 attach_web_tool = web_search and not web_tool_attempted
                 kwargs = {
@@ -892,7 +892,6 @@ class SkipperClient:
                 if extra_body:
                     kwargs["extra_body"] = extra_body
                 stream = self.client.chat.completions.create(**kwargs)
-                yielded_any = False
                 for chunk in stream:
                     for source in _extract_url_citations(chunk):
                         yield ("source", source)
@@ -913,6 +912,11 @@ class SkipperClient:
                 failures.append(f"{model}: empty stream")
                 log.warning("Skipper model %s returned no tokens; trying fallback", model)
             except Exception as e:
+                if yielded_any:
+                    # Tokens already went out — falling back here would splice a
+                    # second model's full reply onto a partial one.
+                    log.warning("Skipper model %s failed mid-stream; not retrying", model)
+                    raise
                 failures.append(f"{model}: {type(e).__name__}: {e}")
                 log.warning(
                     "Skipper model %s failed%s: %s; trying fallback",

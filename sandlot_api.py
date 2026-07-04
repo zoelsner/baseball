@@ -439,6 +439,7 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
             ):
                 if kind == "token":
                     assistant_buf.append(payload_text)
+                    yield _sse({"type": "token", "text": payload_text})
                 elif kind == "model":
                     used_model = payload_text
                 elif kind == "source" and isinstance(payload_text, dict):
@@ -455,9 +456,13 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
             yield _sse({"type": "error", "message": str(exc)})
             return
 
-        full = sandlot_skipper.repair_reply("".join(assistant_buf), user_text, snapshot)
+        raw = "".join(assistant_buf)
+        full = sandlot_skipper.repair_reply(raw, user_text, snapshot)
+        if sandlot_skipper.is_broken_reply(raw) and full:
+            # The streamed text was a broken refusal; tell the frontend to swap
+            # in the deterministic explanation that replaces it.
+            yield _sse({"type": "replace", "text": full})
         if full:
-            yield _sse({"type": "token", "text": full})
             try:
                 sandlot_db.append_chat_message(
                     session_id, "assistant", full, tier=tier, model=used_model

@@ -3689,6 +3689,14 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
               next[next.length - 1] = { ...last, text: (last.text || '') + evt.text };
               return next;
             });
+          } else if (evt.type === 'replace' && evt.text) {
+            // Backend repaired a broken reply — swap the streamed text wholesale.
+            setMsgs(m => {
+              const next = m.slice();
+              const last = next[next.length - 1];
+              next[next.length - 1] = { ...last, text: evt.text };
+              return next;
+            });
           } else if (evt.type === 'sources' && Array.isArray(evt.sources)) {
             setMsgs(m => {
               if (!m.length) return m;
@@ -3706,6 +3714,13 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
             });
           } else if (evt.type === 'error') {
             setError(evt.message || 'Skipper failed');
+            // Drop the AI bubble if the stream errored before any tokens
+            setMsgs(m => {
+              if (m.length && m[m.length-1].role === 'ai' && !m[m.length-1].text) {
+                return m.slice(0, -1);
+              }
+              return m;
+            });
           }
         }
       }
