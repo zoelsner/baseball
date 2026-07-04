@@ -39,9 +39,10 @@ import mlb_stats  # noqa: E402
 import sandlot_skipper as sk  # noqa: E402
 
 DEFAULT_MODELS = [
-    "moonshotai/kimi-k2",          # current primary
-    "tencent/hy3-preview:free",    # current fallback
+    "deepseek/deepseek-v4-flash",  # current primary
+    "moonshotai/kimi-k2",          # current fallback
     "deepseek/deepseek-chat",
+    "z-ai/glm-5.2",                # in-app deeper-analysis option
     "z-ai/glm-4.6",
     "qwen/qwen3-32b",
     "anthropic/claude-haiku-4.5",  # quality/cost anchor
