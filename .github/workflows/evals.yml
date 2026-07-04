@@ -8,6 +8,7 @@ on:
     paths:
       - ".github/workflows/evals.yml"
       - "scripts/run_skipper_evals.py"
+      - "sandlot_skipper.py"
 
 permissions:
   contents: read
