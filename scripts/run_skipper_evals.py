@@ -246,12 +246,48 @@ def openrouter_catalog(key):
     resp = requests.get("https://openrouter.ai/api/v1/models",
                         headers={"Authorization": f"Bearer {key}"}, timeout=20)
     resp.raise_for_status()
+    raw = resp.json().get("data") or []
     out = {}
-    for m in resp.json().get("data") or []:
+    for m in raw:
         pricing = m.get("pricing") or {}
-        out[m.get("id")] = (float(pricing.get("prompt") or 0),
-                            float(pricing.get("completion") or 0))
-    return out
+        try:
+            out[m.get("id")] = (float(pricing.get("prompt") or 0),
+                                float(pricing.get("completion") or 0))
+        except (TypeError, ValueError):
+            continue
+    return out, raw
+
+
+# Families scouted in wide mode (SANDLOT_EVAL_WIDE=1): the cheapest paid
+# text-capable model from each joins the candidate list, so the eval
+# considers whatever exists in the catalog this week — not just incumbents.
+WIDE_FAMILIES = ("google", "openai", "meta-llama", "mistralai",
+                 "x-ai", "minimax", "amazon", "bytedance")
+WIDE_PRICE_CEILING = 25e-6  # prompt+completion per token; excludes big-tier models
+
+
+def wide_candidates(raw):
+    best: dict[str, tuple[float, str]] = {}
+    for m in raw:
+        mid = m.get("id") or ""
+        fam = mid.split("/")[0]
+        if fam not in WIDE_FAMILIES or mid.endswith(":free"):
+            continue
+        # Accept anything that outputs text (image inputs are fine — Gemini
+        # Flash / GPT-mini tiers are typically "text+image->text").
+        modality = ((m.get("architecture") or {}).get("modality") or "")
+        if modality and not modality.endswith("->text"):
+            continue
+        pricing = m.get("pricing") or {}
+        try:
+            cost = float(pricing.get("prompt") or 0) + float(pricing.get("completion") or 0)
+        except (TypeError, ValueError):
+            continue
+        if cost <= 0 or cost > WIDE_PRICE_CEILING:
+            continue
+        if fam not in best or cost < best[fam][0]:
+            best[fam] = (cost, mid)
+    return [mid for _, mid in sorted(best.values())]
 
 
 def run_case(client, model, messages):
@@ -296,10 +332,15 @@ def run():
         else:
             live_tasks.append((name, prompt, grade))
 
-    catalog = openrouter_catalog(key)
+    catalog, raw_catalog = openrouter_catalog(key)
     wanted = [m.strip() for m in
               os.environ.get("SANDLOT_EVAL_MODELS", ",".join(DEFAULT_MODELS)).split(",")
               if m.strip()]
+    if os.environ.get("SANDLOT_EVAL_WIDE") == "1":
+        scouted = [m for m in wide_candidates(raw_catalog) if m not in wanted]
+        if scouted:
+            print("  wide mode scouted: " + ", ".join(scouted))
+        wanted += scouted
     models = [m for m in wanted if m in catalog]
     for m in wanted:
         if m not in catalog:

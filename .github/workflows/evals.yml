@@ -16,7 +16,7 @@ permissions:
 jobs:
   evals:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,6 +27,7 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          SANDLOT_EVAL_WIDE: "1"
         run: python scripts/run_skipper_evals.py
       - uses: actions/upload-artifact@v4
         if: always()
