@@ -148,6 +148,28 @@ def init_schema() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS game_scores (
+              mlb_id BIGINT NOT NULL,
+              season INTEGER NOT NULL,
+              game_date DATE NOT NULL,
+              game_pk BIGINT NOT NULL DEFAULT 0,
+              stat_group TEXT NOT NULL CHECK (stat_group IN ('hitting', 'pitching')),
+              gs BOOLEAN NOT NULL DEFAULT FALSE,
+              pts DOUBLE PRECISION NOT NULL,
+              stats JSONB NOT NULL DEFAULT '{}'::jsonb,
+              fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              PRIMARY KEY (mlb_id, stat_group, game_pk)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS game_scores_date_idx
+            ON game_scores (game_date)
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS player_media (
               mlb_id BIGINT PRIMARY KEY,
               items JSONB NOT NULL,
@@ -545,6 +567,53 @@ def set_player_game_log(
             """,
             (mlb_id, group_type, season, Jsonb(games)),
         )
+
+
+def upsert_game_scores(rows: list[dict[str, Any]]) -> int:
+    """Idempotent write of league-scored game rows (see sandlot_scores)."""
+    if not rows:
+        return 0
+    with connect() as conn:
+        conn.cursor().executemany(
+            """
+            INSERT INTO game_scores
+              (mlb_id, season, game_date, game_pk, stat_group, gs, pts, stats, fetched_at)
+            VALUES
+              (%(mlb_id)s, %(season)s, %(game_date)s, %(game_pk)s, %(stat_group)s,
+               %(gs)s, %(pts)s, %(stats)s, now())
+            ON CONFLICT (mlb_id, stat_group, game_pk) DO UPDATE
+            SET season = EXCLUDED.season,
+                game_date = EXCLUDED.game_date,
+                gs = EXCLUDED.gs,
+                pts = EXCLUDED.pts,
+                stats = EXCLUDED.stats,
+                fetched_at = now()
+            """,
+            [{**row, "stats": Jsonb(row.get("stats") or {})} for row in rows],
+        )
+    return len(rows)
+
+
+def game_scores_between(
+    start: date,
+    end: date,
+    *,
+    mlb_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    """League-scored game rows in [start, end], oldest first."""
+    sql = """
+        SELECT mlb_id, season, game_date, game_pk, stat_group, gs, pts, stats
+        FROM game_scores
+        WHERE game_date BETWEEN %s AND %s
+    """
+    params: list[Any] = [start, end]
+    if mlb_ids is not None:
+        sql += " AND mlb_id = ANY(%s)"
+        params.append(list(mlb_ids))
+    sql += " ORDER BY game_date ASC, game_pk ASC"
+    with connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_player_media(mlb_id: int) -> dict[str, Any] | None:

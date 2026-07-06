@@ -53,6 +53,7 @@ python audit.py                                                 # daily CLI (Sel
 - **Cached-AI pattern** (`ai_briefs` table): deterministic compute → AI overlay → cache by `(snapshot_id, brief_type, subject_key)` with `input_hash` for staleness. `sandlot_waivers.py` and `sandlot_trades.py` are reference. Use `sandlot_db.{get,set}_ai_brief` for new cached-AI features.
 - **Model order helpers** in `sandlot_skipper`: `default_model_order()` = primary-first, currently DeepSeek V4 Flash then Kimi. For a one-off path that needs a different order, pass an explicit `model_order`.
 - **Snapshot blob shape**: `data["roster"]["rows"]` (mine), `data["all_team_rosters"]` (`{team_id: {rows, is_me, ...}}`), `data["free_agents"]["players"]`, `data["standings"]`. `_player_index()` flattens all three with a `source` field.
+- **`game_scores` table**: normalized per-game league-scored history (one row per player/game/stat-group, exact league points). `sandlot_scores.sync_latest()` maintains it from the cron after each refresh (kill-switch `SANDLOT_GAME_SCORES_SYNC_DISABLED=1`). Analytics should read this table (`sandlot_db.game_scores_between`) instead of re-fetching MLB game logs; fall back to `mlb_stats.fetch_game_log` only for uncovered players.
 
 ## Git workflow
 

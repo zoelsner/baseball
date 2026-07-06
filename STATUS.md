@@ -1,11 +1,21 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-03** (analytics track ported onto main; Skipper streaming + MLB cache fixes).
+> Last updated: **2026-07-06** (normalized `game_scores` table + cron sync).
 
 ## Where things stand
 
-- **Analytics track landed (2026-07-03, branch `claude/debug-railway-crash-AvUM7`):**
+- **`game_scores` table (2026-07-06, branch `claude/debug-railway-crash-AvUM7`):**
+  normalized per-game league-scored history — one row per (player, game, stat
+  group) with exact league points, gs flag, and the raw stat blob.
+  `sandlot_scores.sync_latest()` runs in `sandlot_cron.py` after every
+  successful refresh (on by default; kill-switch
+  `SANDLOT_GAME_SCORES_SYNC_DISABLED=1`) and covers everyone rostered in the
+  latest snapshot, all 12 teams. The autopsy and Monday-lineup runners now
+  read the table first and only fall back to live MLB API fetches for
+  uncovered players, so they keep working before the first sync. This is the
+  data layer for #91 (waiver scanner) and #93 (Today-page lineup card).
+- **Analytics track landed (2026-07-03, merged as PR #96):**
   league-exact scoring (`sandlot_scoring`), weekly lineup-efficiency autopsy
   (`sandlot_autopsy` + Actions workflow), Monday lineup optimizer
   (`sandlot_lineup`, exact 20-slot assignment, strict SP/RP eligibility, cron

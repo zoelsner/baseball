@@ -125,8 +125,30 @@ def resolve_mlb_ids(conn, players, season):
     return resolved, unresolved
 
 
-def fetch_daily_points(players, resolved, season):
-    """fid -> {date_iso: league points} from MLB game logs (league scoring)."""
+def stored_daily_points(dsn, resolved, season):
+    """mlb_id -> {date_iso: pts} from the game_scores table the cron maintains."""
+    if not resolved:
+        return {}
+    try:
+        with psycopg.connect(dsn, connect_timeout=20) as conn:
+            conn.read_only = True
+            rows = conn.execute(
+                """
+                SELECT mlb_id, game_date, pts FROM game_scores
+                WHERE season = %s AND mlb_id = ANY(%s)
+                """,
+                (season, sorted(set(resolved.values()))),
+            ).fetchall()
+    except psycopg.errors.UndefinedTable:
+        return {}
+    by_mlb = defaultdict(lambda: defaultdict(float))
+    for mlb_id, game_date, pts in rows:
+        by_mlb[mlb_id][game_date.isoformat()] += float(pts)
+    return {mlb_id: dict(daily) for mlb_id, daily in by_mlb.items()}
+
+
+def fetch_daily_points(dsn, players, resolved, season):
+    """fid -> {date_iso: league points}, game_scores first, MLB API fallback."""
 
     def groups_for(tokens):
         groups = []
@@ -148,10 +170,20 @@ def fetch_daily_points(players, resolved, season):
                 print(f"  game log failed for {players[fid]['name']}: {exc}", flush=True)
         return fid, dict(daily)
 
+    stored = stored_daily_points(dsn, resolved, season)
     points = {}
-    with ThreadPoolExecutor(max_workers=GAME_LOG_THREADS) as pool:
-        for fid, daily in pool.map(fetch, list(resolved)):
-            points[fid] = daily
+    missing = []
+    for fid, mlb_id in resolved.items():
+        if stored.get(mlb_id):
+            points[fid] = stored[mlb_id]
+        else:
+            missing.append(fid)
+    if missing:
+        print(f"game_scores covers {len(points)}/{len(resolved)} players; "
+              f"fetching {len(missing)} from the MLB API", flush=True)
+        with ThreadPoolExecutor(max_workers=GAME_LOG_THREADS) as pool:
+            for fid, daily in pool.map(fetch, missing):
+                points[fid] = daily
     return points
 
 
@@ -184,7 +216,7 @@ def run():
 
     print(f"snapshot days: {len(by_day)} ({min(by_day)} .. {max(by_day)})")
     print(f"players seen: {len(players)}, mlb-resolved: {len(resolved)}, unresolved: {len(unresolved)}")
-    points = fetch_daily_points(players, resolved, season)
+    points = fetch_daily_points(dsn, players, resolved, season)
     last_game_day = max((d for daily in points.values() for d in daily), default=None)
 
     team_weeks = defaultdict(list)

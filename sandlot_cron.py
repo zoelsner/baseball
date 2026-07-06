@@ -12,6 +12,7 @@ import sys
 
 import player_service
 import sandlot_config
+import sandlot_scores
 import sandlot_waivers
 from sandlot_refresh import run_refresh
 
@@ -21,6 +22,14 @@ def main() -> int:
     result = run_refresh(source="cron")
     if result.ok:
         logging.info("Sandlot cron refresh stored snapshot_id=%s in %sms", result.snapshot_id, result.duration_ms)
+        if sandlot_config.game_scores_sync_enabled():
+            try:
+                sync = sandlot_scores.sync_latest()
+                logging.info("Sandlot game scores sync: %s", sync)
+            except Exception:
+                logging.exception("Sandlot game scores sync failed; snapshot is already stored")
+        else:
+            logging.info("Sandlot game scores sync disabled via SANDLOT_GAME_SCORES_SYNC_DISABLED")
         if sandlot_config.profile_warm_enabled():
             warm_result = player_service.warm_roster_profiles(
                 snapshot_id=result.snapshot_id,

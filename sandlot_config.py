@@ -25,3 +25,9 @@ def waiver_ai_warm_enabled() -> bool:
     if env_flag("SANDLOT_WAIVER_AI_WARM_DISABLED"):
         return False
     return env_flag("SANDLOT_WAIVER_AI_WARM_ENABLED")
+
+
+def game_scores_sync_enabled() -> bool:
+    """On by default: deterministic and free (MLB API), and the analytics
+    features depend on the history accruing. Kill-switch only."""
+    return not env_flag("SANDLOT_GAME_SCORES_SYNC_DISABLED")

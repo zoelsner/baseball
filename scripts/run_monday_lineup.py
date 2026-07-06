@@ -113,6 +113,47 @@ def scored_game_log(mlb_id: int, tokens: set[str], season: int) -> list[dict]:
     return games
 
 
+def load_game_logs(dsn: str, rows: list[dict], mlb_ids: dict, season: int) -> dict:
+    """fid -> [{date, gs, pts}], game_scores table first, MLB API fallback."""
+    stored: dict[int, list[dict]] = defaultdict(list)
+    try:
+        with psycopg.connect(dsn, connect_timeout=20) as conn:
+            conn.read_only = True
+            for mlb_id, game_date, gs, pts in conn.execute(
+                """
+                SELECT mlb_id, game_date, gs, pts FROM game_scores
+                WHERE season = %s AND mlb_id = ANY(%s)
+                ORDER BY game_date ASC, game_pk ASC
+                """,
+                (season, sorted(set(mlb_ids.values()))),
+            ):
+                stored[mlb_id].append(
+                    {"date": game_date.isoformat(), "gs": bool(gs), "pts": float(pts)}
+                )
+    except psycopg.errors.UndefinedTable:
+        pass
+    logs, missing = {}, []
+    for r in rows:
+        fid = r.get("id")
+        if fid not in mlb_ids:
+            continue
+        if stored.get(mlb_ids[fid]):
+            logs[fid] = stored[mlb_ids[fid]]
+        else:
+            missing.append((fid, r))
+    if missing:
+        print(f"game_scores covers {len(logs)}/{len(mlb_ids)} players; "
+              f"fetching {len(missing)} from the MLB API", flush=True)
+        with ThreadPoolExecutor(max_workers=GAME_LOG_THREADS) as pool:
+            futures = {
+                fid: pool.submit(scored_game_log, mlb_ids[fid], eligibility_tokens(r), season)
+                for fid, r in missing
+            }
+            for fid, future in futures.items():
+                logs[fid] = future.result()
+    return logs
+
+
 def run():
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
@@ -159,13 +200,7 @@ def run():
         if fid and mlb_id:
             mlb_ids[fid] = int(mlb_id)
 
-    logs = {}
-    with ThreadPoolExecutor(max_workers=GAME_LOG_THREADS) as pool:
-        futures = {
-            fid: pool.submit(scored_game_log, mlb_ids[fid], eligibility_tokens(r), season)
-            for fid, r in ((r.get("id"), r) for r in rows) if fid in mlb_ids
-        }
-        logs = {fid: f.result() for fid, f in futures.items()}
+    logs = load_game_logs(dsn, rows, mlb_ids, season)
 
     entries, excluded, current_active = [], [], []
     for r in rows:
