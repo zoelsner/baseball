@@ -1,0 +1,39 @@
+name: Monday lineup
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # 08:00 UTC Monday = 4am ET, after Sunday's games are final.
+    # NOTE: scheduled runs only fire from the default branch.
+    - cron: "0 8 * * 1"
+  push:
+    branches:
+      - claude/debug-railway-crash-AvUM7
+    paths:
+      - ".github/workflows/monday-lineup.yml"
+      - "scripts/run_monday_lineup.py"
+      - "sandlot_lineup.py"
+
+permissions:
+  contents: read
+
+jobs:
+  lineup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "psycopg[binary]" requests
+      - name: Propose Monday lineup
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/run_monday_lineup.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: monday-lineup
+          path: monday_lineup.json
+          if-no-files-found: ignore

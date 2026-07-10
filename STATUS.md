@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-06-23** (time-aware hot-swap proposal contract production verified).
+> Last updated: **2026-07-03** (analytics track ported onto main; Skipper streaming + MLB cache fixes).
 
 ## Where things stand
 
@@ -13,6 +13,20 @@
   live preflight, post-write verification, and protected-asset safeguards, then
   runs PR #63's mocked guard tests with no Fantrax credentials or action token.
   Live writes remain local, headful, and explicitly approved per action.
+- **Analytics track landed (2026-07-03, branch `claude/debug-railway-crash-AvUM7`):**
+  league-exact scoring (`sandlot_scoring`), weekly lineup-efficiency autopsy
+  (`sandlot_autopsy` + Actions workflow), Monday lineup optimizer
+  (`sandlot_lineup`, exact 20-slot assignment, strict SP/RP eligibility, cron
+  Mondays 4am ET once on main), and a Skipper model-eval harness
+  (deterministic graders, #87). Findings: mid-pack lineup efficiency but a
+  bottom-third roster ceiling; holds RPs + two-start SPs are the mispriced
+  waiver assets (league pays HLD 3.5 / IP 3 / QS 3). Follow-ups filed as
+  #90-#95. Needs repo secret `OPENROUTER_API_KEY` for the first eval run.
+- **Fixes in the same branch:** Skipper mid-stream fallback no longer splices
+  two models' replies (raises instead once tokens flowed); SSE tokens now
+  stream live with a `replace` event for repaired refusals; `mlb_stats`
+  player-index/team caches got TTLs + fail-open behavior; accented player
+  names (Muñoz/Hernández) now resolve in MLB lookups.
 - **`GET /api/attention` is live** ([#64](https://github.com/zoelsner/baseball/issues/64) / [PR #65](https://github.com/zoelsner/baseball/pull/65), merged + deployed). Returns the ordered queue with status-safe `POST /api/actions` payloads where allowed. Lineup hot-swap replacements now surface as blocked proposal cards, not ready-to-submit write payloads.
 - **Executor [PR #63](https://github.com/zoelsner/baseball/pull/63) (draft):** reviewed, rebased onto main, CI green. First manual test run (2026-06-10): **all five deterministic guards PASS against prod, zero unintended writes** — but the Selenium layer failed safe (`player_row_not_found`) and needs a click-flow rewrite against the real Fantrax DOM. The DOM map (row anchor = headshot URL `hs{player_id}_`, two-click `lineup-btn` slot model, `remove`/`swap_horiz` icon actions) is in the PR comments.
 - **Blocker — [#67](https://github.com/zoelsner/baseball/issues/67):** snapshot `slot` is the player's *position*, not their lineup slot (raw scrape never had it). Attention queue / roster health / waiver IL-protection all compute on wrong slots. Live truth as of 2026-06-10: Skubal + Woodruff already IR-stashed; **only Judge is IR in an active slot**; Condon/Montes are in dynasty `Min` slots (protected prospects).
