@@ -5,6 +5,14 @@
 
 ## Where things stand
 
+- **Zero-AI-cost maintenance loop prepared:** `.github/workflows/sandlot-automation.yml`
+  checks read-only production contracts after the existing twice-daily Railway
+  refresh and maintains one sanitized GitHub issue while failures persist. It
+  does not call OpenAI, spend Codex credits, generate code, or publish PRs. A
+  weekly/manual executor job first enforces exact-proposal binding, freshness,
+  live preflight, post-write verification, and protected-asset safeguards, then
+  runs PR #63's mocked guard tests with no Fantrax credentials or action token.
+  Live writes remain local, headful, and explicitly approved per action.
 - **`GET /api/attention` is live** ([#64](https://github.com/zoelsner/baseball/issues/64) / [PR #65](https://github.com/zoelsner/baseball/pull/65), merged + deployed). Returns the ordered queue with status-safe `POST /api/actions` payloads where allowed. Lineup hot-swap replacements now surface as blocked proposal cards, not ready-to-submit write payloads.
 - **Executor [PR #63](https://github.com/zoelsner/baseball/pull/63) (draft):** reviewed, rebased onto main, CI green. First manual test run (2026-06-10): **all five deterministic guards PASS against prod, zero unintended writes** — but the Selenium layer failed safe (`player_row_not_found`) and needs a click-flow rewrite against the real Fantrax DOM. The DOM map (row anchor = headshot URL `hs{player_id}_`, two-click `lineup-btn` slot model, `remove`/`swap_horiz` icon actions) is in the PR comments.
 - **Blocker — [#67](https://github.com/zoelsner/baseball/issues/67):** snapshot `slot` is the player's *position*, not their lineup slot (raw scrape never had it). Attention queue / roster health / waiver IL-protection all compute on wrong slots. Live truth as of 2026-06-10: Skubal + Woodruff already IR-stashed; **only Judge is IR in an active slot**; Condon/Montes are in dynasty `Min` slots (protected prospects).

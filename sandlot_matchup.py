@@ -12,6 +12,7 @@ import sandlot_future_games
 
 
 INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH", "MIN", "MINORS"}
+EXPLICITLY_UNTRUSTED_SLOT_SOURCES = {"position_fallback", "unknown", "fallback"}
 BENCH_SLOTS = {"BN", "BE", "BENCH", "RES", "RESERVE"}
 PROTECTED_LINEUP_SLOTS = {"IL", "IR", "MIN", "MINORS"}
 PROTECTED_PLAYER_FLAGS = {
@@ -23,7 +24,8 @@ PROTECTED_PLAYER_FLAGS = {
     "is_minor_leaguer",
 }
 UNAVAILABLE_INJURIES = {"OUT", "IL", "IL10", "IL60", "IR"}
-MODEL_VERSION = "matchup_projection_v3"
+MODEL_VERSION = "matchup_projection_v4"
+MAX_ABS_FPPG = 100.0
 MIN_MEANINGFUL_POINTS_DELTA = 1.0
 MIN_MEANINGFUL_WIN_PROBABILITY_DELTA = 0.01
 HITTER_POSITIONS = {"C", "1B", "2B", "3B", "SS", "OF", "LF", "CF", "RF"}
@@ -101,6 +103,8 @@ def compute_projection(
         win_probability = _deterministic_prob(my_score - opp_score)
         return {
             "model_version": MODEL_VERSION,
+            "scoring_basis": "current_snapshot_fppg_x_remaining_games",
+            "probability_calibrated": False,
             "projected_my": projected_my,
             "projected_opp": projected_opp,
             "my_remaining_games": 0,
@@ -129,6 +133,8 @@ def compute_projection(
     opp_rows = _opponent_rows(snapshot, matchup)
     if not isinstance(my_rows, list) or not isinstance(opp_rows, list):
         return None
+    if not _active_rows_have_valid_fppg(my_rows) or not _active_rows_have_valid_fppg(opp_rows):
+        return None
 
     mu_my, var_my, my_games = _team_projection(my_rows, my_score, period_end, period_start)
     mu_opp, var_opp, opp_games = _team_projection(opp_rows, opp_score, period_end, period_start)
@@ -140,6 +146,8 @@ def compute_projection(
     win_probability = round(_win_prob(mu_my, var_my, mu_opp, var_opp), 4)
     return {
         "model_version": MODEL_VERSION,
+        "scoring_basis": "current_snapshot_fppg_x_remaining_games",
+        "probability_calibrated": False,
         "projected_my": projected_my,
         "projected_opp": projected_opp,
         "my_remaining_games": my_games,
@@ -358,9 +366,14 @@ def simulate_lineup_move_impact(
 
     base_projection = compute_projection(snapshot, data_quality)
     if not base_projection:
+        reason = "No matchup projection is available for lineup move simulation."
+        if isinstance(data_quality, dict):
+            projection_reasons = data_quality.get("projection_reasons") or []
+            if projection_reasons:
+                reason += " " + str(projection_reasons[0]).rstrip(".") + "."
         return _no_action_result(
             base_projection=None,
-            reason="No matchup projection is available for lineup move simulation.",
+            reason=reason,
         )
 
     matchup = snapshot.get("matchup")
@@ -965,13 +978,14 @@ def _lineup_swap_contract(
     slot_moves = _contract_slot_moves(chain)
 
     contract = {
-        "version": 1,
+        "version": 2,
         "proposal_id": proposal_id,
         "type": "lineup_swap",
         "executable": False,
         "writes_enabled": False,
         "action": "change_slot",
         "snapshot_id": snapshot.get("snapshot_id") or snapshot.get("id"),
+        "snapshot_taken_at": snapshot.get("snapshot_taken_at") or snapshot.get("taken_at"),
         "league_id": snapshot.get("league_id"),
         "team_id": snapshot.get("team_id"),
         "move_out": _contract_player(move_out),
@@ -990,6 +1004,15 @@ def _lineup_swap_contract(
             "reason": (movability or {}).get("reason"),
         },
         "blocked_by": blocked_by,
+        "freshness_policy": {
+            "requires_live_preflight": True,
+            "preflight_snapshot_max_age_minutes": 5,
+            "confirmation_max_age_seconds": 120,
+        },
+        "post_write_verification": {
+            "required": True,
+            "verify": "all_slot_moves_match_live_fantrax_roster",
+        },
         "confirmation_copy": (
             f"Confirm lineup-only swap: move {move_out.get('name', 'OUT player')} "
             f"from {move_out.get('from_slot') or '?'} to {move_out.get('to_slot') or '?'} "
@@ -998,6 +1021,22 @@ def _lineup_swap_contract(
         ),
     }
     contract["input_hash"] = _contract_input_hash(contract)
+    contract["confirmation"] = {
+        "required": True,
+        "mode": "exact_contract_match",
+        "match_fields": [
+            "proposal_id",
+            "input_hash",
+            "snapshot_id",
+            "slot_moves",
+        ],
+        "expected": {
+            "proposal_id": contract["proposal_id"],
+            "input_hash": contract["input_hash"],
+            "snapshot_id": contract["snapshot_id"],
+            "slot_moves": contract["slot_moves"],
+        },
+    }
     return contract
 
 
@@ -1031,7 +1070,11 @@ def _contract_player(player: dict[str, Any]) -> dict[str, Any]:
 
 
 def _contract_input_hash(contract: dict[str, Any]) -> str:
-    payload = {key: value for key, value in contract.items() if key != "input_hash"}
+    payload = {
+        key: value
+        for key, value in contract.items()
+        if key not in {"input_hash", "confirmation"}
+    }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -1451,7 +1494,11 @@ def _active_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         row
         for row in rows
-        if isinstance(row, dict) and str(row.get("slot") or "").strip().upper() not in INACTIVE_SLOTS
+        if (
+            isinstance(row, dict)
+            and str(row.get("slot") or "").strip().upper() not in INACTIVE_SLOTS
+            and str(row.get("slot_source") or "").strip().casefold() not in EXPLICITLY_UNTRUSTED_SLOT_SOURCES
+        )
     ]
 
 
@@ -1573,9 +1620,10 @@ def _team_projection(
         fppg = _row_fppg(row)
         delta = fppg * games
         mean_delta += delta
-        # Fantasy FP/G can be negative; the projection mean should keep that,
-        # but the Poisson-style uncertainty term must remain non-negative.
-        variance += max(0.0, delta)
+        # Keep uncertainty positive for every remaining opportunity. Using the
+        # old max(0, delta) made a live matchup deterministic whenever both
+        # sides had zero/negative rates despite scheduled games still ahead.
+        variance += max(1.0, abs(fppg)) * games
         games_remaining += games
     return current_score + mean_delta, variance, games_remaining
 
@@ -1734,11 +1782,21 @@ def _period_id(matchup: dict[str, Any]) -> str:
 
 
 def _row_fppg(row: dict[str, Any]) -> float:
+    return _row_fppg_value(row) or 0.0
+
+
+def _row_fppg_value(row: dict[str, Any]) -> float | None:
     raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
     value = _number(row.get("fppg"))
     if value is None:
         value = _number(raw.get("fantasy_points_per_game"))
-    return value or 0.0
+    if value is None or abs(value) > MAX_ABS_FPPG:
+        return None
+    return value
+
+
+def _active_rows_have_valid_fppg(rows: list[dict[str, Any]]) -> bool:
+    return all(_row_fppg_value(row) is not None for row in _active_rows(rows))
 
 
 def _is_unavailable(row: dict[str, Any]) -> bool:
@@ -1762,9 +1820,10 @@ def _number(value: Any) -> float | None:
     if value is None or value == "":
         return None
     try:
-        return float(str(value).replace(",", ""))
+        parsed = float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _text(value: Any) -> str | None:

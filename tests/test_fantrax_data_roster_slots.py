@@ -152,6 +152,7 @@ class FantraxRosterSlotTests(unittest.TestCase):
         player = obj(
             id="condon",
             name="Charlie Condon",
+            age=23,
             team_short_name="COL",
             team_name="Colorado",
             pos_short_name="1B",
@@ -205,6 +206,8 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(data["rows"][0]["slot_source"], "raw.statusId")
         self.assertEqual(data["rows"][0]["positions"], "1B")
         self.assertEqual(data["rows"][0]["all_positions"], ["1B", "UT"])
+        self.assertEqual(data["rows"][0]["age"], 23)
+        self.assertEqual(data["rows"][0]["age_source"], "player.age")
 
     def test_position_fallback_is_marked_when_no_assigned_slot_exists(self):
         player = obj(
@@ -518,11 +521,41 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(data["rows"][0]["slot_source"], "raw.posId")
         self.assertEqual(data["rows"][0]["fppg"], 4.25)
         self.assertEqual(data["rows"][0]["fpts"], 42.5)
+        self.assertEqual(data["rows"][0]["age"], 30)
+        self.assertEqual(data["rows"][0]["age_source"], "raw.cells[0]")
         self.assertEqual(data["rows"][0]["future_games"][0]["eventId"], "evt-1")
         self.assertEqual(data["rows"][1]["slot"], "RES")
         self.assertEqual(data["rows"][1]["slot_source"], "raw.statusId")
         self.assertEqual(data["reserve"], 1)
         self.assertEqual(data["reserve_max"], 7)
+
+    def test_raw_roster_age_prefers_explicit_player_field(self):
+        row = raw_roster_row("prospect", name="Named Age Prospect", fppg="2.5", fpts="25")
+        row["scorer"]["playerAge"] = "23"
+        api = RawFirstApi({"me": raw_roster(row)})
+
+        data = fantrax_data.extract_roster(api, "me")
+
+        self.assertEqual(data["rows"][0]["age"], 23)
+        self.assertEqual(data["rows"][0]["age_source"], "raw.scorer.playerAge")
+
+    def test_raw_roster_cell_age_requires_valid_stat_schema_fingerprint(self):
+        cases = (
+            ("missing-fpts", "", "2.5", "23"),
+            ("missing-fppg", "25", "N/A", "23"),
+            ("implausible-age", "25", "2.5", "99"),
+        )
+        for player_id, fpts, fppg, cell_age in cases:
+            with self.subTest(player_id=player_id):
+                row = raw_roster_row(player_id, name=player_id, fppg=fppg, fpts=fpts)
+                row["cells"][0]["content"] = cell_age
+                data = fantrax_data.extract_roster(
+                    RawFirstApi({"me": raw_roster(row)}),
+                    "me",
+                )
+
+                self.assertIsNone(data["rows"][0]["age"])
+                self.assertIsNone(data["rows"][0]["age_source"])
 
     def test_raw_request_falls_back_to_api_request_when_helper_parser_breaks(self):
         api = RawFirstApi({

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Any
 
 import sandlot_future_games
@@ -10,6 +12,11 @@ import sandlot_future_games
 INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH", "INJ", "INJ RES", "MIN", "MINORS"}
 GENERIC_POSITIONS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "MIN", "MINORS", "HIT", "PIT", "ALL", "UTIL"}
 UNTRUSTED_SLOT_SOURCES = {"", "position_fallback", "unknown", "fallback"}
+EXPLICITLY_UNTRUSTED_SLOT_SOURCES = UNTRUSTED_SLOT_SOURCES - {""}
+TRUE_FPG_KEYS = ("FP/G", "FPG", "FPts/G", "FP/Gm", "FP/Game", "Fantasy Points/Game")
+FANTRAX_AVG_KEYS = ("Avg", "Average")
+SCORE_CONTEXT_KEYS = ("Score", "FPts", "ProjFPts", "FP", "Fantasy Points")
+MAX_ABS_FPPG = 100.0
 
 
 def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -18,10 +25,12 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
     roster = snapshot.get("roster") if isinstance(snapshot.get("roster"), dict) else {}
     my_rows = roster.get("rows") if isinstance(roster, dict) else None
     all_rosters = snapshot.get("all_team_rosters") if isinstance(snapshot.get("all_team_rosters"), dict) else None
+    free_agents = snapshot.get("free_agents") if isinstance(snapshot.get("free_agents"), dict) else {}
     opponent_rows = _opponent_rows(snapshot, matchup)
 
     my_rows_list = my_rows if isinstance(my_rows, list) else []
     opponent_rows_list = opponent_rows if isinstance(opponent_rows, list) else []
+    free_agent_rows = free_agents.get("players") if isinstance(free_agents.get("players"), list) else []
     active_rows = _active_rows(my_rows_list) + _active_rows(opponent_rows_list)
 
     matchup_quality = _matchup_quality(matchup)
@@ -30,8 +39,15 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
     opponent_roster_quality = _opponent_roster_quality(matchup, all_rosters, opponent_rows)
     fppg_quality = _coverage_section("Active-player FP/G", active_rows, _has_fppg)
     future_games_quality = _future_games_quality(active_rows)
+    projection_future_games_quality = _future_games_quality(active_rows, projection=True)
     eligibility_quality = _coverage_section("Eligibility/position", active_rows, _has_position)
     lineup_slots_quality = _lineup_slots_quality(my_rows_list)
+    projection_slots_quality = _projection_slots_quality(my_rows_list + opponent_rows_list)
+    free_agent_pool_quality = _candidate_pool_quality(
+        "Dynasty-safe free-agent",
+        free_agent_rows,
+        _has_actionable_free_agent,
+    )
 
     complete = bool(matchup and matchup.get("complete"))
     projection_reasons = _projection_reasons(
@@ -41,7 +57,8 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
             "my_roster": my_roster_quality,
             "opponent_roster": opponent_roster_quality,
             "fppg": fppg_quality,
-            "future_games": future_games_quality,
+            "projection_future_games": projection_future_games_quality,
+            "projection_slots": projection_slots_quality,
         },
     )
     recommendation_sections = {
@@ -56,8 +73,18 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
     recommendation_reasons = _recommendation_reasons(recommendation_sections)
     action_recommendation_reasons = _action_recommendation_reasons(recommendation_sections)
+    add_drop_recommendation_reasons = _add_drop_recommendation_reasons(
+        {**recommendation_sections, "free_agent_pool": free_agent_pool_quality}
+    )
 
-    reasons = _dedupe([*projection_reasons, *recommendation_reasons, *action_recommendation_reasons])
+    reasons = _dedupe(
+        [
+            *projection_reasons,
+            *recommendation_reasons,
+            *action_recommendation_reasons,
+            *add_drop_recommendation_reasons,
+        ]
+    )
     return {
         "matchup": matchup_quality,
         "my_roster": my_roster_quality,
@@ -65,16 +92,19 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
         "opponent_roster": opponent_roster_quality,
         "fppg": fppg_quality,
         "future_games": future_games_quality,
+        "projection_future_games": projection_future_games_quality,
         "eligibility": eligibility_quality,
         "lineup_slots": lineup_slots_quality,
+        "projection_slots": projection_slots_quality,
+        "free_agent_pool": free_agent_pool_quality,
         "projection_ready": not projection_reasons,
         "recommendations_ready": not recommendation_reasons,
         "lineup_recommendations_ready": not action_recommendation_reasons,
-        "add_drop_recommendations_ready": not action_recommendation_reasons,
+        "add_drop_recommendations_ready": not add_drop_recommendation_reasons,
         "projection_reasons": projection_reasons,
         "recommendation_reasons": recommendation_reasons,
         "lineup_recommendation_reasons": action_recommendation_reasons,
-        "add_drop_recommendation_reasons": action_recommendation_reasons,
+        "add_drop_recommendation_reasons": add_drop_recommendation_reasons,
         "reasons": reasons,
     }
 
@@ -164,8 +194,28 @@ def _coverage_section(label: str, rows: list[dict[str, Any]], predicate) -> dict
     )
 
 
-def _future_games_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    quality = _coverage_section("Future-game", rows, _has_future_games)
+def _candidate_pool_quality(label: str, rows: list[dict[str, Any]], predicate) -> dict[str, Any]:
+    """Require at least one individually trustworthy candidate, not perfect pool coverage."""
+    total = len(rows)
+    usable = sum(1 for row in rows if isinstance(row, dict) and predicate(row))
+    if usable <= 0:
+        return _section(
+            "missing",
+            f"{label} pool has 0/{total} players with trusted per-game value and age",
+            usable_players=0,
+            total_players=total,
+        )
+    return _section("ok", usable_players=usable, total_players=total)
+
+
+def _future_games_quality(
+    rows: list[dict[str, Any]],
+    *,
+    projection: bool = False,
+) -> dict[str, Any]:
+    predicate = _has_projection_future_games if projection else _has_future_games
+    label = "Projection future-game" if projection else "Future-game"
+    quality = _coverage_section(label, rows, predicate)
     game_count = sum(_future_game_count(row) for row in rows)
     quality["remaining_game_count"] = game_count
     status_counts: dict[str, int] = {}
@@ -189,7 +239,11 @@ def _future_games_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _projection_reasons(*, complete: bool, sections: dict[str, dict[str, Any]]) -> list[str]:
-    required = ["matchup", "my_roster"] if complete else ["matchup", "my_roster", "opponent_roster", "fppg", "future_games"]
+    required = (
+        ["matchup", "my_roster"]
+        if complete
+        else ["matchup", "my_roster", "opponent_roster", "fppg", "projection_future_games", "projection_slots"]
+    )
     return _section_reasons(sections, required)
 
 
@@ -204,6 +258,23 @@ def _action_recommendation_reasons(sections: dict[str, dict[str, Any]]) -> list[
     return _section_reasons(
         sections,
         ["matchup", "my_roster", "all_team_rosters", "opponent_roster", "fppg", "future_games", "eligibility", "lineup_slots"],
+    )
+
+
+def _add_drop_recommendation_reasons(sections: dict[str, dict[str, Any]]) -> list[str]:
+    return _section_reasons(
+        sections,
+        [
+            "matchup",
+            "my_roster",
+            "all_team_rosters",
+            "opponent_roster",
+            "fppg",
+            "future_games",
+            "eligibility",
+            "lineup_slots",
+            "free_agent_pool",
+        ],
     )
 
 
@@ -281,6 +352,43 @@ def _lineup_slots_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
     )
 
 
+def _projection_slots_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Report whether active rows can safely participate in projection math.
+
+    Projection math deliberately excludes rows whose source explicitly says the
+    slot was inferred or is unknown. Legacy rows with no source remain usable so
+    older snapshots keep their historical behavior.
+    """
+    active_rows = _active_rows(rows)
+    total = len(active_rows)
+    if total <= 0:
+        return _section(
+            "missing",
+            "Projection lineup-slot source has no active roster players",
+            usable_players=0,
+            total_players=0,
+        )
+
+    untrusted = [
+        row
+        for row in active_rows
+        if str(row.get("slot_source") or "").strip().casefold() in EXPLICITLY_UNTRUSTED_SLOT_SOURCES
+    ]
+    usable = total - len(untrusted)
+    if not untrusted:
+        return _section("ok", usable_players=usable, total_players=total)
+
+    examples = [str(row.get("name") or row.get("id") or "unknown") for row in untrusted[:5]]
+    state = "missing" if usable <= 0 else "partial"
+    return _section(
+        state,
+        f"Projection lineup-slot source usable for {usable}/{total} active players",
+        usable_players=usable,
+        total_players=total,
+        untrusted_examples=examples,
+    )
+
+
 def _has_trusted_slot_source(row: dict[str, Any]) -> bool:
     source = str(row.get("slot_source") or "").strip().casefold()
     return bool(source) and source not in UNTRUSTED_SLOT_SOURCES
@@ -288,7 +396,66 @@ def _has_trusted_slot_source(row: dict[str, Any]) -> bool:
 
 def _has_fppg(row: dict[str, Any]) -> bool:
     raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
-    return _number(row.get("fppg")) is not None or _number(raw.get("fantasy_points_per_game")) is not None
+    value = _first_number(row.get("fppg"), raw.get("fantasy_points_per_game"))
+    return value is not None and abs(value) <= MAX_ABS_FPPG
+
+
+def _has_actionable_free_agent(row: dict[str, Any]) -> bool:
+    stats = row.get("stats") if isinstance(row.get("stats"), dict) else {}
+    age = _free_agent_age(row, stats)
+    if age is None or not 16 <= age <= 50:
+        return False
+
+    for key in TRUE_FPG_KEYS:
+        value = _normalized_stat_value(stats, key)
+        if _plausible_fpg(_number(value), allow_low=True):
+            return True
+
+    has_score_context = any(_normalized_stat_value(stats, key) is not None for key in SCORE_CONTEXT_KEYS)
+    if has_score_context:
+        for key in FANTRAX_AVG_KEYS:
+            if _plausible_fpg(_number(_normalized_stat_value(stats, key))):
+                return True
+    return False
+
+
+def _free_agent_age(row: dict[str, Any], stats: dict[str, Any]) -> float | None:
+    explicit = _first_number(row.get("age"), stats.get("Age"), stats.get("AGE"), stats.get("age"))
+    if explicit is not None:
+        return explicit
+
+    cells = stats.get("_cells")
+    if not isinstance(cells, list) or len(cells) < 5:
+        return None
+    age = _number(cells[2])
+    score = _number(cells[3])
+    per_game = _number(cells[4])
+    if age is None or score is None or not 16 <= age <= 50 or not _plausible_fpg(per_game):
+        return None
+    return age
+
+
+def _normalized_stat_value(stats: dict[str, Any], key: str) -> Any:
+    target = re.sub(r"[^a-z0-9]", "", key.casefold())
+    for raw_key, value in stats.items():
+        if re.sub(r"[^a-z0-9]", "", str(raw_key).casefold()) == target:
+            return value
+    return None
+
+
+def _first_number(*values: Any) -> float | None:
+    for value in values:
+        parsed = _number(value)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _plausible_fpg(value: float | None, *, allow_low: bool = False) -> bool:
+    if value is None:
+        return False
+    lower = 0.0 if allow_low else 0.5
+    return lower < value <= 25.0
 
 
 def _has_future_games(row: dict[str, Any]) -> bool:
@@ -305,6 +472,15 @@ def _has_future_games(row: dict[str, Any]) -> bool:
         value = raw.get("future_games")
         return isinstance(value, dict) or (isinstance(value, list) and len(value) > 0)
     return False
+
+
+def _has_projection_future_games(row: dict[str, Any]) -> bool:
+    # A team schedule proves hitter opportunities, but it cannot prove a
+    # pitcher's start/appearance volume. Treat missing probables as partial
+    # projection coverage instead of silently projecting that pitcher at zero.
+    if _future_game_status(row) == "pitcher_probables_unavailable":
+        return False
+    return _has_future_games(row)
 
 
 def _future_game_count(row: dict[str, Any]) -> int:
@@ -365,9 +541,10 @@ def _number(value: Any) -> float | None:
     if value is None or value == "":
         return None
     try:
-        return float(str(value).replace(",", ""))
+        parsed = float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _dedupe(values: list[str]) -> list[str]:

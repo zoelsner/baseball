@@ -2,8 +2,8 @@
 
 V0.1 of the Trade tab. Mirrors the `sandlot_waivers.py` shape:
 
-- Deterministic step computes weekly Δ for each side, fairness, letter grade,
-  and age delta from snapshot FP/G data.
+- Deterministic step computes a current per-game rate delta for each side,
+  fairness, letter grade, and age delta from snapshot FP/G data.
 - AI step explains the already-computed numbers via SkipperClient.complete().
 - Result cached in `ai_briefs` keyed by (snapshot_id, "trade_grade", subject_key)
   with an input_hash so cache busts when relevant FP/G shifts.
@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 from typing import Any
 
 import sandlot_data_quality
@@ -28,6 +29,21 @@ log = logging.getLogger(__name__)
 BRIEF_TYPE_GRADE = "trade_grade"
 BRIEF_TYPE_COUNTER = "trade_counter"
 MIN_COUNTER_ADD_FPPG = 0.75
+MIN_VALID_DYNASTY_AGE = 16
+MAX_VALID_DYNASTY_AGE = 50
+DYNASTY_MANUAL_REVIEW_MAX_AGE = 24
+PROTECTED_TRADE_SLOTS = {"MIN", "MINORS"}
+PROTECTED_TRADE_FLAGS = {
+    "protected",
+    "is_protected",
+    "keeper",
+    "is_keeper",
+    "keeper_protected",
+    "minor",
+    "minor_league",
+    "minors",
+    "is_minor_leaguer",
+}
 
 # Letter-grade thresholds applied to my_delta (sum of get FP/G - sum of give FP/G).
 # Tuneable. The deterministic step always emits a grade; the AI just explains it.
@@ -81,20 +97,15 @@ def grade_offer(
     """
     if not give_ids or not get_ids:
         raise TradeGradeError("trade must have at least one player on each side")
+    give_ids, get_ids = _validate_offer_ids(give_ids, get_ids)
 
     snapshot_id = int(snapshot_row.get("id") or 0)
     if not snapshot_id:
         raise TradeGradeError("snapshot row is missing an id")
     data = snapshot_row.get("data") or {}
+    give_players, get_players = _resolve_trade_sides(data, give_ids, get_ids)
+    _validate_trade_participants(give_players, get_players)
     data_quality = sandlot_data_quality.snapshot_data_quality(data)
-
-    give_players, missing_give = _resolve_players(data, give_ids)
-    get_players, missing_get = _resolve_players(data, get_ids)
-    missing = missing_give + missing_get
-    if missing:
-        raise TradeGradeError(
-            "player(s) not found in snapshot: " + ", ".join(missing)
-        )
 
     deltas = _compute_deltas(give_players, get_players)
     counter_result = _build_counter_result(
@@ -119,6 +130,10 @@ def grade_offer(
 
     return {
         "snapshot_id": snapshot_id,
+        "grade_scope": "current_rate_only",
+        "value_basis": "current_snapshot_fppg",
+        "time_horizon": "per_game_rate_only",
+        "dynasty_complete": False,
         "grade": deltas["letter_grade"],
         "letter_grade": deltas["letter_grade"],
         "headline": _headline(deltas),
@@ -140,47 +155,167 @@ def grade_offer(
 
 
 # ---------------------------------------------------------------------------
-# Player resolution — mirrors sandlot_waivers.py iteration over snapshot rosters
+# Player selection and ownership validation
 # ---------------------------------------------------------------------------
 
-def _resolve_players(
+
+def _validate_offer_ids(
+    give_ids: list[str],
+    get_ids: list[str],
+) -> tuple[list[str], list[str]]:
+    def normalize(ids: list[str], side: str) -> list[str]:
+        normalized = [str(pid or "").strip() for pid in ids]
+        if any(not pid for pid in normalized):
+            raise TradeGradeError(f"{side} side contains an empty player id")
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for pid in normalized:
+            if pid in seen and pid not in duplicates:
+                duplicates.append(pid)
+            seen.add(pid)
+        if duplicates:
+            raise TradeGradeError(
+                f"duplicate player id(s) on {side} side: " + ", ".join(duplicates)
+            )
+        return normalized
+
+    give = normalize(give_ids, "give")
+    get = normalize(get_ids, "get")
+    overlap = sorted(set(give) & set(get))
+    if overlap:
+        raise TradeGradeError(
+            "player id(s) cannot appear on both sides: " + ", ".join(overlap)
+        )
+    return give, get
+
+
+def _resolve_trade_sides(
     data: dict[str, Any],
-    ids: list[str],
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """Return (resolved_rows, missing_ids) preserving input order.
-
-    Looks across my roster, every other team's roster, and free agents.
-    Free-agent matches are kept (issue #3 marks free-agent trades as a
-    non-goal, but rejecting them here would be a 400 the route can handle
-    later if we tighten the rule).
-    """
-    pool: dict[str, dict[str, Any]] = {}
-
-    def absorb(row: dict[str, Any] | None) -> None:
-        if not isinstance(row, dict):
-            return
-        pid = row.get("id")
-        if not pid or pid in pool:
-            return
-        pool[str(pid)] = row
-
+    give_ids: list[str],
+    get_ids: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    my_rows: dict[str, dict[str, Any]] = {}
     for row in (data.get("roster") or {}).get("rows") or []:
-        absorb(row)
-    for team in (data.get("all_team_rosters") or {}).values():
-        for row in (team or {}).get("rows") or []:
-            absorb(row)
-    for row in (data.get("free_agents") or {}).get("players") or []:
-        absorb(row)
+        if not isinstance(row, dict):
+            continue
+        pid = row.get("id")
+        if pid not in (None, ""):
+            my_rows.setdefault(str(pid), row)
 
-    resolved: list[dict[str, Any]] = []
-    missing: list[str] = []
-    for pid in ids:
-        row = pool.get(str(pid))
+    free_agent_ids = {
+        str(row.get("id"))
+        for row in (data.get("free_agents") or {}).get("players") or []
+        if isinstance(row, dict) and row.get("id") not in (None, "")
+    }
+
+    opponent_owners: dict[str, dict[str, dict[str, Any]]] = {}
+    all_team_rosters = data.get("all_team_rosters") or {}
+    my_team_id = str(data.get("team_id") or "").strip()
+    if not isinstance(all_team_rosters, dict):
+        all_team_rosters = {}
+    for roster_key, team in all_team_rosters.items():
+        if not isinstance(team, dict):
+            continue
+        team_id = str(team.get("team_id") or roster_key or "").strip()
+        is_my_team = _truthy(team.get("is_me")) or bool(
+            my_team_id
+            and (team_id == my_team_id or str(roster_key).strip() == my_team_id)
+        )
+        if is_my_team:
+            continue
+        for row in (team or {}).get("rows") or []:
+            if not isinstance(row, dict) or row.get("id") in (None, ""):
+                continue
+            pid = str(row.get("id"))
+            opponent_owners.setdefault(pid, {}).setdefault(team_id, row)
+
+    give_players: list[dict[str, Any]] = []
+    for pid in give_ids:
+        row = my_rows.get(pid)
         if row is None:
-            missing.append(str(pid))
-        else:
-            resolved.append(row)
-    return resolved, missing
+            raise TradeGradeError(f"give player {pid} is not on my canonical roster")
+        if pid in free_agent_ids or pid in opponent_owners:
+            raise TradeGradeError(
+                f"give player {pid} has conflicting ownership in the snapshot"
+            )
+        give_players.append(row)
+
+    get_players: list[dict[str, Any]] = []
+    selected_owner_ids: set[str] = set()
+    for pid in get_ids:
+        if pid in my_rows:
+            raise TradeGradeError(f"get player {pid} is already on my roster")
+        owners = opponent_owners.get(pid) or {}
+        if pid in free_agent_ids:
+            if owners:
+                raise TradeGradeError(
+                    f"get player {pid} has conflicting free-agent and roster ownership"
+                )
+            raise TradeGradeError(f"get player {pid} is a free agent, not a trade asset")
+        if not owners:
+            raise TradeGradeError(f"get player {pid} is not on an opponent roster")
+        if len(owners) != 1:
+            raise TradeGradeError(f"get player {pid} appears on multiple opponent rosters")
+        team_id, row = next(iter(owners.items()))
+        selected_owner_ids.add(team_id)
+        get_players.append(row)
+
+    if len(selected_owner_ids) != 1:
+        raise TradeGradeError("get players must all come from one opponent roster")
+    return give_players, get_players
+
+
+def _validate_trade_participants(
+    give_players: list[dict[str, Any]],
+    get_players: list[dict[str, Any]],
+) -> None:
+    for side, players in (("give", give_players), ("get", get_players)):
+        for row in players:
+            label = str(row.get("name") or row.get("id") or "unknown player")
+            if _is_protected_trade_player(row):
+                raise TradeGradeError(
+                    f"{side} player {label} is protected as a keeper/minors asset and cannot be trade graded"
+                )
+            fppg = _number(row.get("fppg"))
+            if fppg is None or not math.isfinite(fppg):
+                raise TradeGradeError(f"{side} player {label} is missing a valid FP/G value")
+            age = _age(row)
+            if age is None:
+                raise TradeGradeError(
+                    f"{side} player {label} is missing a valid age for dynasty grading"
+                )
+            if age <= DYNASTY_MANUAL_REVIEW_MAX_AGE:
+                raise TradeGradeError(
+                    f"{side} player {label} is age {age:g} and requires manual dynasty review"
+                )
+
+
+def _is_protected_trade_player(row: dict[str, Any]) -> bool:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    player = raw.get("player") if isinstance(raw.get("player"), dict) else {}
+    scorer = raw.get("scorer") if isinstance(raw.get("scorer"), dict) else {}
+    for source in (row, raw, player, scorer):
+        for key in (
+            "slot",
+            "slot_full",
+            "rosterSlot",
+            "rosterSlotName",
+            "status",
+            "statusName",
+            "statusShortName",
+        ):
+            slot = str(source.get(key) or "").strip().upper()
+            if slot in PROTECTED_TRADE_SLOTS:
+                return True
+        if any(_truthy(source.get(flag)) for flag in PROTECTED_TRADE_FLAGS):
+            return True
+    return False
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +371,11 @@ def _build_counter_result(
             + sandlot_data_quality.short_reason(data_quality, purpose="recommendations")
             + ".",
         )
-    if deltas["my_delta"] >= 2.0:
-        return _counter_result(my_weakest_position, "Offer already grades strong; no counter needed.")
+    if deltas["my_delta"] >= 0.5:
+        return _counter_result(
+            my_weakest_position,
+            "Current-rate comparison already favors you; no counter needed.",
+        )
 
     counterparty = _counterparty_team(data, get_players)
     if not counterparty:
@@ -322,7 +460,14 @@ def _counter_candidates(
         if str(row.get("id")) in base_get_ids:
             continue
         fppg = _fppg(row)
-        if fppg < MIN_COUNTER_ADD_FPPG or _is_unavailable(row):
+        age = _age(row)
+        if (
+            fppg < MIN_COUNTER_ADD_FPPG
+            or age is None
+            or age <= DYNASTY_MANUAL_REVIEW_MAX_AGE
+            or _is_unavailable(row)
+            or _is_protected_trade_player(row)
+        ):
             continue
         tokens = _position_tokens(row)
         weak_fit = sorted(tokens & set(my_weak_positions))
@@ -358,11 +503,28 @@ def _pick_counter_tiers(candidates: list[dict[str, Any]]) -> list[tuple[str, dic
         used.add(pid)
         picked.append((tier, candidate))
 
-    add("strong", candidates[0])
-    remaining = [c for c in candidates if str((c.get("row") or {}).get("id") or "") not in used]
-    add("light", min(remaining, key=lambda c: (c["fppg"], -c["score"]), default=None))
-    remaining = [c for c in candidates if str((c.get("row") or {}).get("id") or "") not in used]
-    add("balanced", min(remaining, key=lambda c: (abs(c["counter_delta"] - 1.0), -c["score"]), default=None))
+    # Counter bands describe negotiation posture, not star power. Pick the
+    # closest unique package to each target edge so an elite player is not
+    # labeled the default "strong" ask merely because he has the most FP/G.
+    targets = (("strong", 1.5), ("balanced", 0.5), ("light", 0.0))
+    for tier, target in targets:
+        remaining = [
+            candidate
+            for candidate in candidates
+            if str((candidate.get("row") or {}).get("id") or "") not in used
+        ]
+        add(
+            tier,
+            min(
+                remaining,
+                key=lambda candidate: (
+                    abs(candidate["counter_delta"] - target),
+                    -candidate["score"],
+                    str((candidate.get("row") or {}).get("name") or ""),
+                ),
+                default=None,
+            ),
+        )
 
     order = {"strong": 0, "balanced": 1, "light": 2}
     return sorted(picked, key=lambda item: order[item[0]])
@@ -415,7 +577,7 @@ def _counter_rationale(
     if fit:
         roster_text = f"adds {fit} help"
     else:
-        roster_text = "adds usable weekly points"
+        roster_text = "adds current-rate value"
     if opponent_need:
         need_text = f" while your give side fits their {opponent_need[0]} need"
     else:
@@ -435,21 +597,21 @@ def _headline(deltas: dict[str, Any]) -> str:
     my_delta = deltas["my_delta"]
     age_delta = deltas["age_delta"]
     if grade in ("A+", "A", "A−"):
-        verdict = "Take it"
+        verdict = "Strong current-rate edge"
     elif grade in ("B+", "B", "B−"):
-        verdict = "Lean accept"
+        verdict = "Near-even current rate"
     elif grade == "C":
-        verdict = "Push back"
+        verdict = "Current-rate deficit"
     else:
-        verdict = "Decline"
+        verdict = "Large current-rate deficit"
     if age_delta is not None and age_delta <= -1:
         flavor = "you get younger"
     elif age_delta is not None and age_delta >= 1:
         flavor = "you get older"
     elif my_delta >= 0.5:
-        flavor = "weekly edge"
+        flavor = "higher FP/G"
     elif my_delta <= -0.5:
-        flavor = "you lose weekly points"
+        flavor = "lower FP/G"
     else:
         flavor = "near even"
     return f"{verdict} · {flavor}"
@@ -471,7 +633,12 @@ def _fppg(row: dict[str, Any]) -> float:
 
 
 def _age(row: dict[str, Any]) -> float | None:
-    return _number(row.get("age"))
+    age = _number(row.get("age"))
+    if age is None or not math.isfinite(age):
+        return None
+    if age < MIN_VALID_DYNASTY_AGE or age > MAX_VALID_DYNASTY_AGE:
+        return None
+    return age
 
 
 def _weak_positions(rows: list[dict[str, Any]], limit: int = 3) -> list[str]:
@@ -747,4 +914,4 @@ def _fallback_rationale(context: dict[str, Any]) -> str:
     get = ", ".join(p.get("name") or "" for p in context.get("my_get") or []) or "the get side"
     my_delta = context.get("my_delta", 0.0)
     sign = "+" if my_delta >= 0 else ""
-    return f"You give {give} and get {get} for a net {sign}{my_delta} weekly FP/G."
+    return f"You give {give} and get {get} for a net {sign}{my_delta} FP/G from the current snapshot."

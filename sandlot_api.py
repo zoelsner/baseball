@@ -114,8 +114,8 @@ def attention_queue() -> dict[str, Any]:
         )
     except Exception:
         log.exception("Previous snapshot lookup failed")
-    current_data = row.get("data") or {}
-    previous_data = (previous_row or {}).get("data") or None
+    current_data = _persisted_snapshot_data(row)
+    previous_data = _persisted_snapshot_data(previous_row) if previous_row else None
     return jsonable_encoder(
         {
             "snapshot_id": row.get("id"),
@@ -525,8 +525,20 @@ def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, default=str)}\n\n"
 
 
+def _persisted_snapshot_data(row: dict[str, Any]) -> dict[str, Any]:
+    """Bind derived recommendation contracts to the stored snapshot row."""
+    raw_data = row.get("data")
+    data = raw_data if isinstance(raw_data, dict) else {}
+    return {
+        **data,
+        "snapshot_id": row.get("id"),
+        "snapshot_taken_at": row.get("taken_at"),
+    }
+
+
 def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     data = row.get("data") or {}
+    snapshot_data = _persisted_snapshot_data(row)
     roster_meta = data.get("roster") or {}
     standings = data.get("standings") or {}
     data_quality = sandlot_data_quality.snapshot_data_quality(data)
@@ -535,8 +547,8 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(matchup_block, dict) and matchup_block:
         matchup = {
             **matchup_block,
-            "projection": sandlot_matchup.compute_projection(data, data_quality),
-            "recommendations": sandlot_matchup.rank_matchup_improvement_actions(data, data_quality),
+            "projection": sandlot_matchup.compute_projection(snapshot_data, data_quality),
+            "recommendations": sandlot_matchup.rank_matchup_improvement_actions(snapshot_data, data_quality),
         }
     taken_at = row.get("taken_at")
     return {
@@ -560,7 +572,7 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _hot_swap_payload(row: dict[str, Any]) -> dict[str, Any]:
-    data = row.get("data") or {}
+    data = _persisted_snapshot_data(row)
     taken_at = row.get("taken_at")
     data_quality = sandlot_data_quality.snapshot_data_quality(data)
     items = sandlot_attention.attention_items(data)

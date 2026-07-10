@@ -1,6 +1,7 @@
 import unittest
 
 import sandlot_matchup
+from sandlot_api import _snapshot_payload
 
 
 def future_game(day=14, **extra):
@@ -51,6 +52,18 @@ def raw_lineup_change(value):
 
 
 class MatchupRecommendationTests(unittest.TestCase):
+    def test_snapshot_payload_binds_contract_to_persisted_snapshot_id(self):
+        data = snapshot([
+            player("weak2b", slot="2B", positions="2B", fppg=1.0),
+            player("bench2b", slot="BN", positions="2B", fppg=4.0),
+        ])
+        data.pop("snapshot_id")
+
+        payload = _snapshot_payload({"id": 777, "data": data})
+
+        contract = payload["matchup"]["recommendations"]["recommendations"][0]["replacement_card"]["proposal"]["contract"]
+        self.assertEqual(contract["snapshot_id"], 777)
+
     def test_ranks_meaningful_actions_by_delta(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
             player("corner", slot="3B", positions=["1B", "3B"], fppg=4.0),
@@ -77,6 +90,7 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertFalse(card["proposal"]["writes_enabled"])
         self.assertTrue(card["proposal"]["confirmation_required"])
         contract = card["proposal"]["contract"]
+        self.assertEqual(contract["version"], 2)
         self.assertEqual(contract["snapshot_id"], "test-snapshot")
         self.assertEqual(contract["move_out"]["id"], "weak1b")
         self.assertEqual(contract["move_in"]["id"], "bench3b")
@@ -84,6 +98,19 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertFalse(contract["executable"])
         self.assertFalse(contract["writes_enabled"])
         self.assertEqual(len(contract["input_hash"]), 64)
+        self.assertTrue(contract["freshness_policy"]["requires_live_preflight"])
+        self.assertEqual(contract["freshness_policy"]["preflight_snapshot_max_age_minutes"], 5)
+        self.assertEqual(contract["freshness_policy"]["confirmation_max_age_seconds"], 120)
+        self.assertTrue(contract["post_write_verification"]["required"])
+        self.assertEqual(contract["confirmation"]["mode"], "exact_contract_match")
+        self.assertEqual(
+            contract["confirmation"]["expected"]["input_hash"],
+            contract["input_hash"],
+        )
+        self.assertEqual(
+            contract["confirmation"]["match_fields"],
+            ["proposal_id", "input_hash", "snapshot_id", "slot_moves"],
+        )
         self.assertTrue(contract["requires_multi_step"])
         self.assertEqual(
             [(move["player_id"], move["from_slot"], move["to_slot"]) for move in contract["slot_moves"]],
@@ -139,6 +166,25 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(card["proposal"]["contract"]["blocked_by"], ["executor_ready"])
         self.assertFalse(card["proposal"]["contract"]["requires_multi_step"])
         self.assertEqual(len(card["proposal"]["contract"]["slot_moves"]), 2)
+
+    def test_contract_hash_covers_freshness_and_post_write_policies(self):
+        base = snapshot([
+            player("weak2b", slot="2B", positions="2B", fppg=1.0, raw=raw_lineup_change(False)),
+            player("bench2b", slot="BN", positions="2B", fppg=4.0, raw=raw_lineup_change(False)),
+        ])
+        first = sandlot_matchup.rank_matchup_improvement_actions(base)
+        first_contract = first["recommendations"][0]["replacement_card"]["proposal"]["contract"]
+
+        changed = dict(first_contract)
+        changed["freshness_policy"] = {
+            **first_contract["freshness_policy"],
+            "confirmation_max_age_seconds": 121,
+        }
+
+        self.assertNotEqual(
+            sandlot_matchup._contract_input_hash(changed),
+            first_contract["input_hash"],
+        )
 
     def test_started_mlb_game_locks_even_when_provider_says_movable(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
@@ -272,18 +318,21 @@ class MatchupRecommendationTests(unittest.TestCase):
         ]))
 
         self.assertEqual(result["recommendations"], [])
-        self.assertIn("No safe lineup move", result["no_action"]["reason"])
-        self.assertIn("slot provenance is untrusted", result["no_action"]["reason"])
+        self.assertIsNone(result["base_projection"])
+        self.assertIn("No matchup projection is available", result["no_action"]["reason"])
+        self.assertIn("Projection lineup-slot source usable for 1/2 active players", result["no_action"]["reason"])
 
-    def test_unrelated_untrusted_slot_does_not_block_trusted_hot_swap_pair(self):
+    def test_unrelated_untrusted_slot_fails_closed_when_base_projection_is_unavailable(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
             player("weak2b", slot="2B", positions="2B", fppg=1.0, slot_source="raw.lineupSlot"),
             player("bench2b", slot="BN", positions="2B", fppg=4.0, slot_source="raw.statusId"),
             player("unrelated", slot="OF", positions="OF", fppg=2.0, slot_source="position_fallback"),
         ]))
 
-        self.assertEqual(result["recommendations"][0]["replacement_card"]["move_in"]["id"], "bench2b")
-        self.assertEqual(result["recommendations"][0]["replacement_card"]["move_out"]["id"], "weak2b")
+        self.assertEqual(result["recommendations"], [])
+        self.assertIsNone(result["base_projection"])
+        self.assertIn("No matchup projection is available", result["no_action"]["reason"])
+        self.assertIn("Projection lineup-slot source usable for 2/3 active players", result["no_action"]["reason"])
 
     def test_failed_future_game_provenance_blocks_participant_hot_swap(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([

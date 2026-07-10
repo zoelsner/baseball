@@ -664,6 +664,54 @@ def _raw_fpts(row: dict[str, Any], scorer: dict[str, Any]) -> float | None:
     return _floatish(_cell_content(row, 1))
 
 
+ROSTER_AGE_FIELDS = ("age", "Age", "playerAge", "player_age")
+MIN_PLAUSIBLE_ROSTER_AGE = 16
+MAX_PLAUSIBLE_ROSTER_AGE = 50
+
+
+def _plausible_roster_age(value: Any) -> int | None:
+    parsed = _floatish(value)
+    if parsed is None or not parsed.is_integer():
+        return None
+    age = int(parsed)
+    if not MIN_PLAUSIBLE_ROSTER_AGE <= age <= MAX_PLAUSIBLE_ROSTER_AGE:
+        return None
+    return age
+
+
+def _raw_roster_age(row: dict[str, Any], scorer: dict[str, Any]) -> tuple[int | None, str | None]:
+    """Return roster age only when its source is explicit or schema-verified."""
+    for source, prefix in ((row, "raw"), (scorer, "raw.scorer")):
+        for key in ROSTER_AGE_FIELDS:
+            age = _plausible_roster_age(source.get(key))
+            if age is not None:
+                return age, f"{prefix}.{key}"
+
+    age = _plausible_roster_age(_cell_content(row, 0))
+    has_roster_stat_fingerprint = (
+        _floatish(_cell_content(row, 1)) is not None
+        and _floatish(_cell_content(row, 2)) is not None
+    )
+    if age is not None and has_roster_stat_fingerprint:
+        return age, "raw.cells[0]"
+    return None, None
+
+
+def _object_roster_age(row: Any, player: Any) -> tuple[int | None, str | None]:
+    for source, prefix in ((player, "player"), (row, "row")):
+        if source is None:
+            continue
+        for attr in ("age", "player_age", "playerAge"):
+            try:
+                value = getattr(source, attr)
+            except Exception:
+                continue
+            age = _plausible_roster_age(value)
+            if age is not None:
+                return age, f"{prefix}.{attr}"
+    return None, None
+
+
 def _raw_injury_status(scorer: dict[str, Any]) -> str | None:
     for key in ("injuryStatus", "status", "playerStatus", "statusShortName"):
         value = scorer.get(key)
@@ -732,6 +780,7 @@ def _normalize_roster_raw_row(
     assigned_slot, slot_source = assigned_slots.get(str(player_id), (None, None))
     slot = assigned_slot or position_short
     slot_full = assigned_slot or position_short
+    age, age_source = _raw_roster_age(raw_row, scorer)
     entry = {
         "name": scorer.get("name") or scorer.get("fullName") or scorer.get("shortName"),
         "id": player_id,
@@ -744,7 +793,8 @@ def _normalize_roster_raw_row(
         "fpts": _raw_fpts(raw_row, scorer),
         "fppg": _raw_fppg(raw_row, scorer),
         "injury": _raw_injury_status(scorer),
-        "age": None,
+        "age": age,
+        "age_source": age_source,
         "raw": _to_jsonable(raw_row),
     }
     future_games = _raw_future_games(raw_row)
@@ -831,6 +881,7 @@ def extract_roster(api: FantraxAPI, team_id: str, slot_overrides: dict[str, dict
                 assigned_slot, slot_source = assigned_slots.get(str(player_id), (None, None))
                 slot = assigned_slot or position_short or position_name
                 slot_full = assigned_slot or position_name
+                age, age_source = _object_roster_age(row, player)
 
                 entry = {
                     "name": getattr(player, "name", None) if player else None,
@@ -844,7 +895,8 @@ def extract_roster(api: FantraxAPI, team_id: str, slot_overrides: dict[str, dict
                     "fpts": _getattr_any(row, "total_fantasy_points", "fantasy_points", "fpts"),
                     "fppg": _getattr_any(row, "fantasy_points_per_game", "fppg"),
                     "injury": _injury_status(player),
-                    "age": None,  # Fantrax doesn't expose age; populated from cache by audit.py
+                    "age": age,
+                    "age_source": age_source,
                     "raw": _to_jsonable(row),
                 }
                 rows.append(entry)

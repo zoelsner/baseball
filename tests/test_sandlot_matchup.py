@@ -70,6 +70,41 @@ class MatchupProjectionTests(unittest.TestCase):
         self.assertIn("Rest-of-period swing is -2", projection["drivers"]["summary"])
         self.assertFalse(projection["complete"])
 
+    def test_explicit_position_fallback_is_not_counted_as_an_active_player(self):
+        snapshot = {
+            "matchup": {
+                "my_score": 0,
+                "opponent_score": 0,
+                "opponent_team_id": "opp",
+                "end": "2026-05-20",
+                "complete": False,
+            },
+            "roster": {
+                "rows": [
+                    {
+                        "id": "trusted-starter",
+                        "slot": "2B",
+                        "slot_source": "raw.lineupSlot",
+                        "fppg": 2.0,
+                        "future_games": [future_game(14)],
+                    },
+                    {
+                        "id": "actual-bench-with-position-fallback",
+                        "slot": "OF",
+                        "slot_source": "position_fallback",
+                        "fppg": 50.0,
+                        "future_games": [future_game(14)],
+                    },
+                ],
+            },
+            "all_team_rosters": {"opp": {"rows": []}},
+        }
+
+        projection = sandlot_matchup.compute_projection(snapshot)
+
+        self.assertEqual(projection["projected_my"], 2.0)
+        self.assertEqual(projection["my_remaining_games"], 1)
+
     def test_does_not_project_pitcher_team_games_as_appearances(self):
         snapshot = {
             "matchup": {
@@ -229,6 +264,75 @@ class MatchupProjectionTests(unittest.TestCase):
         self.assertEqual(projection["drivers"]["projected_margin"], -8.0)
         self.assertEqual(projection["drivers"]["rest_of_period_delta"], 0.0)
         self.assertTrue(projection["complete"])
+
+    def test_in_progress_zero_rates_keep_nonzero_uncertainty(self):
+        snapshot = {
+            "matchup": {
+                "my_score": 1,
+                "opponent_score": 0,
+                "opponent_team_id": "opp",
+                "end": "2026-05-20",
+                "complete": False,
+            },
+            "roster": {
+                "rows": [
+                    {
+                        "id": "mine-1",
+                        "slot": "2B",
+                        "positions": "2B",
+                        "fppg": 0.0,
+                        "future_games": [future_game(14)],
+                    },
+                ],
+            },
+            "all_team_rosters": {
+                "opp": {
+                    "rows": [
+                        {
+                            "id": "opp-1",
+                            "slot": "SS",
+                            "positions": "SS",
+                            "fppg": 0.0,
+                            "future_games": [future_game(14)],
+                        },
+                    ],
+                },
+            },
+        }
+
+        projection = sandlot_matchup.compute_projection(snapshot)
+
+        self.assertGreater(projection["win_probability"], 0.5)
+        self.assertLess(projection["win_probability"], 1.0)
+        self.assertEqual(projection["scoring_basis"], "current_snapshot_fppg_x_remaining_games")
+        self.assertFalse(projection["probability_calibrated"])
+
+    def test_nonfinite_scores_or_rates_do_not_emit_projection(self):
+        snapshot = {
+            "matchup": {
+                "my_score": float("nan"),
+                "opponent_score": 0,
+                "opponent_team_id": "opp",
+                "end": "2026-05-20",
+            },
+            "roster": {
+                "rows": [{"id": "mine", "slot": "2B", "fppg": 1.0, "future_games": [future_game(14)]}],
+            },
+            "all_team_rosters": {
+                "opp": {
+                    "rows": [{"id": "opp", "slot": "SS", "fppg": 1.0, "future_games": [future_game(14)]}],
+                },
+            },
+        }
+
+        self.assertIsNone(sandlot_matchup.compute_projection(snapshot))
+
+        snapshot["matchup"]["my_score"] = 1
+        snapshot["roster"]["rows"][0]["fppg"] = float("inf")
+        self.assertIsNone(sandlot_matchup.compute_projection(snapshot))
+
+        snapshot["roster"]["rows"][0]["fppg"] = 688
+        self.assertIsNone(sandlot_matchup.compute_projection(snapshot))
 
     def test_returns_none_when_opponent_roster_is_missing(self):
         projection = sandlot_matchup.compute_projection({

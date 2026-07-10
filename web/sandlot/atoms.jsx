@@ -92,7 +92,7 @@ function PlayerPhoto({ mlbId, name, size=56 }) {
       style={{
         width:size, height:size, borderRadius:'50%', objectFit:'cover',
         display:'block', flexShrink:0, background:'#f4efe6',
-        border:'1px solid rgba(15,23,42,0.08)',
+        outline:'1px solid rgba(0,0,0,0.1)', outlineOffset:'-1px',
       }}
     />
   );

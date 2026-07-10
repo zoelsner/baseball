@@ -492,6 +492,33 @@ class AttentionRouteTests(unittest.TestCase):
         self.assertEqual([i["kind"] for i in payload["items"]], ["status", "lineup", "output"])
         self.assertEqual([c["player_id"] for c in payload["changes"]], ["judge"])
 
+    def test_proposal_contract_uses_persisted_snapshot_id(self):
+        data = snapshot_data(today_page_roster())
+        data["snapshot_id"] = "stale-embedded-id"
+        row = {
+            "id": 42,
+            "taken_at": datetime.now(timezone.utc),
+            "data": data,
+        }
+
+        def ranked(bound_data, _data_quality):
+            recommendations = today_page_recommendations()
+            proposal = recommendations["recommendations"][0]["replacement_card"]["proposal"]
+            proposal["contract"] = {"snapshot_id": bound_data.get("snapshot_id")}
+            return recommendations
+
+        with mock.patch("sandlot_db.latest_successful_snapshot", return_value=row), \
+            mock.patch("sandlot_db.previous_successful_snapshot", return_value=None), \
+            mock.patch.object(
+                sandlot_attention.sandlot_matchup,
+                "rank_matchup_improvement_actions",
+                side_effect=ranked,
+            ):
+            payload = attention_queue()
+
+        replacement = next(item for item in payload["items"] if item["kind"] == "replacement")
+        self.assertEqual(replacement["proposal"]["contract"]["snapshot_id"], 42)
+
 
 class HotSwapRouteTests(unittest.TestCase):
     def test_latest_hot_swaps_returns_read_only_proposals(self):
@@ -520,6 +547,32 @@ class HotSwapRouteTests(unittest.TestCase):
         self.assertEqual(payload["proposals"][0]["blocked_action"]["state"], "blocked")
         self.assertEqual(payload["proposals"][0]["source_item"]["kind"], "replacement")
         self.assertEqual(payload["proposals"][0]["replacement"]["movability"]["state"], "locked")
+
+    def test_latest_hot_swap_contract_uses_persisted_snapshot_id(self):
+        data = snapshot_data(today_page_roster())
+        data.pop("snapshot_id", None)
+        row = {
+            "id": 42,
+            "taken_at": datetime.now(timezone.utc),
+            "data": data,
+        }
+
+        def ranked(bound_data, _data_quality):
+            recommendations = today_page_recommendations()
+            proposal = recommendations["recommendations"][0]["replacement_card"]["proposal"]
+            proposal["contract"] = {"snapshot_id": bound_data.get("snapshot_id")}
+            return recommendations
+
+        with mock.patch("sandlot_db.latest_successful_snapshot", return_value=row), \
+            mock.patch.object(
+                sandlot_attention.sandlot_matchup,
+                "rank_matchup_improvement_actions",
+                side_effect=ranked,
+            ):
+            payload = latest_hot_swaps()
+
+        contract = payload["proposals"][0]["proposal"]["contract"]
+        self.assertEqual(contract["snapshot_id"], 42)
 
     def test_latest_hot_swaps_pauses_when_slot_provenance_is_untrusted(self):
         data = snapshot_data(today_page_roster())
