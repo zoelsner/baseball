@@ -664,6 +664,54 @@ def _raw_fpts(row: dict[str, Any], scorer: dict[str, Any]) -> float | None:
     return _floatish(_cell_content(row, 1))
 
 
+ROSTER_AGE_FIELDS = ("age", "Age", "playerAge", "player_age")
+MIN_PLAUSIBLE_ROSTER_AGE = 16
+MAX_PLAUSIBLE_ROSTER_AGE = 50
+
+
+def _plausible_roster_age(value: Any) -> int | None:
+    parsed = _floatish(value)
+    if parsed is None or not parsed.is_integer():
+        return None
+    age = int(parsed)
+    if not MIN_PLAUSIBLE_ROSTER_AGE <= age <= MAX_PLAUSIBLE_ROSTER_AGE:
+        return None
+    return age
+
+
+def _raw_roster_age(row: dict[str, Any], scorer: dict[str, Any]) -> tuple[int | None, str | None]:
+    """Return roster age only when its source is explicit or schema-verified."""
+    for source, prefix in ((row, "raw"), (scorer, "raw.scorer")):
+        for key in ROSTER_AGE_FIELDS:
+            age = _plausible_roster_age(source.get(key))
+            if age is not None:
+                return age, f"{prefix}.{key}"
+
+    age = _plausible_roster_age(_cell_content(row, 0))
+    has_roster_stat_fingerprint = (
+        _floatish(_cell_content(row, 1)) is not None
+        and _floatish(_cell_content(row, 2)) is not None
+    )
+    if age is not None and has_roster_stat_fingerprint:
+        return age, "raw.cells[0]"
+    return None, None
+
+
+def _object_roster_age(row: Any, player: Any) -> tuple[int | None, str | None]:
+    for source, prefix in ((player, "player"), (row, "row")):
+        if source is None:
+            continue
+        for attr in ("age", "player_age", "playerAge"):
+            try:
+                value = getattr(source, attr)
+            except Exception:
+                continue
+            age = _plausible_roster_age(value)
+            if age is not None:
+                return age, f"{prefix}.{attr}"
+    return None, None
+
+
 def _raw_injury_status(scorer: dict[str, Any]) -> str | None:
     for key in ("injuryStatus", "status", "playerStatus", "statusShortName"):
         value = scorer.get(key)
@@ -732,6 +780,7 @@ def _normalize_roster_raw_row(
     assigned_slot, slot_source = assigned_slots.get(str(player_id), (None, None))
     slot = assigned_slot or position_short
     slot_full = assigned_slot or position_short
+    age, age_source = _raw_roster_age(raw_row, scorer)
     entry = {
         "name": scorer.get("name") or scorer.get("fullName") or scorer.get("shortName"),
         "id": player_id,
@@ -744,7 +793,8 @@ def _normalize_roster_raw_row(
         "fpts": _raw_fpts(raw_row, scorer),
         "fppg": _raw_fppg(raw_row, scorer),
         "injury": _raw_injury_status(scorer),
-        "age": None,
+        "age": age,
+        "age_source": age_source,
         "raw": _to_jsonable(raw_row),
     }
     future_games = _raw_future_games(raw_row)
@@ -831,6 +881,7 @@ def extract_roster(api: FantraxAPI, team_id: str, slot_overrides: dict[str, dict
                 assigned_slot, slot_source = assigned_slots.get(str(player_id), (None, None))
                 slot = assigned_slot or position_short or position_name
                 slot_full = assigned_slot or position_name
+                age, age_source = _object_roster_age(row, player)
 
                 entry = {
                     "name": getattr(player, "name", None) if player else None,
@@ -844,7 +895,8 @@ def extract_roster(api: FantraxAPI, team_id: str, slot_overrides: dict[str, dict
                     "fpts": _getattr_any(row, "total_fantasy_points", "fantasy_points", "fpts"),
                     "fppg": _getattr_any(row, "fantasy_points_per_game", "fppg"),
                     "injury": _injury_status(player),
-                    "age": None,  # Fantrax doesn't expose age; populated from cache by audit.py
+                    "age": age,
+                    "age_source": age_source,
                     "raw": _to_jsonable(row),
                 }
                 rows.append(entry)
@@ -937,7 +989,27 @@ def extract_matchup(api: FantraxAPI, my_team_id: str) -> dict | None:
     if current is None:
         return None
 
-    for matchup in getattr(current, "matchups", []) or []:
+    current_payload = _matchup_payload(current, my_team_id)
+    if current_payload is None:
+        return None
+
+    completed_periods = [
+        period
+        for period in periods.values()
+        if getattr(period, "end", None) and getattr(period, "end") < today
+    ]
+    for period in sorted(completed_periods, key=lambda item: getattr(item, "end"), reverse=True):
+        completed_payload = _matchup_payload(period, my_team_id, complete=True)
+        if completed_payload is None:
+            continue
+        if completed_payload.get("period_number") != current_payload.get("period_number"):
+            current_payload["latest_completed"] = completed_payload
+        break
+    return current_payload
+
+
+def _matchup_payload(period: Any, my_team_id: str, *, complete: bool | None = None) -> dict | None:
+    for matchup in getattr(period, "matchups", []) or []:
         away = getattr(matchup, "away", None)
         home = getattr(matchup, "home", None)
         away_id = getattr(away, "id", None)
@@ -952,13 +1024,13 @@ def extract_matchup(api: FantraxAPI, my_team_id: str) -> dict | None:
         margin = round(float(my_score or 0) - float(opponent_score or 0), 2)
         return {
             "source": "fantrax_schedule",
-            "period_number": getattr(getattr(current, "period", None), "number", None),
-            "period_name": getattr(current, "name", None),
-            "start": str(getattr(current, "start", "")) or None,
-            "end": str(getattr(current, "end", "")) or None,
-            "days": getattr(current, "days", None),
-            "complete": getattr(current, "complete", None),
-            "current": getattr(current, "current", None),
+            "period_number": getattr(getattr(period, "period", None), "number", None),
+            "period_name": getattr(period, "name", None),
+            "start": str(getattr(period, "start", "")) or None,
+            "end": str(getattr(period, "end", "")) or None,
+            "days": getattr(period, "days", None),
+            "complete": bool(complete) if complete is not None else getattr(period, "complete", None),
+            "current": getattr(period, "current", None),
             "matchup_key": getattr(matchup, "matchup_key", None),
             "my_team_id": my_team_id,
             "my_team_name": getattr(away if is_away else home, "name", None) or str(away if is_away else home),
@@ -1343,12 +1415,28 @@ def _normalize_fa_player(entry: dict, stat_keys: list[str]) -> dict:
     else:
         stats = {"_cells": cell_values}
 
+    age = None
+    age_source = None
+    for key in ROSTER_AGE_FIELDS:
+        age = _plausible_roster_age(scorer.get(key))
+        if age is not None:
+            age_source = f"raw.scorer.{key}"
+            break
+    if age is None:
+        for key in ("Age", "AGE", "age"):
+            age = _plausible_roster_age(stats.get(key))
+            if age is not None:
+                age_source = f"stats.{key}"
+                break
+
     return {
         "id": scorer.get("scorerId") or scorer.get("playerId") or scorer.get("id"),
         "name": scorer.get("name") or scorer.get("fullName"),
         "team": scorer.get("teamShortName") or scorer.get("teamName"),
         "positions": scorer.get("posShortNames") or scorer.get("positions"),
         "multi_positions": entry.get("multiPositions"),
+        "age": age,
+        "age_source": age_source,
         "stats": stats,
     }
 

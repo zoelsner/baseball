@@ -26,11 +26,10 @@ import requests  # noqa: E402
 import mlb_stats  # noqa: E402
 import sandlot_lineup as lineup  # noqa: E402
 import sandlot_scoring as scoring  # noqa: E402
-from sandlot_autopsy import INJURED_SLOTS, eligibility_tokens  # noqa: E402
+from sandlot_autopsy import INJURED_SLOTS, PROTECTED_SLOTS, eligibility_tokens  # noqa: E402
 
 ET = ZoneInfo("America/New_York")
 RECENT_WINDOW_DAYS = 30
-RECENT_FORM_GAMES = 10
 GAME_LOG_THREADS = 8
 
 
@@ -105,6 +104,7 @@ def scored_game_log(mlb_id: int, tokens: set[str], season: int) -> list[dict]:
                 games.append({
                     "date": g.get("date"),
                     "gs": bool(g.get("gs")),
+                    "group": group,
                     "pts": scoring.game_points(g, group),
                 })
         except Exception as exc:  # noqa: BLE001
@@ -175,39 +175,55 @@ def run():
         slot = (r.get("slot") or "").strip().upper()
         injury = (r.get("injury") or "").strip().upper()
         games = logs.get(fid, [])
-        season_pts = [g["pts"] for g in games]
         recent = [g for g in games if (g["date"] or "") >= recent_start.isoformat()]
-        recent_form = [g["pts"] for g in recent[-RECENT_FORM_GAMES:]]
-        rate = lineup.blended_rate(
-            sum(recent_form) / len(recent_form) if recent_form else 0.0, len(recent_form),
-            sum(season_pts) / len(season_pts) if season_pts else 0.0, len(season_pts),
-        )
         team = mlb_stats._normalize_team(r.get("team")) or ""
         n_probable = probable_counts.get(str(mlb_ids.get(fid)), 0)
-        starts_recent = sum(1 for g in recent if g["gs"])
-        exp = lineup.expected_games(
+        hitting_games = [g for g in games if g.get("group") == "hitting"]
+        pitching_games = [g for g in games if g.get("group") == "pitching"]
+        hitting_recent = [g for g in recent if g.get("group") == "hitting"]
+        pitching_recent = [g for g in recent if g.get("group") == "pitching"]
+        starts_recent = sum(1 for g in pitching_recent if g["gs"])
+        projection = lineup.project_week(
             tokens,
+            hitting_season_points=[g["pts"] for g in hitting_games],
+            hitting_recent_points=[g["pts"] for g in hitting_recent],
+            pitching_season_points=[g["pts"] for g in pitching_games],
+            pitching_recent_points=[g["pts"] for g in pitching_recent],
             team_games_next=games_next.get(team, 0),
             team_games_recent=games_recent_by_team.get(team, 0),
-            games_recent=len(recent),
             starts_recent=starts_recent,
             probable_starts=n_probable,
         )
-        proj = round(rate * exp, 1)
-        is_pitcher_only = bool(tokens & lineup.PITCHER_TOKENS) and not (tokens - lineup.PITCHER_TOKENS)
-        starter_usage = is_pitcher_only and starts_recent > 0 and starts_recent * 2 >= len(recent)
-        basis = (f"{rate:.1f}/gm x {exp:.1f} "
-                 + ("starts" if starter_usage else
-                    "outings" if is_pitcher_only else "games")
-                 + (" (probable)" if n_probable else "")
-                 + (" [DTD]" if injury == "DTD" else "")
-                 + ("" if fid in mlb_ids else " [no MLB data]"))
+        component_points = {
+            component["group"]: component["points"]
+            for component in projection["components"]
+        }
+        hitter_proj = round(component_points.get("hitting", 0.0), 1)
+        pitcher_proj = round(hitter_proj + component_points.get("pitching", 0.0), 1)
+        can_hit = bool(tokens - lineup.PITCHER_TOKENS)
+        can_pitch = bool(tokens & lineup.PITCHER_TOKENS)
+        proj = max(
+            hitter_proj if can_hit else float("-inf"),
+            pitcher_proj if can_pitch else float("-inf"),
+        )
+        if proj == float("-inf"):
+            proj = 0.0
+        basis_parts = [
+            f"{component['group']} {component['rate']:.1f}/gm x "
+            f"{component['expected']:.1f} {component['unit']}"
+            + (" (probable)" if component["group"] == "pitching" and n_probable else "")
+            for component in projection["components"]
+        ]
+        basis = " + ".join(basis_parts or ["no scoring data"])
+        basis += " [DTD]" if injury == "DTD" else ""
+        basis += "" if fid in mlb_ids else " [no MLB data]"
         entry = {"id": fid, "name": name, "tokens": tokens, "proj": proj,
-                 "basis": basis, "slot": slot}
+                 "hitter_proj": hitter_proj, "pitcher_proj": pitcher_proj,
+                 "basis": basis, "slot": slot, "injury": injury}
         if slot in INJURED_SLOTS or injury in lineup.BLOCKED_INJURIES:
             excluded.append(entry)
             continue
-        if slot == "MIN":
+        if slot in PROTECTED_SLOTS:
             excluded.append({**entry, "basis": basis + " [minors]"})
             continue
         entries.append(entry)
@@ -216,7 +232,10 @@ def run():
 
     result = lineup.propose(entries)
     by_name = {e["name"]: e for e in entries}
-    current_total = round(sum(e["proj"] for e in current_active), 1)
+    current_total = round(
+        sum(lineup.projected_for_slot(entry, entry["slot"]) for entry in current_active),
+        1,
+    )
     proposed_names = {name for _, name in result["lineup"]}
     ins = sorted(n for n in proposed_names if n not in {e["name"] for e in current_active})
     outs = sorted(e["name"] for e in current_active if e["name"] not in proposed_names)
@@ -234,7 +253,8 @@ def run():
     slot_order = {s: i for i, s in enumerate(lineup.FULL_ACTIVE_TEMPLATE)}
     for slot, name in sorted(result["lineup"], key=lambda x: slot_order.get(x[0], 99)):
         e = by_name.get(name, {})
-        lines.append(f"| {slot} | {name} | {e.get('proj', 0):.1f} | {e.get('basis','')} |")
+        assigned_projection = lineup.projected_for_slot(e, slot)
+        lines.append(f"| {slot} | {name} | {assigned_projection:.1f} | {e.get('basis','')} |")
     if result["unfilled"]:
         lines += ["", f"**No eligible player for: {', '.join(result['unfilled'])}** — "
                   "these slots score zero unless you add someone."]

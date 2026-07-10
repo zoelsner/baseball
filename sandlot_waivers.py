@@ -33,6 +33,11 @@ REFRESH_SUBJECT = "latest"
 
 CARD_LIMIT = 8
 WEAK_POSITION_COUNT = 3
+DYNASTY_PROTECTED_MAX_AGE = 24
+# Owner-level hard stops outrank projections, rankings, and upstream data.
+# Keep this deliberately explicit and small: these names can never appear on
+# the move-out side of an add/drop recommendation.
+NEVER_DROP_PLAYER_NAMES = {"aaron judge"}
 
 POSITION_ALIASES = {
     "LF": "OF",
@@ -46,8 +51,18 @@ GENERIC_POSITIONS = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "MIN", "
 PITCHER_POSITIONS = {"SP", "RP", "P"}
 HITTER_POSITIONS = {"C", "1B", "2B", "3B", "SS", "OF", "UT"}
 PROTECTED_MOVE_OUT_SLOTS = {"IL", "IR", "MIN", "MINORS"}
-STATUS_ISSUE_TOKENS = ("DTD", "OUT", "IL", "IL10", "IL60", "IR", "SUSP", "NA", "D/L")
-INJURY_STASH_TOKENS = ("IL", "IL10", "IL60", "IR", "D/L")
+PROTECTED_PLAYER_FLAGS = {
+    "protected",
+    "is_protected",
+    "keeper",
+    "is_keeper",
+    "keeper_protected",
+    "minor_league",
+    "minors",
+    "is_minor_leaguer",
+}
+STATUS_ISSUE_TOKENS = {"DTD", "OUT", "IL", "IL10", "IL60", "IR", "SUSP", "NA", "D/L"}
+INJURY_STASH_TOKENS = {"IL", "IL10", "IL60", "IR", "D/L"}
 
 WAIVER_SWAP_SYSTEM_PROMPT = """You explain one deterministic fantasy baseball waiver swap.
 
@@ -153,8 +168,13 @@ def build_waiver_cards(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     weak_positions = _weak_positions(roster_rows)
     move_candidates, protected_move_outs = _move_out_candidates(roster_rows, weak_positions)
-    add_candidates = [_add_candidate(p) for p in fa_players]
-    add_candidates = [p for p in add_candidates if p and p["fpg"] > 0]
+    parsed_add_candidates = [_add_candidate(p) for p in fa_players]
+    parsed_add_candidates = [p for p in parsed_add_candidates if p and p["fpg"] > 0]
+    add_candidates = [
+        p
+        for p in parsed_add_candidates
+        if p["true_fpg"] and p["age"] is not None
+    ]
 
     candidates: list[dict[str, Any]] = []
     for add in add_candidates:
@@ -205,7 +225,10 @@ def build_waiver_cards(
     diagnostics = {
         "weak_positions": weak_positions,
         "free_agent_count": len(fa_players),
+        "parsed_add_count": len(parsed_add_candidates),
         "usable_add_count": len(add_candidates),
+        "excluded_untrusted_value_count": sum(1 for p in parsed_add_candidates if not p["true_fpg"]),
+        "excluded_missing_age_count": sum(1 for p in parsed_add_candidates if p["age"] is None),
         "move_out_count": len(move_candidates),
         "protected_move_out_count": len(protected_move_outs),
         "protected_move_outs": protected_move_outs[:8],
@@ -290,13 +313,15 @@ def _add_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
     if fpg is None:
         return None
     tokens = _position_tokens(row)
+    age, age_source = _age_with_source(row, stats)
     return {
         "id": str(row.get("id") or _slug(row.get("name") or "free-agent")),
         "name": row.get("name") or "Unknown free agent",
         "team": row.get("team") or "",
         "positions": _position_display(row, tokens),
         "tokens": tokens,
-        "age": _age(row, stats),
+        "age": age,
+        "age_source": age_source,
         "fpg": round(fpg, 2),
         "score_source": source,
         "true_fpg": true_fpg,
@@ -307,13 +332,21 @@ def _add_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
 def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) -> tuple[list[dict[str, Any]], list[str]]:
     out: list[dict[str, Any]] = []
     protected: list[str] = []
+    protected_names: set[str] = set()
+
+    def record_protected(row: dict[str, Any]) -> None:
+        name = str(row.get("name") or "Unknown player")
+        if name not in protected_names:
+            protected_names.add(name)
+            protected.append(name)
+
     for row in rows:
         if not isinstance(row, dict) or not row.get("name"):
             continue
         tokens = _position_tokens(row)
         fpg = _number(row.get("fppg"))
-        if _protect_move_out_slot(row) or _protect_injury_stash(row, fpg):
-            protected.append(str(row.get("name") or "Unknown player"))
+        if _protect_move_out(row, fpg):
+            record_protected(row)
             continue
         is_bench = _is_bench(row)
         status_issue = _has_status_issue(row)
@@ -329,6 +362,7 @@ def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) 
                 "tokens": tokens,
                 "slot": row.get("slot") or row.get("slot_full") or "",
                 "age": _age(row, {}),
+                "age_source": _age_with_source(row, {})[1],
                 "fpg": round(fpg if fpg is not None else 0.0, 2),
                 "injury": row.get("injury") or row.get("status"),
                 "is_bench": is_bench,
@@ -347,8 +381,8 @@ def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) 
         fpg = _number(row.get("fppg"))
         if fpg is None:
             continue
-        if _protect_move_out_slot(row) or _protect_injury_stash(row, fpg):
-            protected.append(str(row.get("name") or "Unknown player"))
+        if _protect_move_out(row, fpg):
+            record_protected(row)
             continue
         tokens = _position_tokens(row)
         fallback.append(
@@ -360,6 +394,7 @@ def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) 
                 "tokens": tokens,
                 "slot": row.get("slot") or row.get("slot_full") or "",
                 "age": _age(row, {}),
+                "age_source": _age_with_source(row, {})[1],
                 "fpg": round(fpg, 2),
                 "injury": row.get("injury") or row.get("status"),
                 "is_bench": _is_bench(row),
@@ -380,7 +415,7 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
     same_group = _same_position_group(add_tokens, move_tokens)
     net_delta = round(float(add["fpg"]) - float(move["fpg"]), 2)
 
-    if net_delta <= 0 and not (move["status_issue"] and add["fpg"] > 0):
+    if net_delta <= 0:
         return None
 
     if direct:
@@ -426,6 +461,7 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
             "team": add["team"],
             "positions": add["positions"],
             "age": add["age"],
+            "age_source": add.get("age_source"),
             "fpg": round(float(add["fpg"]), 1),
             "score_source": add["score_source"],
         },
@@ -436,6 +472,7 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
             "positions": move["positions"],
             "slot": move["slot"],
             "age": move["age"],
+            "age_source": move.get("age_source"),
             "fpg": round(float(move["fpg"]), 1),
             "injury": move["injury"],
         },
@@ -610,13 +647,19 @@ def _same_position_group(a: set[str], b: set[str]) -> bool:
 
 
 def _has_status_issue(row: dict[str, Any]) -> bool:
-    joined = " ".join(str(row.get(k) or "") for k in ("injury", "status", "slot", "slot_full")).upper()
-    return any(token in joined for token in STATUS_ISSUE_TOKENS)
+    return bool(_status_tokens(row, ("injury", "status", "slot", "slot_full")) & STATUS_ISSUE_TOKENS)
 
 
 def _has_injury_stash_status(row: dict[str, Any]) -> bool:
-    joined = " ".join(str(row.get(k) or "") for k in ("injury", "status")).upper()
-    return any(token in joined for token in INJURY_STASH_TOKENS)
+    return bool(_status_tokens(row, ("injury", "status")) & INJURY_STASH_TOKENS)
+
+
+def _status_tokens(row: dict[str, Any], keys: tuple[str, ...]) -> set[str]:
+    tokens: set[str] = set()
+    for key in keys:
+        value = str(row.get(key) or "").strip().upper()
+        tokens.update(token for token in re.split(r"[^A-Z0-9/]+", value) if token)
+    return tokens
 
 
 def _protect_injury_stash(row: dict[str, Any], _fpg: float | None) -> bool:
@@ -632,6 +675,36 @@ def _protect_injury_stash(row: dict[str, Any], _fpg: float | None) -> bool:
     return _has_injury_stash_status(row)
 
 
+def _protect_move_out(row: dict[str, Any], fpg: float | None) -> bool:
+    return (
+        _protect_named_anchor(row)
+        or _protect_move_out_slot(row)
+        or _protect_injury_stash(row, fpg)
+        or _protect_player_flag(row)
+        or _protect_dynasty_asset(row)
+    )
+
+
+def _protect_named_anchor(row: dict[str, Any]) -> bool:
+    name = " ".join(str(row.get("name") or "").split()).casefold()
+    return name in NEVER_DROP_PLAYER_NAMES
+
+
+def _protect_dynasty_asset(row: dict[str, Any]) -> bool:
+    age = _age(row, {})
+    return age is None or age <= DYNASTY_PROTECTED_MAX_AGE
+
+
+def _protect_player_flag(row: dict[str, Any]) -> bool:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    player = raw.get("player") if isinstance(raw.get("player"), dict) else {}
+    scorer = raw.get("scorer") if isinstance(raw.get("scorer"), dict) else {}
+    for source in (row, raw, player, scorer):
+        if any(_truthy(source.get(flag)) for flag in PROTECTED_PLAYER_FLAGS):
+            return True
+    return False
+
+
 def _protect_move_out_slot(row: dict[str, Any]) -> bool:
     tokens = " ".join(str(row.get(k) or "") for k in ("slot", "slot_full")).upper().split()
     return any(token in PROTECTED_MOVE_OUT_SLOTS for token in tokens)
@@ -642,12 +715,50 @@ def _is_bench(row: dict[str, Any]) -> bool:
     return any(token in joined.split() for token in ("BN", "BE", "BENCH", "RESERVE", "RES", "MIN", "MINORS"))
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
+
+
 def _age(row: dict[str, Any], stats: dict[str, Any]) -> int | None:
-    for value in (row.get("age"), stats.get("Age"), stats.get("AGE"), stats.get("age")):
-        parsed = _number(value)
-        if parsed is not None and parsed > 0:
-            return int(parsed)
-    return None
+    return _age_with_source(row, stats)[0]
+
+
+def _age_with_source(row: dict[str, Any], stats: dict[str, Any]) -> tuple[int | None, str | None]:
+    parsed = _number(row.get("age"))
+    source = str(row.get("age_source") or "").strip()
+    has_raw_provenance = isinstance(row.get("raw"), dict)
+    if parsed is not None and 16 <= parsed <= 50:
+        if _trusted_age_source(source):
+            return int(parsed), source
+        # Compatibility for normalized/synthetic rows that predate explicit
+        # provenance. Real Fantrax roster rows carry `raw` and must fail closed.
+        if not has_raw_provenance:
+            return int(parsed), "legacy.normalized_age"
+
+    for key in ("Age", "AGE", "age"):
+        parsed = _number(stats.get(key))
+        if parsed is not None and 16 <= parsed <= 50:
+            return int(parsed), f"stats.{key}"
+    cells = stats.get("_cells")
+    if isinstance(cells, list) and len(cells) >= 5:
+        parsed_age = _number(cells[2])
+        score = _number(cells[3])
+        per_game = _number(cells[4])
+        if (
+            parsed_age is not None
+            and score is not None
+            and 16 <= parsed_age <= 50
+            and _plausible_fpg(per_game)
+        ):
+            return int(parsed_age), "stats._cells[2]"
+    return None, None
+
+
+def _trusted_age_source(value: Any) -> bool:
+    source = str(value or "").strip().casefold()
+    return bool(source) and not any(token in source for token in ("unknown", "fallback", "inferred", "legacy"))
 
 
 def _number(value: Any) -> float | None:

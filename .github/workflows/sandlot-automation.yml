@@ -1,0 +1,233 @@
+name: Sandlot automation
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_monitor:
+        description: Run the read-only production contract monitor
+        type: boolean
+        default: true
+      run_executor_contract:
+        description: Run mocked guard tests from executor PR #63
+        type: boolean
+        default: false
+  schedule:
+    # Railway refreshes at 13:00 and 21:00 UTC. Check the resulting snapshot
+    # 45 minutes later during baseball season.
+    - cron: "45 13,21 * 3-10 *"
+    # Weekly guard-only validation of the still-draft executor PR.
+    - cron: "15 15 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandlot-automation-${{ github.event.schedule || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Read-only production contracts
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '45 13,21 * 3-10 *') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_monitor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      monitor_exit_code: ${{ steps.monitor.outputs.exit_code }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check Sandlot without mutations
+        id: monitor
+        env:
+          SANDLOT_URL: ${{ vars.SANDLOT_URL || 'https://web-production-90664.up.railway.app' }}
+        run: |
+          set +e
+          python scripts/sandlot_readonly_monitor.py \
+            --base-url "$SANDLOT_URL" \
+            --report-json "$RUNNER_TEMP/sandlot-monitor/report.json" \
+            --report-markdown "$RUNNER_TEMP/sandlot-monitor/report.md"
+          exit_code=$?
+          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/sandlot-monitor/report.md" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Upload sanitized monitor evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandlot-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sandlot-monitor
+          retention-days: 14
+
+  report-monitor-failure:
+    name: Report production contract failure
+    needs: monitor
+    if: needs.monitor.outputs.monitor_exit_code != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sandlot-monitor-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sandlot-monitor
+
+      - name: Create or update one monitor issue
+        uses: actions/github-script@v7
+        env:
+          REPORT_PATH: ${{ runner.temp }}/sandlot-monitor/report.md
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const title = '[automation] Sandlot production contract failed';
+            const label = 'automation:monitor';
+            const report = fs.readFileSync(process.env.REPORT_PATH, 'utf8').slice(0, 60000);
+
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label,
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label,
+                color: 'B60205',
+                description: 'Read-only Sandlot production monitor failure',
+              });
+            }
+
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: label,
+              per_page: 100,
+            });
+            const existing = issues.find((issue) => !issue.pull_request && issue.title === title);
+            const body = [
+              `Monitor run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              '',
+              report,
+              '',
+              'No OpenAI/API call or Fantrax write was made. Bring this issue to an interactive Codex session when you want it diagnosed and fixed.',
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `## Monitor rerun still failing\n\n${body}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: [label],
+              });
+            }
+
+      - name: Keep the workflow red until the contract recovers
+        run: exit 1
+
+  close-recovered-monitor-issue:
+    name: Close recovered monitor issue
+    needs: monitor
+    if: needs.monitor.outputs.monitor_exit_code == '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Close the existing failure issue, if any
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const title = '[automation] Sandlot production contract failed';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'automation:monitor',
+              per_page: 100,
+            });
+            const existing = issues.find((issue) => !issue.pull_request && issue.title === title);
+            if (!existing) return;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existing.number,
+              body: `Recovered in monitor run ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}. Closing automatically.`,
+            });
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: existing.number,
+              state: 'closed',
+              state_reason: 'completed',
+            });
+
+  executor-contract:
+    name: Executor PR safety contract
+    if: >-
+      (github.event_name == 'schedule' && github.event.schedule == '15 15 * * 0') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_executor_contract)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      DATABASE_URL: ""
+      FANTRAX_USER: ""
+      FANTRAX_PASS: ""
+      SANDLOT_ACTIONS_TOKEN: ""
+      SANDLOT_ACTIONS_HEADFUL: "0"
+    steps:
+      - name: Check out current safety gate
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          path: contract-gate
+
+      - name: Check out executor PR #63 without credentials
+        uses: actions/checkout@v5
+        with:
+          ref: refs/pull/63/head
+          persist-credentials: false
+          path: executor
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: executor/requirements.txt
+
+      - name: Install executor branch dependencies
+        run: pip install -r executor/requirements.txt
+
+      - name: Enforce confirmation and live-write safety contract
+        run: python contract-gate/scripts/executor_contract_gate.py executor
+
+      - name: Run mocked executor guard coverage
+        working-directory: executor
+        run: |
+          test -f sandlot_actions.py
+          test -f tests/test_sandlot_actions.py
+          python -c "import sandlot_actions; print('executor import OK')"
+          python -m unittest tests.test_sandlot_actions

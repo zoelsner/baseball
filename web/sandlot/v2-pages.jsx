@@ -135,6 +135,9 @@ function v2BuildLineupSwapSkipperPrompt(card, mode='quick') {
   const moveOut = card?.move_out || {};
   const benefit = card?.projected_benefit || {};
   const proposal = card?.proposal || {};
+  const evidenceLabel = benefit.probability_calibrated === true
+    ? `Confidence: ${card?.confidence || 'unknown'}`
+    : `Point-edge strength: ${card?.confidence || 'unknown'}`;
   const deep = mode === 'deep';
   return [
     deep
@@ -144,7 +147,7 @@ function v2BuildLineupSwapSkipperPrompt(card, mode='quick') {
     `Move IN: ${moveIn.name || 'Unknown player'} (${moveIn.positions || 'UT'}${moveIn.team ? `, ${moveIn.team}` : ''}) from ${moveIn.from_slot || '?'} to ${moveIn.to_slot || '?'}.`,
     `Move OUT: ${moveOut.name || 'Unknown player'} (${moveOut.positions || 'UT'}${moveOut.team ? `, ${moveOut.team}` : ''}) from ${moveOut.from_slot || '?'} to ${moveOut.to_slot || '?'}.`,
     proposal.id ? `Proposal: ${proposal.id} (${proposal.status || 'blocked'}; writes enabled: ${proposal.writes_enabled === true ? 'yes' : 'no'}).` : null,
-    `Projected benefit: ${v2Signed(benefit.points, 1)} points. Confidence: ${card?.confidence || 'unknown'}. Risk: ${card?.risk_label || 'unknown'}.`,
+    `Projected benefit: ${v2Signed(benefit.points, 1)} points. ${evidenceLabel}. Risk: ${card?.risk_label || 'unknown'}.`,
     card?.reason ? `Sandlot reason: ${card.reason}` : null,
     card?.short_term_outlook ? `Short-term outlook: ${card.short_term_outlook}` : null,
     card?.risk ? `Risk note: ${card.risk}` : null,
@@ -237,6 +240,31 @@ function v2SyncLabel(freshness) {
   return `${Math.floor(hours / 24)}d`;
 }
 
+function v2FreshnessStateForAge(ageMinutes, fallback='fresh') {
+  if (!Number.isFinite(ageMinutes)) return fallback;
+  const derived = ageMinutes < 18 * 60 ? 'fresh' : ageMinutes < 36 * 60 ? 'stale' : 'old';
+  const rank = { fresh:0, stale:1, old:2 };
+  return (rank[fallback] ?? 0) > rank[derived] ? fallback : derived;
+}
+
+function v2SyncTone(sync={}) {
+  if (sync.state === 'failed' || sync.state === 'missing' || sync.state === 'old') {
+    return {
+      color:V2.bad,
+      bg:V2.badSoft,
+      label:sync.state === 'old' ? 'Old' : sync.state === 'missing' ? 'Missing' : 'Failed',
+    };
+  }
+  if (sync.state === 'stale' || sync.state === 'refreshing' || sync.state === 'loading' || sync.notice) {
+    return {
+      color:V2.warn,
+      bg:V2.warnSoft,
+      label:sync.state === 'stale' ? 'Stale' : sync.state === 'refreshing' ? 'Refreshing' : sync.state === 'loading' ? 'Loading' : 'Needs attention',
+    };
+  }
+  return { color:V2.ok, bg:V2.okSoft, label:'Healthy' };
+}
+
 function v2QualityReason(dataQuality, purpose='projection') {
   if (!dataQuality) return 'Data quality is unavailable';
   const reasonKeys = {
@@ -298,14 +326,15 @@ function V2Segment({ items, value, onChange, full=true }) {
   );
 }
 
-function V2Primary({ children, onClick, sub, variant='dark' }) {
+function V2Primary({ children, onClick, sub, variant='dark', disabled=false }) {
   const bg = variant==='accent' ? V2.accent : V2.ink;
   return (
     <div>
-      <button onClick={onClick} style={{
+      <button onClick={onClick} disabled={disabled} style={{
         width:'100%', padding:'15px 18px', borderRadius:999, border:'none',
         background:bg, color:'#fff', fontSize:15, fontWeight:700,
-        cursor:'pointer', fontFamily:'inherit',
+        cursor:disabled?'not-allowed':'pointer', fontFamily:'inherit',
+        opacity:disabled?0.55:1,
         display:'flex', alignItems:'center', justifyContent:'center', gap:8,
       }}>{children}</button>
       {sub && <div style={{ textAlign:'center', fontSize:12, color:V2.muted, marginTop:10, fontWeight:500 }}>{sub}</div>}
@@ -390,14 +419,32 @@ function V2App({ initial }) {
   const [model, setModel] = React.useState(v2EmptyModel);
   const [syncState, setSyncState] = React.useState({ state:'loading', label:'loading', error:null, notice:null });
   const [skipperDraft, setSkipperDraft] = React.useState(null);
+  const mainScrollRef = React.useRef(null);
+  const snapshotReadInFlightRef = React.useRef(false);
+  const refreshInFlightRef = React.useRef(false);
+  const snapshotRequestSeqRef = React.useRef(0);
+  const syncAgeAnchorRef = React.useRef(null);
 
   const setPage = React.useCallback((next) => {
     if (next !== 'league') setLeagueTeam(null);
     setPageRaw(next);
   }, []);
 
-  const loadSnapshot = React.useCallback(async () => {
-    setSyncState({ state:'loading', label:'loading', error:null, notice:null });
+  const acceptSnapshot = React.useCallback((snapshot) => {
+    const rawAgeMinutes = snapshot?.sync?.ageMinutes;
+    const ageMinutes = rawAgeMinutes === null || rawAgeMinutes === undefined ? NaN : Number(rawAgeMinutes);
+    syncAgeAnchorRef.current = Number.isFinite(ageMinutes)
+      ? { ageMinutes, observedAt:Date.now() }
+      : null;
+    setModel(snapshot);
+    setSyncState({ ...snapshot.sync });
+  }, []);
+
+  const loadSnapshot = React.useCallback(async ({ silent=false }={}) => {
+    if (snapshotReadInFlightRef.current || (silent && refreshInFlightRef.current)) return;
+    snapshotReadInFlightRef.current = true;
+    const requestSeq = ++snapshotRequestSeqRef.current;
+    if (!silent) setSyncState({ state:'loading', label:'loading', error:null, notice:null });
 
     // Step 1: read the latest stored snapshot.
     let snapshot = null;
@@ -410,13 +457,21 @@ function V2App({ initial }) {
       firstPullError = err.message;
     }
 
+    if (requestSeq !== snapshotRequestSeqRef.current) {
+      snapshotReadInFlightRef.current = false;
+      return;
+    }
+
     // An empty roster from a "successful" snapshot is just as broken as a failed pull.
     const firstPullEmpty = snapshot && snapshot.roster.length === 0;
     if (snapshot && !firstPullEmpty) {
-      setModel(snapshot);
-      setSyncState({ ...snapshot.sync });
+      acceptSnapshot(snapshot);
+      snapshotReadInFlightRef.current = false;
       return;
     }
+
+    snapshotReadInFlightRef.current = false;
+    if (silent) return;
 
     // Step 2: surface the broken/missing snapshot without auto-running the scraper.
     const reason = firstPullError || 'first snapshot was empty';
@@ -424,29 +479,83 @@ function V2App({ initial }) {
     setSyncState({
       state:'failed',
       label:snapshot?.sync?.label || 'no data',
+      ageMinutes:snapshot?.sync?.ageMinutes ?? null,
       error:reason,
       notice:snapshot ? 'Showing the latest stored Fantrax pull.' : null,
     });
-  }, []);
+  }, [acceptSnapshot]);
 
   const refreshSnapshot = React.useCallback(async () => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    const requestSeq = ++snapshotRequestSeqRef.current;
     setSyncState(s => ({ ...s, state:'refreshing', label:'syncing', error:null, notice:null }));
     try {
       const next = await v2FetchRefresh();
-      setModel(next);
-      setSyncState({ ...next.sync });
+      if (requestSeq !== snapshotRequestSeqRef.current) return;
+      acceptSnapshot(next);
     } catch (err) {
-      if (err.fallbackSnapshot) setModel(err.fallbackSnapshot);
-      setSyncState({
+      if (requestSeq !== snapshotRequestSeqRef.current) return;
+      if (err.fallbackSnapshot) {
+        const rawAgeMinutes = err.fallbackSnapshot?.sync?.ageMinutes;
+        const ageMinutes = rawAgeMinutes === null || rawAgeMinutes === undefined ? NaN : Number(rawAgeMinutes);
+        syncAgeAnchorRef.current = Number.isFinite(ageMinutes)
+          ? { ageMinutes, observedAt:Date.now() }
+          : syncAgeAnchorRef.current;
+        setModel(err.fallbackSnapshot);
+      }
+      setSyncState(current => ({
         state:'failed',
-        label:err.fallbackSnapshot?.sync?.label || 'failed',
+        label:err.fallbackSnapshot?.sync?.label || current.label || 'failed',
+        ageMinutes:err.fallbackSnapshot?.sync?.ageMinutes ?? current.ageMinutes ?? null,
         error:err.message,
         notice:err.fallbackSnapshot ? (err.fallbackReason || 'Showing the last successful Fantrax pull.') : null,
-      });
+      }));
+    } finally {
+      refreshInFlightRef.current = false;
     }
-  }, []);
+  }, [acceptSnapshot]);
 
   React.useEffect(() => { loadSnapshot(); }, [loadSnapshot]);
+
+  const tickSyncAge = React.useCallback(() => {
+    const anchor = syncAgeAnchorRef.current;
+    if (!anchor) return;
+    const elapsedMinutes = Math.max(0, Math.floor((Date.now() - anchor.observedAt) / 60000));
+    const ageMinutes = anchor.ageMinutes + elapsedMinutes;
+    setSyncState(current => {
+      if (current.state === 'loading' || current.state === 'refreshing') return current;
+      const state = ['fresh','stale','old'].includes(current.state)
+        ? v2FreshnessStateForAge(ageMinutes, current.state)
+        : current.state;
+      const label = v2SyncLabel({ age_minutes:ageMinutes });
+      if (current.ageMinutes === ageMinutes && current.state === state && current.label === label) return current;
+      return { ...current, state, label, ageMinutes };
+    });
+  }, []);
+
+  React.useEffect(() => {
+    const timer = window.setInterval(tickSyncAge, 60000);
+    return () => window.clearInterval(timer);
+  }, [tickSyncAge]);
+
+  React.useEffect(() => {
+    const refreshStoredSnapshot = () => {
+      if (document.visibilityState === 'hidden') return;
+      tickSyncAge();
+      loadSnapshot({ silent:true });
+    };
+    window.addEventListener('focus', refreshStoredSnapshot);
+    document.addEventListener('visibilitychange', refreshStoredSnapshot);
+    return () => {
+      window.removeEventListener('focus', refreshStoredSnapshot);
+      document.removeEventListener('visibilitychange', refreshStoredSnapshot);
+    };
+  }, [loadSnapshot, tickSyncAge]);
+
+  React.useLayoutEffect(() => {
+    if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
+  }, [page]);
 
   const openPlayer = React.useCallback((id) => {
     if (!id) return;
@@ -480,7 +589,7 @@ function V2App({ initial }) {
       display:'flex', flexDirection:'column', position:'relative',
     }}>
       <V2TopBar page={page} setPage={setPage} model={model} sync={syncState} onRefresh={refreshSnapshot}/>
-      <div style={{ flex:1, overflow:'auto', WebkitOverflowScrolling:'touch' }}>{pages[page]}</div>
+      <div ref={mainScrollRef} data-testid="main-scroll" style={{ flex:1, overflow:'auto', WebkitOverflowScrolling:'touch' }}>{pages[page]}</div>
       <V2TabBar page={page} setPage={setPage}/>
       {detail && <V2PlayerSheet id={detail} onClose={()=>setDetail(null)}/>}
     </div>
@@ -509,7 +618,7 @@ function V2TopBar({ page, setPage, model, sync, onRefresh }) {
     skipper:`Reading ${model.teamName}`,
     settings:`${model.leagueName}`,
   }[page];
-  const syncColor = sync.state === 'failed' ? V2.bad : (sync.state === 'refreshing' || sync.state === 'loading') ? V2.warn : sync.notice ? V2.warn : V2.ok;
+  const syncTone = v2SyncTone(sync);
   return (
     <div style={{ padding: isHero?'18px 20px 16px':'16px 18px 12px', background:V2.bg }}>
       <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:10 }}>
@@ -517,19 +626,19 @@ function V2TopBar({ page, setPage, model, sync, onRefresh }) {
           <div style={{ fontSize:11.5, color:V2.warn, fontWeight:700, letterSpacing:'0.08em', textTransform:'uppercase' }}>
             {eyebrow}
           </div>
-          <div style={{
+          <h1 style={{
             fontSize: isHero?28:22, fontWeight:600, letterSpacing:'-0.02em', marginTop:4,
-            fontFamily:V2.fontDisplay, lineHeight:1.1,
-          }}>{titles[page]}</div>
+            marginBottom:0, fontFamily:V2.fontDisplay, lineHeight:1.1, textWrap:'balance',
+          }}>{titles[page]}</h1>
         </div>
         {page!=='settings' && (
-          <button onClick={onRefresh} disabled={sync.state === 'refreshing'} title={sync.error || 'Refresh Fantrax data'} style={{
+          <button onClick={onRefresh} disabled={sync.state === 'refreshing'} aria-label={sync.state === 'refreshing' ? 'Refreshing Fantrax data' : 'Refresh Fantrax data'} title={sync.error || 'Refresh Fantrax data'} style={{
             background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:999,
-            padding:'7px 11px', display:'flex', alignItems:'center', gap:7, cursor:'pointer',
+            padding:'7px 11px', display:'flex', alignItems:'center', gap:7, cursor:sync.state === 'refreshing' ? 'not-allowed' : 'pointer',
             fontFamily:'inherit', flexShrink:0, marginTop:2,
             opacity: sync.state === 'refreshing' ? 0.7 : 1,
           }}>
-            <div style={{ width:6, height:6, background:syncColor, borderRadius:'50%' }}/>
+            <div style={{ width:6, height:6, background:syncTone.color, borderRadius:'50%' }}/>
             <div style={{ fontSize:11, color:V2.body, fontWeight:600, whiteSpace:'nowrap' }}>{sync.label}</div>
           </button>
         )}
@@ -547,11 +656,11 @@ function V2TabBar({ page, setPage }) {
     { id:'league', label:'League',  icon:Icons.diamond },
   ];
   return (
-    <div style={{ display:'flex', borderTop:`1px solid ${V2.hairline}`, background:V2.surface, paddingBottom:18, paddingTop:8 }}>
+    <nav aria-label="Primary navigation" style={{ display:'flex', borderTop:`1px solid ${V2.hairline}`, background:V2.surface, paddingBottom:18, paddingTop:8 }}>
       {items.map(it => {
         const active = page===it.id;
         return (
-          <button key={it.id} onClick={()=>setPage(it.id)} style={{
+          <button key={it.id} onClick={()=>setPage(it.id)} aria-current={active ? 'page' : undefined} style={{
             flex:1, background:'none', border:'none', padding:'8px 4px',
             display:'flex', flexDirection:'column', alignItems:'center', gap:5,
             color: active ? V2.ink : V2.muted, cursor:'pointer', fontFamily:'inherit',
@@ -561,7 +670,7 @@ function V2TabBar({ page, setPage }) {
           </button>
         );
       })}
-    </div>
+    </nav>
   );
 }
 
@@ -664,29 +773,43 @@ function v2MatchupInfo(matchup) {
 }
 
 function v2ProjectionInfo(projection) {
-  if (!projection || projection.win_probability === null || projection.win_probability === undefined) return null;
-  const probability = Math.max(0, Math.min(1, v2Number(projection.win_probability)));
-  const pct = Math.round(probability * 100);
-  const color = pct >= 60 ? V2.ok : pct >= 45 ? V2.warn : V2.bad;
-  const band = pct >= 70 ? 'COMFORTABLE' : pct >= 55 ? 'SLIGHT EDGE' : pct > 45 ? 'TOSS-UP' : pct > 30 ? 'UPHILL' : 'STEEP UPHILL';
-  const shortBand = pct >= 70 ? 'EDGE' : pct >= 55 ? 'LEAN' : pct > 45 ? 'TOSS' : pct > 30 ? 'RISK' : 'LONG';
+  if (!projection || projection.projected_my === null || projection.projected_my === undefined
+      || projection.projected_opp === null || projection.projected_opp === undefined) return null;
   const projectedMy = v2Number(projection.projected_my);
   const projectedOpp = v2Number(projection.projected_opp);
+  const projectedMargin = projectedMy - projectedOpp;
+  const hasProbability = projection.win_probability !== null && projection.win_probability !== undefined;
+  const probabilityCalibrated = projection.probability_calibrated === true && hasProbability;
+  const probability = probabilityCalibrated
+    ? Math.max(0, Math.min(1, v2Number(projection.win_probability)))
+    : null;
+  const pct = probability === null ? null : Math.round(probability * 100);
+  const color = probabilityCalibrated
+    ? (pct >= 60 ? V2.ok : pct >= 45 ? V2.warn : V2.bad)
+    : (projectedMargin >= 5 ? V2.ok : projectedMargin > -5 ? V2.warn : V2.bad);
+  const band = probabilityCalibrated
+    ? (pct >= 70 ? 'COMFORTABLE' : pct >= 55 ? 'SLIGHT EDGE' : pct > 45 ? 'TOSS-UP' : pct > 30 ? 'UPHILL' : 'STEEP UPHILL')
+    : (projectedMargin >= 15 ? 'PROJECTED EDGE' : projectedMargin >= 5 ? 'PROJECTED LEAN' : projectedMargin > -5 ? 'PROJECTED TOSS-UP' : projectedMargin > -15 ? 'PROJECTED UPHILL' : 'PROJECTED DEFICIT');
+  const shortBand = probabilityCalibrated
+    ? (pct >= 70 ? 'EDGE' : pct >= 55 ? 'LEAN' : pct > 45 ? 'TOSS' : pct > 30 ? 'RISK' : 'LONG')
+    : 'MODEL';
   return {
     band,
     shortBand,
     color,
-    dash: (probability * 188.5).toFixed(1),
+    dash: probability === null ? null : (probability * 188.5).toFixed(1),
     projectedMy: projectedMy.toFixed(1),
     projectedOpp: projectedOpp.toFixed(1),
-    projectedMargin: projectedMy - projectedOpp,
+    projectedMargin,
+    probabilityCalibrated,
+    probabilityLabel: projection.probability_calibrated === false ? 'probability uncalibrated' : 'probability unavailable',
     complete: Boolean(projection.complete),
   };
 }
 
 function V2WinProbabilityRing({ projection }) {
   const info = v2ProjectionInfo(projection);
-  if (!info) return null;
+  if (!info || !info.probabilityCalibrated) return null;
   return (
     <div style={{ width:66, height:66, position:'relative', flexShrink:0 }}>
       <svg width="66" height="66" viewBox="0 0 74 74">
@@ -710,6 +833,12 @@ function v2MoveChainText(chain) {
   }).join('; ');
 }
 
+function v2MatchupEvidenceLabel(confidence, probabilityCalibrated) {
+  return probabilityCalibrated === true
+    ? `${confidence} confidence`
+    : `${confidence} point edge`;
+}
+
 function V2MatchupRecommendationCard({ recommendations }) {
   if (!recommendations) return null;
   const top = recommendations.recommendations?.[0] || null;
@@ -728,6 +857,7 @@ function V2MatchupRecommendationCard({ recommendations }) {
   if (top) {
     const points = v2Number(top.points_delta);
     const confidence = top.confidence || 'medium';
+    const evidenceLabel = v2MatchupEvidenceLabel(confidence, top.probability_calibrated);
     const chain = top.action?.chain || [];
     return (
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:'14px 15px', display:'flex', flexDirection:'column', gap:9 }}>
@@ -741,7 +871,7 @@ function V2MatchupRecommendationCard({ recommendations }) {
           {v2MoveChainText(chain)}
         </div>
         <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-          <span style={chipStyle}>{confidence} confidence</span>
+          <span style={chipStyle}>{evidenceLabel}</span>
           {(top.reason_chips || []).slice(0,3).map(chip => <span key={chip} style={chipStyle}>{chip}</span>)}
         </div>
       </div>
@@ -910,6 +1040,7 @@ function v2AttentionQueue(health, matchupRecommendations, options={}) {
   if (top) {
     const points = v2Number(top.points_delta);
     const confidence = top.confidence || 'medium';
+    const evidenceLabel = v2MatchupEvidenceLabel(confidence, top.probability_calibrated);
     const replacementCard = top.replacement_card || null;
     const moveIn = replacementCard?.move_in || {};
     const moveOut = replacementCard?.move_out || {};
@@ -922,7 +1053,7 @@ function v2AttentionQueue(health, matchupRecommendations, options={}) {
       title:'Lineup hot swap',
       context:moveIn.name && moveOut.name ? `${moveIn.name} for ${moveOut.name}` : 'Roster decision',
       reason:replacementCard?.reason || `${v2MoveChainText(top.action?.chain || [])}. Projected gain ${points >= 0 ? '+' : ''}${points.toFixed(1)} points.`,
-      chips:[`${confidence} confidence`, ...(top.reason_chips || [])].slice(0, 3),
+      chips:[evidenceLabel, ...(top.reason_chips || [])].slice(0, 3),
       action:'Blocked',
       nav:'roster',
       replacement:replacementCard,
@@ -967,22 +1098,24 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
       : model.source === 'api'
         ? `Snapshot ${sync.label} old.`
         : 'Waiting for first successful Fantrax scrape.';
+  const syncTone = v2SyncTone(sync);
 
   return (
     <div style={{ padding:'18px 16px 28px', display:'flex', flexDirection:'column', gap:14 }}>
       <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12, paddingTop:2 }}>
         <div>
           <V2Eyebrow color={V2.accent}>Today · {weekLabel}</V2Eyebrow>
-          <div style={{ marginTop:8, fontSize:34, lineHeight:0.96, fontWeight:700, letterSpacing:'-0.035em', fontFamily:V2.fontDisplay }}>
+          <h1 style={{ marginTop:8, marginBottom:0, fontSize:34, lineHeight:0.96, fontWeight:700, letterSpacing:'-0.035em', fontFamily:V2.fontDisplay, textWrap:'balance' }}>
             Today
-          </div>
+          </h1>
         </div>
-        <button onClick={onRefresh} style={{
+        <button onClick={onRefresh} disabled={sync.state === 'refreshing'} aria-label={sync.state === 'refreshing' ? 'Refreshing Fantrax data' : 'Refresh Fantrax data'} style={{
           display:'flex', alignItems:'center', gap:7, border:`1px solid ${V2.hairline}`, background:V2.surface,
           borderRadius:999, padding:'9px 13px', color:V2.body, fontSize:13, fontWeight:800,
-          cursor:'pointer', fontFamily:'inherit', whiteSpace:'nowrap',
+          cursor:sync.state === 'refreshing' ? 'not-allowed' : 'pointer', fontFamily:'inherit', whiteSpace:'nowrap',
+          opacity:sync.state === 'refreshing' ? 0.7 : 1,
         }}>
-          <span style={{ width:7, height:7, borderRadius:'50%', background:sync.state === 'failed' ? V2.bad : sync.state === 'refreshing' ? V2.warn : V2.ok }}/>
+          <span style={{ width:7, height:7, borderRadius:'50%', background:syncTone.color }}/>
           {sync.state === 'refreshing' ? 'syncing' : sync.label || 'now'}
         </button>
       </div>
@@ -1067,6 +1200,11 @@ function V2MatchupStatusCard({
             {showProjection ? (
               <div style={{ marginTop:7, color:projectionInfo.color, fontSize:12.5, fontWeight:850, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums', whiteSpace:'nowrap' }}>
                 Projected {projectionInfo.projectedMy} - {projectionInfo.projectedOpp}
+              </div>
+            ) : null}
+            {showProjection && !projectionInfo.probabilityCalibrated ? (
+              <div style={{ marginTop:4, color:V2.muted, fontSize:10.5, fontWeight:800 }}>
+                FP/G estimate · {projectionInfo.probabilityLabel}
               </div>
             ) : null}
             {showProjectionFallback ? (
@@ -1192,11 +1330,19 @@ function V2AttentionQueue({ items, hasRealData, sync, pausedReason, onPlayer, on
   const checkCount = items.filter(item => item.severity === 'check').length;
   const reviewCount = items.length - urgentCount - checkCount;
   const paused = Boolean(pausedReason);
+  const staleSnapshot = sync.state === 'stale';
+  const oldSnapshot = sync.state === 'old';
   const queueTone = paused
     ? { color:V2.warn, bg:V2.warnSoft }
+    : !hasRealData
+      ? { color:V2.warn, bg:V2.warnSoft }
     : items.length
       ? { color:V2.accent, bg:V2.accentSoft }
-      : { color:V2.ok, bg:V2.okSoft };
+      : oldSnapshot
+        ? { color:V2.bad, bg:V2.badSoft }
+        : staleSnapshot
+          ? { color:V2.warn, bg:V2.warnSoft }
+          : { color:V2.ok, bg:V2.okSoft };
   const headline = items.length
     ? [
         urgentCount ? `${urgentCount} urgent` : null,
@@ -1205,7 +1351,13 @@ function V2AttentionQueue({ items, hasRealData, sync, pausedReason, onPlayer, on
       ].filter(Boolean).join(' · ')
     : paused
       ? 'Advice paused'
-      : 'No current issues';
+      : !hasRealData
+        ? 'No snapshot to check'
+      : oldSnapshot
+        ? 'Snapshot too old to call clear'
+        : staleSnapshot
+          ? 'No issues in the stale snapshot'
+          : 'No current issues';
   return (
     <section style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, overflow:'hidden' }}>
       <div style={{ padding:'17px 18px 14px', borderBottom:items.length ? `1px solid ${V2.hairline2}` : 'none' }}>
@@ -1226,7 +1378,13 @@ function V2AttentionQueue({ items, hasRealData, sync, pausedReason, onPlayer, on
         <div style={{ marginTop:7, color:V2.muted, fontSize:12.5, lineHeight:1.4, fontWeight:700 }}>
           {paused
             ? 'Showing only status-safe items until lineup slots are verified.'
-            : 'Ordered by roster consequence from the latest Fantrax snapshot.'}
+            : !hasRealData
+              ? 'Waiting for the first successful Fantrax snapshot before calling the roster clear.'
+            : oldSnapshot
+              ? 'Refresh before relying on this queue for a roster decision.'
+              : staleSnapshot
+                ? `Snapshot ${sync.label} old. Refresh before treating the roster as clear.`
+                : 'Ordered by roster consequence from the latest Fantrax snapshot.'}
         </div>
       </div>
       {items.length ? (
@@ -1263,6 +1421,7 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
   const moveOut = card.move_out || {};
   const benefit = card.projected_benefit || {};
   const confidence = card.confidence || 'medium';
+  const evidenceLabel = v2MatchupEvidenceLabel(confidence, benefit.probability_calibrated);
   const risk = card.risk_label || 'unknown';
   const execution = card.execution || item.blockedAction || {};
   const proposal = item.proposal || card.proposal || {};
@@ -1314,7 +1473,7 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
 
       <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
         <span style={{ background:confidenceTone.bg, color:confidenceTone.fg, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
-          {confidence} confidence
+          {evidenceLabel}
         </span>
         <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
           {risk} risk
@@ -1581,10 +1740,16 @@ function V2AttentionQueueRow({ item, last, onPlayer, onNav }) {
 
 function V2AttentionEmptyState({ hasRealData, sync, pausedReason }) {
   const paused = Boolean(pausedReason);
-  const label = paused ? 'Paused' : hasRealData ? 'Clear' : 'No data';
-  const labelColor = paused ? V2.warn : hasRealData ? V2.ok : V2.warn;
+  const staleSnapshot = sync.state === 'stale';
+  const oldSnapshot = sync.state === 'old';
+  const label = paused ? 'Paused' : oldSnapshot ? 'Old data' : staleSnapshot ? 'Stale data' : hasRealData ? 'Clear' : 'No data';
+  const labelColor = paused || staleSnapshot ? V2.warn : oldSnapshot ? V2.bad : hasRealData ? V2.ok : V2.warn;
   const copy = paused
     ? `Lineup and replacement advice is paused: ${pausedReason}.`
+    : oldSnapshot
+      ? `This snapshot is ${sync.label || 'more than a day'} old, so Sandlot cannot call the roster clear. Refresh before relying on it.`
+    : staleSnapshot
+      ? `No issue is flagged in this ${sync.label || 'stale'}-old snapshot. Refresh before treating the roster as clear.`
     : hasRealData
     ? 'No injury, lineup, output, or replacement issue needs action in the current snapshot.'
     : sync.state === 'failed'
@@ -2305,11 +2470,12 @@ function V2PlayerPicker({ label, source, model, value, onChange }) {
     setOpen(false);
   };
   const remove = (id) => onChange(value.filter(p => p.id !== id));
+  const pickerId = `trade-picker-${source}`;
 
   return (
-    <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:14 }}>
+    <section aria-labelledby={`${pickerId}-label`} style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:14 }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-        <V2Eyebrow color={source === 'mine' ? V2.injured : V2.ok}>{label}</V2Eyebrow>
+        <div id={`${pickerId}-label`}><V2Eyebrow color={source === 'mine' ? V2.injured : V2.ok}>{label}</V2Eyebrow></div>
         <span style={{ fontFamily:V2.fontMono, fontSize:10.5, fontWeight:700, color:V2.muted, letterSpacing:'0.04em' }}>
           {value.length}/{TRADE_PICK_MAX}
         </span>
@@ -2331,8 +2497,8 @@ function V2PlayerPicker({ label, source, model, value, onChange }) {
                 {p.fppg != null ? ` · ${Number(p.fppg).toFixed(1)} FP/G` : ''}
               </div>
             </div>
-            <button onClick={()=>remove(p.id)} aria-label="Remove" style={{
-              flexShrink:0, width:24, height:24, border:'none', borderRadius:6,
+            <button onClick={()=>remove(p.id)} aria-label={`Remove ${p.name} from ${label}`} style={{
+              flexShrink:0, width:40, height:40, border:'none', borderRadius:10,
               background:'transparent', color:V2.muted, cursor:'pointer', fontSize:18, lineHeight:1,
             }}>×</button>
           </div>
@@ -2340,7 +2506,7 @@ function V2PlayerPicker({ label, source, model, value, onChange }) {
 
         {value.length < TRADE_PICK_MAX && (
           !open ? (
-            <button onClick={()=>setOpen(true)} style={{
+            <button onClick={()=>setOpen(true)} aria-expanded="false" aria-controls={`${pickerId}-options`} aria-label={`Add player to ${label}`} style={{
               background:'transparent', border:`1px dashed ${V2.hairline}`, borderRadius:10,
               padding:'10px 12px', color:V2.body, fontSize:12.5, fontWeight:600, cursor:'pointer',
               fontFamily:'inherit', textAlign:'left',
@@ -2351,13 +2517,14 @@ function V2PlayerPicker({ label, source, model, value, onChange }) {
                 autoFocus
                 value={query}
                 onChange={e=>setQuery(e.target.value)}
+                aria-label={`Search players for ${label}`}
                 placeholder={`Search ${source === 'mine' ? 'your roster' : 'other teams'}…`}
                 style={{
                   width:'100%', border:`1px solid ${V2.hairline}`, borderRadius:10,
                   padding:'9px 12px', fontSize:13, fontFamily:'inherit', outline:'none',
                   background:V2.surface2, color:V2.ink,
                 }}/>
-              <div style={{
+              <div id={`${pickerId}-options`} role="group" aria-label={`${label} player options`} style={{
                 maxHeight:240, overflowY:'auto',
                 border:`1px solid ${V2.hairline2}`, borderRadius:10, background:V2.surface2,
               }}>
@@ -2366,7 +2533,7 @@ function V2PlayerPicker({ label, source, model, value, onChange }) {
                     No matches{candidates.length === 0 ? ' — snapshot has no players from this side yet' : ''}.
                   </div>
                 ) : filtered.map((p, i) => (
-                  <button key={p.id} onClick={()=>add(p)} style={{
+                  <button key={p.id} onClick={()=>add(p)} aria-label={`Add ${p.name} to ${label}`} style={{
                     width:'100%', textAlign:'left', display:'flex', flexDirection:'column', gap:2,
                     padding:'9px 12px', border:'none', cursor:'pointer',
                     background:'transparent', borderBottom: i === filtered.length - 1 ? 'none' : `1px solid ${V2.hairline2}`,
@@ -2388,7 +2555,7 @@ function V2PlayerPicker({ label, source, model, value, onChange }) {
           )
         )}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -2406,7 +2573,7 @@ function V2TradeGradeCard({ result }) {
     <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:14 }}>
         <div style={{ flex:1, minWidth:0 }}>
-          <V2Eyebrow color={color}>Skipper grade</V2Eyebrow>
+          <V2Eyebrow color={color}>Current-rate grade</V2Eyebrow>
           <div style={{
             fontSize:48, fontWeight:600, color, letterSpacing:'-0.03em', lineHeight:1,
             marginTop:6, fontFamily:V2.fontDisplay,
@@ -2433,14 +2600,18 @@ function V2TradeGradeCard({ result }) {
 
       <div style={{ marginTop:14, paddingTop:14, borderTop:`1px solid ${V2.hairline2}` }}>
         <V2StatRow stats={[
-          { value: fmt(myDelta), label:'Your wkly Δ', color: myDelta >= 0 ? V2.ok : V2.injured },
-          { value: fmt(theirDelta), label:'Their wkly Δ', color: theirDelta >= 0 ? V2.ok : V2.warn },
+          { value: fmt(myDelta), label:'Your FP/G Δ', color: myDelta >= 0 ? V2.ok : V2.injured },
+          { value: fmt(theirDelta), label:'Their FP/G Δ', color: theirDelta >= 0 ? V2.ok : V2.warn },
           {
             value: ageDelta == null ? '—' : `${ageDelta > 0 ? '+' : ''}${Number(ageDelta).toFixed(1)} yr`,
             label:'Avg age Δ',
             color: ageDelta == null ? V2.muted : (ageDelta <= 0 ? V2.ok : V2.warn),
           },
         ]}/>
+      </div>
+
+      <div style={{ marginTop:10, color:V2.muted, fontSize:11.5, lineHeight:1.45 }}>
+        Rate-only comparison from the current snapshot. It excludes prospects and age 24-or-younger players and is not a complete dynasty valuation.
       </div>
 
       {result.rationale ? (
@@ -2556,32 +2727,41 @@ function V2TradeGrader({ model }) {
       </div>
 
       {error ? (
-        <div style={{
+        <div role="alert" style={{
           background:V2.badSoft, border:`1px solid ${V2.bad}`, borderRadius:12, padding:'10px 12px',
           fontSize:12.5, color:V2.bad,
         }}>{error}</div>
       ) : null}
 
-      {result ? <V2TradeGradeCard result={result}/> : null}
+      <div aria-live="polite">
+        {result ? <V2TradeGradeCard result={result}/> : null}
+      </div>
     </div>
   );
 }
 
 // ── /settings ──────────────────────────────────────────────────
 function V2Settings({ model, sync, onRefresh, onSignOut }) {
-  const healthy = sync.state !== 'failed';
+  const syncTone = v2SyncTone(sync);
+  const syncHeadline = sync.state === 'failed'
+    ? 'Refresh failed'
+    : sync.state === 'refreshing'
+      ? 'Refreshing…'
+      : sync.state === 'loading'
+        ? 'Loading snapshot…'
+        : `Synced ${sync.label}`;
   return (
     <div style={{ padding:'4px 16px 32px', display:'flex', flexDirection:'column', gap:14 }}>
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
         <V2Eyebrow>Fantrax sync</V2Eyebrow>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:8 }}>
           <div>
-            <div style={{ fontSize:18, fontWeight:600, fontFamily:V2.fontDisplay }}>{healthy ? `Synced ${sync.label}` : 'Refresh failed'}</div>
+            <div style={{ fontSize:18, fontWeight:600, fontFamily:V2.fontDisplay }}>{syncHeadline}</div>
             <div style={{ fontSize:11.5, color:V2.muted, marginTop:3 }}>Railway Postgres · manual refresh + scheduled refresh</div>
           </div>
-          <div style={{ display:'flex', alignItems:'center', gap:6, background:healthy?V2.okSoft:V2.badSoft, color:healthy?V2.ok:V2.bad, padding:'6px 11px', borderRadius:999 }}>
-            <div style={{ width:6, height:6, background:healthy?V2.ok:V2.bad, borderRadius:'50%' }}/>
-            <span style={{ fontSize:11.5, fontWeight:700 }}>{healthy ? 'Healthy' : 'Failed'}</span>
+          <div style={{ display:'flex', alignItems:'center', gap:6, background:syncTone.bg, color:syncTone.color, padding:'6px 11px', borderRadius:999 }}>
+            <div style={{ width:6, height:6, background:syncTone.color, borderRadius:'50%' }}/>
+            <span style={{ fontSize:11.5, fontWeight:700 }}>{syncTone.label}</span>
           </div>
         </div>
       </div>
@@ -2595,7 +2775,7 @@ function V2Settings({ model, sync, onRefresh, onSignOut }) {
         <div style={{ fontSize:18, fontWeight:600, marginTop:8, fontFamily:V2.fontDisplay }}>{model.teamName}</div>
         <div style={{ fontSize:11.5, color:V2.muted, marginTop:3 }}>{model.roster.length} players · {model.leagueTeams.length} teams</div>
         <div style={{ display:'flex', gap:8, marginTop:14 }}>
-          <button onClick={onRefresh} style={{ background:V2.ink, color:'#fff', border:'none', padding:'10px 14px', borderRadius:999, fontSize:12.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>Refresh now</button>
+          <button onClick={onRefresh} disabled={sync.state === 'refreshing'} aria-label={sync.state === 'refreshing' ? 'Refreshing Fantrax data' : 'Refresh Fantrax data'} style={{ background:V2.ink, color:'#fff', border:'none', padding:'10px 14px', borderRadius:999, fontSize:12.5, fontWeight:700, cursor:sync.state === 'refreshing' ? 'not-allowed' : 'pointer', opacity:sync.state === 'refreshing' ? 0.7 : 1, fontFamily:'inherit' }}>{sync.state === 'refreshing' ? 'Refreshing…' : 'Refresh now'}</button>
           <button onClick={onSignOut} style={{ background:'none', color:V2.injured, border:`1px solid ${V2.injured}33`, padding:'10px 14px', borderRadius:999, fontSize:12.5, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>Sign out</button>
         </div>
       </div>
@@ -2611,6 +2791,46 @@ function V2Settings({ model, sync, onRefresh, onSignOut }) {
 }
 
 // ── Player sheet (inlined from D2 + V2 tokens) ─────────────────
+function useV2DialogFocus(onClose) {
+  const dialogRef = React.useRef(null);
+  const closeButtonRef = React.useRef(null);
+  const onCloseRef = React.useRef(onClose);
+  onCloseRef.current = onClose;
+
+  React.useEffect(() => {
+    const previousFocus = document.activeElement;
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCloseRef.current?.();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll(
+        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+      )].filter(node => node.offsetParent !== null);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      if (previousFocus instanceof HTMLElement) previousFocus.focus();
+    };
+  }, []);
+
+  return { dialogRef, closeButtonRef };
+}
+
 function V2PlayerSheet({ id, onClose }) {
   const [data, setData] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
@@ -2620,6 +2840,7 @@ function V2PlayerSheet({ id, onClose }) {
   const [activeClip, setActiveClip] = React.useState(null);
   const requestSeqRef = React.useRef(0);
   const cooldownTimerRef = React.useRef(null);
+  const { dialogRef, closeButtonRef } = useV2DialogFocus(onClose);
 
   React.useEffect(() => () => {
     if (cooldownTimerRef.current) clearTimeout(cooldownTimerRef.current);
@@ -2721,7 +2942,7 @@ function V2PlayerSheet({ id, onClose }) {
 
   return (
     <div onClick={onClose} style={{ position:'absolute', inset:0, background:'rgba(15,23,42,0.32)', display:'flex', alignItems:'flex-end', zIndex:10 }}>
-      <div onClick={e=>e.stopPropagation()} style={{
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Player details" onClick={e=>e.stopPropagation()} style={{
         background:V2.bg, borderTopLeftRadius:18, borderTopRightRadius:18, width:'100%', height:'88%', overflow:'auto',
         display:'flex', flexDirection:'column',
       }}>
@@ -2729,8 +2950,8 @@ function V2PlayerSheet({ id, onClose }) {
         <div style={{
           padding:'4px 14px 10px', display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, flexShrink:0,
         }}>
-          <button onClick={onClose} style={{
-            background:'none', border:'none', padding:6, cursor:'pointer',
+          <button ref={closeButtonRef} onClick={onClose} style={{
+            background:'none', border:'none', padding:6, cursor:'pointer', width:40, height:40,
             display:'flex', alignItems:'center', justifyContent:'center',
           }} aria-label="Close">
             {Icons.close(V2.muted, 14)}
@@ -3120,7 +3341,10 @@ function V2ClipRow({ clip, onOpen }) {
               alt=""
               loading="lazy"
               onError={(e) => { e.currentTarget.style.display = 'none'; }}
-              style={{ position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover' }}
+              style={{
+                position:'absolute', inset:0, width:'100%', height:'100%', objectFit:'cover',
+                outline:'1px solid rgba(0,0,0,0.1)', outlineOffset:'-1px',
+              }}
             />
             <div style={{
               position:'absolute', inset:0,
@@ -3158,12 +3382,17 @@ function V2ClipRow({ clip, onOpen }) {
 function V2ClipViewer({ clip, onClose }) {
   const url = clip?.url || '';
   const directVideo = /\.(mp4|mov|m4v)(\?|#|$)/i.test(url);
+  const { dialogRef, closeButtonRef } = useV2DialogFocus(onClose);
   return (
     <div
       onClick={(e) => { e.stopPropagation(); onClose(); }}
       style={{ position:'absolute', inset:0, zIndex:30, background:'rgba(15,23,42,0.68)', display:'flex', alignItems:'flex-end' }}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={clip?.title ? `Clip: ${clip.title}` : 'MLB clip'}
         onClick={e=>e.stopPropagation()}
         style={{
           width:'100%', height:'74%', background:V2.bg, borderTopLeftRadius:20, borderTopRightRadius:20,
@@ -3171,8 +3400,8 @@ function V2ClipViewer({ clip, onClose }) {
         }}
       >
         <div style={{ padding:'12px 14px', display:'flex', alignItems:'center', gap:10, borderBottom:`1px solid ${V2.hairline}`, flexShrink:0 }}>
-          <button onClick={onClose} aria-label="Close clip" style={{
-            width:34, height:34, borderRadius:999, border:`1px solid ${V2.hairline}`,
+          <button ref={closeButtonRef} onClick={onClose} aria-label="Close clip" style={{
+            width:40, height:40, borderRadius:999, border:`1px solid ${V2.hairline}`,
             background:V2.surface, display:'flex', alignItems:'center', justifyContent:'center',
             cursor:'pointer',
           }}>{Icons.close(V2.muted, 14)}</button>
@@ -3186,7 +3415,7 @@ function V2ClipViewer({ clip, onClose }) {
           </div>
           {url && (
             <a href={url} target="_blank" rel="noopener noreferrer" style={{
-              flexShrink:0, padding:'8px 10px', borderRadius:999, border:`1px solid ${V2.hairline}`,
+              flexShrink:0, minHeight:40, padding:'8px 10px', borderRadius:999, border:`1px solid ${V2.hairline}`,
               background:V2.surface2, color:V2.body, textDecoration:'none', fontSize:11.5, fontWeight:800,
             }}>Open</a>
           )}
@@ -3430,6 +3659,8 @@ function v2ProjectionScheduleText(projection) {
 }
 
 function v2ProjectionRiskText(projection) {
+  if (projection?.probability_calibrated === false) return 'Probability uncalibrated';
+  if (projection?.win_probability === null || projection?.win_probability === undefined) return 'Probability unavailable';
   const risk = String(projection?.drivers?.risk_level || '').toLowerCase();
   if (risk === 'high') return 'High swing risk';
   if (risk === 'medium') return 'Medium swing risk';
@@ -3766,11 +3997,11 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
             }}>Clear</button>
           )}
         </div>
-        <div style={{ display:'flex', alignItems:'center', gap:8, margin:'0 0 12px', overflowX:'auto', paddingBottom:1 }}>
+        <div style={{ display:'flex', alignItems:'center', flexWrap:'wrap', gap:8, margin:'0 0 12px', paddingBottom:1 }}>
           <label style={{
             display:'flex', alignItems:'center', gap:7, flexShrink:0,
             background:V2.surface, border:`1px solid ${V2.hairline}`,
-            borderRadius:999, padding:'6px 10px', color:V2.body,
+            borderRadius:999, padding:'6px 10px', color:V2.body, maxWidth:'100%',
           }}>
             <span style={{ fontSize:10.5, fontWeight:800, color:V2.muted, letterSpacing:'0.06em', textTransform:'uppercase' }}>Model</span>
             <select value={chatModel} onChange={e=>updateChatModel(e.target.value)} disabled={streaming} style={{
@@ -3781,7 +4012,7 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
               {modelOptions.models.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
             </select>
           </label>
-          <button type="button" onClick={()=>updateReasoning(!reasoning)} disabled={streaming} title="Use OpenRouter reasoning for this model" style={{
+          <button type="button" aria-pressed={reasoning} onClick={()=>updateReasoning(!reasoning)} disabled={streaming} title="Use OpenRouter reasoning for this model" style={{
             flexShrink:0, display:'flex', alignItems:'center', gap:7,
             border:`1px solid ${reasoning ? V2.accent : V2.hairline}`,
             background:reasoning ? V2.accentSoft : V2.surface,
@@ -3838,7 +4069,7 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
             onKeyDown={e=>{if(e.key==='Enter')send();}}
             placeholder={streaming ? 'Skipper is responding…' : 'Ask about your roster, waivers, matchups...'}
             style={{ flex:1, border:`1px solid ${V2.hairline}`, background:V2.surface2, borderRadius:999, padding:'12px 15px', outline:'none', fontSize:13.5, color:V2.ink, fontFamily:'inherit' }}/>
-          <button onClick={()=>send()} disabled={streaming} style={{
+          <button onClick={()=>send()} disabled={streaming} aria-label="Send message" style={{
             width:42, height:42, borderRadius:'50%', background:V2.warn, border:'none',
             cursor: streaming ? 'not-allowed' : 'pointer',
             opacity: streaming ? 0.6 : 1,

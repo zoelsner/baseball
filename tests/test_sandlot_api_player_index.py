@@ -12,7 +12,7 @@ class PlayerIndexTests(unittest.TestCase):
                 "team-me": {
                     "is_me": True,
                     "rows": [
-                        {"id": "p1", "name": "My Player", "team": "NYY", "slot": "2B"},
+                        {"id": "p1", "name": "My Player", "team": "NYY", "slot": "2B", "age": 27, "age_source": "raw.scorer.playerAge"},
                     ],
                 },
                 "team-opp": {
@@ -33,6 +33,7 @@ class PlayerIndexTests(unittest.TestCase):
 
         self.assertEqual(by_id["p1"]["source"], "mine")
         self.assertEqual(by_id["p1"]["team_id"], "team-me")
+        self.assertEqual(by_id["p1"]["age_source"], "raw.scorer.playerAge")
         self.assertEqual(by_id["p2"]["source"], "league")
         self.assertEqual(by_id["p3"]["source"], "free_agent")
 

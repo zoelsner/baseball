@@ -76,7 +76,11 @@ test.describe('Skipper web fallback', () => {
     await gotoTab(page, 'Skipper');
 
     const input = page.getByPlaceholder(/ask about your roster/i);
-    await expect(page.getByRole('button', { name: /Web fallback on/i })).toBeVisible();
+    const webFallback = page.getByRole('button', { name: /Web fallback on/i });
+    await expect(webFallback).toBeVisible();
+    await expect(webFallback).toBeInViewport();
+    await expect(page.getByRole('button', { name: /Reasoning off/i })).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeVisible();
 
     await input.fill('Can web verify Martin Perez?');
     await input.press('Enter');
@@ -85,7 +89,7 @@ test.describe('Skipper web fallback', () => {
     await expect(page.getByText('Web sources')).toBeVisible();
     await expect(page.getByRole('link', { name: 'Martin Perez Stats' })).toHaveAttribute('href', 'https://www.mlb.com/player/martin-perez-527048');
 
-    await page.getByRole('button', { name: /Web fallback on/i }).click();
+    await webFallback.click();
     await expect(page.getByRole('button', { name: /Web fallback off/i })).toBeVisible();
 
     await input.fill('Snapshot only this time.');

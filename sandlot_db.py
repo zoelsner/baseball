@@ -138,12 +138,20 @@ def init_schema() -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS player_game_logs (
-              mlb_id BIGINT PRIMARY KEY,
+              mlb_id BIGINT NOT NULL,
               group_type TEXT NOT NULL CHECK (group_type IN ('hitting', 'pitching')),
               season INTEGER NOT NULL,
               games JSONB NOT NULL,
-              fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+              fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              PRIMARY KEY (mlb_id, group_type, season)
             )
+            """
+        )
+        conn.execute("ALTER TABLE player_game_logs DROP CONSTRAINT IF EXISTS player_game_logs_pkey")
+        conn.execute(
+            """
+            ALTER TABLE player_game_logs
+              ADD CONSTRAINT player_game_logs_pkey PRIMARY KEY (mlb_id, group_type, season)
             """
         )
         conn.execute(
@@ -185,7 +193,7 @@ def init_schema() -> None:
             """
             CREATE TABLE IF NOT EXISTS projection_logs (
               id BIGSERIAL PRIMARY KEY,
-              snapshot_id BIGINT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+              snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL,
               model_version TEXT NOT NULL,
               surface TEXT NOT NULL DEFAULT 'api',
               shown_date DATE NOT NULL DEFAULT CURRENT_DATE,
@@ -217,6 +225,19 @@ def init_schema() -> None:
         conn.execute("ALTER TABLE projection_logs ALTER COLUMN shown_date SET DEFAULT CURRENT_DATE")
         conn.execute("ALTER TABLE projection_logs ALTER COLUMN shown_date SET NOT NULL")
         conn.execute("ALTER TABLE projection_logs ADD COLUMN IF NOT EXISTS drivers JSONB NOT NULL DEFAULT '{}'::jsonb")
+        # Projection logs are the durable calibration history. Snapshots are a
+        # short-lived cache (30 rows by default), so cascading snapshot pruning
+        # would otherwise erase the predictions before bias/Brier metrics can
+        # accumulate across matchup periods.
+        conn.execute("ALTER TABLE projection_logs DROP CONSTRAINT IF EXISTS projection_logs_snapshot_id_fkey")
+        conn.execute("ALTER TABLE projection_logs ALTER COLUMN snapshot_id DROP NOT NULL")
+        conn.execute(
+            """
+            ALTER TABLE projection_logs
+              ADD CONSTRAINT projection_logs_snapshot_id_fkey
+              FOREIGN KEY (snapshot_id) REFERENCES snapshots(id) ON DELETE SET NULL
+            """
+        )
         conn.execute("ALTER TABLE projection_logs DROP CONSTRAINT IF EXISTS projection_logs_snapshot_id_model_version_matchup_key_key")
         conn.execute(
             """
@@ -512,15 +533,22 @@ def set_mlb_id(fantrax_id: str, mlb_id: int | None) -> None:
         )
 
 
-def get_player_game_log(mlb_id: int) -> dict[str, Any] | None:
+def get_player_game_log(
+    mlb_id: int,
+    *,
+    group_type: str,
+    season: int,
+) -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute(
             """
             SELECT mlb_id, group_type, season, games, fetched_at
             FROM player_game_logs
             WHERE mlb_id = %s
+              AND group_type = %s
+              AND season = %s
             """,
-            (mlb_id,),
+            (mlb_id, group_type, season),
         ).fetchone()
     return dict(row) if row else None
 
@@ -537,10 +565,8 @@ def set_player_game_log(
             """
             INSERT INTO player_game_logs (mlb_id, group_type, season, games, fetched_at)
             VALUES (%s, %s, %s, %s, now())
-            ON CONFLICT (mlb_id) DO UPDATE
-            SET group_type = EXCLUDED.group_type,
-                season = EXCLUDED.season,
-                games = EXCLUDED.games,
+            ON CONFLICT (mlb_id, group_type, season) DO UPDATE
+            SET games = EXCLUDED.games,
                 fetched_at = now()
             """,
             (mlb_id, group_type, season, Jsonb(games)),
