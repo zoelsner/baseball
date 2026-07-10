@@ -138,12 +138,20 @@ def init_schema() -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS player_game_logs (
-              mlb_id BIGINT PRIMARY KEY,
+              mlb_id BIGINT NOT NULL,
               group_type TEXT NOT NULL CHECK (group_type IN ('hitting', 'pitching')),
               season INTEGER NOT NULL,
               games JSONB NOT NULL,
-              fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+              fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              PRIMARY KEY (mlb_id, group_type, season)
             )
+            """
+        )
+        conn.execute("ALTER TABLE player_game_logs DROP CONSTRAINT IF EXISTS player_game_logs_pkey")
+        conn.execute(
+            """
+            ALTER TABLE player_game_logs
+              ADD CONSTRAINT player_game_logs_pkey PRIMARY KEY (mlb_id, group_type, season)
             """
         )
         conn.execute(
@@ -525,15 +533,22 @@ def set_mlb_id(fantrax_id: str, mlb_id: int | None) -> None:
         )
 
 
-def get_player_game_log(mlb_id: int) -> dict[str, Any] | None:
+def get_player_game_log(
+    mlb_id: int,
+    *,
+    group_type: str,
+    season: int,
+) -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute(
             """
             SELECT mlb_id, group_type, season, games, fetched_at
             FROM player_game_logs
             WHERE mlb_id = %s
+              AND group_type = %s
+              AND season = %s
             """,
-            (mlb_id,),
+            (mlb_id, group_type, season),
         ).fetchone()
     return dict(row) if row else None
 
@@ -550,10 +565,8 @@ def set_player_game_log(
             """
             INSERT INTO player_game_logs (mlb_id, group_type, season, games, fetched_at)
             VALUES (%s, %s, %s, %s, now())
-            ON CONFLICT (mlb_id) DO UPDATE
-            SET group_type = EXCLUDED.group_type,
-                season = EXCLUDED.season,
-                games = EXCLUDED.games,
+            ON CONFLICT (mlb_id, group_type, season) DO UPDATE
+            SET games = EXCLUDED.games,
                 fetched_at = now()
             """,
             (mlb_id, group_type, season, Jsonb(games)),

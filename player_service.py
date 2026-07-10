@@ -28,6 +28,7 @@ TREND_GAMES = 7
 DEFAULT_WARM_LIMIT = 12
 
 PITCHING_SLOT_TOKENS = {"SP", "RP", "P"}
+HITTING_SLOT_TOKENS = {"C", "1B", "2B", "3B", "SS", "OF", "LF", "CF", "RF", "UT", "UTIL", "MI", "CI"}
 
 TAKE_SYSTEM_PROMPT = """You are Skipper, a fantasy baseball assistant for a 12-team Fantrax keeper league.
 
@@ -245,18 +246,29 @@ def _find_player(snapshot: dict[str, Any], fantrax_id: str) -> tuple[dict[str, A
 
 
 def _stat_group(player_row: dict[str, Any]) -> str:
-    """Pick hitting vs pitching using exact-token match on slot/positions.
+    """Pick the assigned side first, then exact-token eligibility fallback.
 
     Substring containment would misfire on slots like 'TWP' (two-way) since
-    'P' would match. Split on '/' so 'SP/RP' decomposes into {'SP','RP'}.
+    'P' would match. Split comma/slash lists into exact tokens. A reserve
+    two-way player defaults to hitting because it is the more frequent sample;
+    an assigned SP/RP row always uses pitching.
     """
+    slot_tokens = {
+        token.strip().upper()
+        for token in str(player_row.get("slot") or "").replace(",", "/").split("/")
+        if token.strip()
+    }
+    if slot_tokens & PITCHING_SLOT_TOKENS:
+        return "pitching"
+    if slot_tokens & HITTING_SLOT_TOKENS:
+        return "hitting"
+
     raw_tokens: list[str] = []
-    raw_tokens.extend(str(player_row.get("slot") or "").split("/"))
-    raw_tokens.extend(str(player_row.get("positions") or "").split("/"))
+    raw_tokens.extend(str(player_row.get("positions") or "").replace(",", "/").split("/"))
     for p in (player_row.get("all_positions") or []):
-        raw_tokens.extend(str(p or "").split("/"))
+        raw_tokens.extend(str(p or "").replace(",", "/").split("/"))
     tokens = {t.strip().upper() for t in raw_tokens if t}
-    if tokens & PITCHING_SLOT_TOKENS:
+    if tokens & PITCHING_SLOT_TOKENS and not tokens & HITTING_SLOT_TOKENS:
         return "pitching"
     return "hitting"
 
@@ -303,16 +315,16 @@ def _load_games(
     group: str,
     force_refresh: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    cached = sandlot_db.get_player_game_log(mlb_id)
+    cached = sandlot_db.get_player_game_log(mlb_id, group_type=group, season=season)
     if not force_refresh:
-        if cached and cached.get("group_type") == group and cached.get("season") == season:
+        if cached:
             return cached.get("games") or [], _game_log_cache_state(cached)
         return [], {"state": "missing", "fetched_at": None, "age_hours": None}
     try:
         games = mlb_stats.fetch_game_log(mlb_id, season=season, group=group)
     except Exception as exc:
         log.warning("MLB game log fetch failed for %s: %s", mlb_id, exc)
-        if cached and cached.get("group_type") == group and cached.get("season") == season:
+        if cached:
             return cached.get("games") or [], _game_log_cache_state(cached, fallback_error=str(exc))
         return [], {"state": "error", "fetched_at": None, "age_hours": None, "error": str(exc)}
     sandlot_db.set_player_game_log(mlb_id, group_type=group, season=season, games=games)
