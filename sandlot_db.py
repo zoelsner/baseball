@@ -185,7 +185,7 @@ def init_schema() -> None:
             """
             CREATE TABLE IF NOT EXISTS projection_logs (
               id BIGSERIAL PRIMARY KEY,
-              snapshot_id BIGINT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+              snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL,
               model_version TEXT NOT NULL,
               surface TEXT NOT NULL DEFAULT 'api',
               shown_date DATE NOT NULL DEFAULT CURRENT_DATE,
@@ -217,6 +217,19 @@ def init_schema() -> None:
         conn.execute("ALTER TABLE projection_logs ALTER COLUMN shown_date SET DEFAULT CURRENT_DATE")
         conn.execute("ALTER TABLE projection_logs ALTER COLUMN shown_date SET NOT NULL")
         conn.execute("ALTER TABLE projection_logs ADD COLUMN IF NOT EXISTS drivers JSONB NOT NULL DEFAULT '{}'::jsonb")
+        # Projection logs are the durable calibration history. Snapshots are a
+        # short-lived cache (30 rows by default), so cascading snapshot pruning
+        # would otherwise erase the predictions before bias/Brier metrics can
+        # accumulate across matchup periods.
+        conn.execute("ALTER TABLE projection_logs DROP CONSTRAINT IF EXISTS projection_logs_snapshot_id_fkey")
+        conn.execute("ALTER TABLE projection_logs ALTER COLUMN snapshot_id DROP NOT NULL")
+        conn.execute(
+            """
+            ALTER TABLE projection_logs
+              ADD CONSTRAINT projection_logs_snapshot_id_fkey
+              FOREIGN KEY (snapshot_id) REFERENCES snapshots(id) ON DELETE SET NULL
+            """
+        )
         conn.execute("ALTER TABLE projection_logs DROP CONSTRAINT IF EXISTS projection_logs_snapshot_id_model_version_matchup_key_key")
         conn.execute(
             """

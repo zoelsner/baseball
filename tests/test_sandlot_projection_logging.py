@@ -60,6 +60,34 @@ def projection_ready_snapshot():
 
 
 class ProjectionLoggingTests(unittest.TestCase):
+    def test_projection_logs_survive_snapshot_pruning(self):
+        calls = []
+
+        class FakeConn:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            sandlot_db.init_schema()
+
+        schema_sql = "\n".join(sql for sql, _params in calls)
+        self.assertIn(
+            "snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL",
+            schema_sql,
+        )
+        self.assertIn(
+            "ALTER TABLE projection_logs ALTER COLUMN snapshot_id DROP NOT NULL",
+            schema_sql,
+        )
+        self.assertIn(
+            "FOREIGN KEY (snapshot_id) REFERENCES snapshots(id) ON DELETE SET NULL",
+            schema_sql,
+        )
+
     def test_upsert_projection_log_uses_idempotent_conflict_key(self):
         calls = []
 
