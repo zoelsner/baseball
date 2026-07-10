@@ -94,7 +94,7 @@ Rules:
 - Cite players by name. Cite numbers when relevant (FP/G, FPts, age, slot, injury status).
 - For matchup questions, prefer `matchup.projection` and `matchup.projection.drivers` when present. If `data_quality.projection_ready` is false, say data is incomplete and keep the answer score-based.
 - Only discuss lineup, swap, or add/drop recommendations when the matching data-quality flag is explicitly ready. If `data_quality.lineup_recommendations_ready` or `data_quality.add_drop_recommendations_ready` is false, say the advice is paused and why.
-- Describe projection confidence with plain bands ("comfortable edge", "slight edge", "toss-up", "uphill"), not precise percentages. Do not invent probability math.
+- Describe projections with plain score/margin bands, not precise percentages. When `probability_calibrated` is false, say the win probability is uncalibrated and do not use it as confidence or recommendation evidence.
 - No emojis. No throat-clearing intros ("Great question!"). No filler outros.
 - Markdown allowed for short lists or **emphasis**. Avoid headers and tables for chat-length replies. When you use a bulleted list, put each "- " marker on its own line (no inline " - " separators).
 - The user's team rows are flagged with `is_me: true`. Other teams (when present) are tier 3 context.
@@ -541,22 +541,27 @@ def _projection_matchup_line(matchup: dict[str, Any], projection: dict[str, Any]
     margin = _num((projection.get("drivers") or {}).get("projected_margin"))
     if margin is None and projected_my is not None and projected_opp is not None:
         margin = projected_my - projected_opp
+    probability_calibrated = projection.get("probability_calibrated") is True
     if margin is not None and margin > 0:
-        read = f"You're favored with a {band}"
+        read = f"You're favored with a {band}" if probability_calibrated else f"You project ahead with a {band}"
     elif margin is not None and margin < 0:
-        read = f"You're not favored; this is a {band}"
+        read = f"You're not favored; this is a {band}" if probability_calibrated else f"You project behind; this is a {band}"
     else:
         read = "This projects as a toss-up"
     if projected_my is not None and projected_opp is not None:
-        return f"{read} against {opponent_name}: projected {projected_my:g} to {projected_opp:g}."
-    return f"{read} against {opponent_name}."
+        line = f"{read} against {opponent_name}: projected {projected_my:g} to {projected_opp:g}."
+    else:
+        line = f"{read} against {opponent_name}."
+    if not probability_calibrated:
+        line += " Win probability is not calibrated."
+    return line
 
 
 def _projection_band(projection: dict[str, Any]) -> str:
     probability = _num(projection.get("win_probability"))
     drivers = projection.get("drivers") if isinstance(projection.get("drivers"), dict) else {}
     margin = _num(drivers.get("projected_margin"))
-    if probability is not None:
+    if projection.get("probability_calibrated") is True and probability is not None:
         if probability >= 0.70:
             return "comfortable edge"
         if probability >= 0.55:
@@ -623,11 +628,16 @@ def _recommendation_text(recommendations: dict[str, Any] | None) -> str | None:
         move = _chain_summary(chain)
         points = _num(top.get("points_delta"))
         confidence = top.get("confidence")
+        probability_calibrated = top.get("probability_calibrated") is True
         bits = []
         if points is not None:
             bits.append(f"+{points:g} projected points")
         if confidence:
-            bits.append(f"{confidence} confidence")
+            bits.append(
+                f"{confidence} confidence"
+                if probability_calibrated
+                else f"{confidence} point-edge strength"
+            )
         suffix = f" ({', '.join(bits)})" if bits else ""
         return f"Best lineup action: {move}{suffix}."
     no_action = recommendations.get("no_action") if isinstance(recommendations.get("no_action"), dict) else None

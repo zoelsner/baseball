@@ -46,6 +46,7 @@ def normalized_payload():
                 "projected_my": 122.5,
                 "projected_opp": 114.2,
                 "win_probability": 0.62,
+                "probability_calibrated": False,
                 "my_remaining_games": 12,
                 "opp_remaining_games": 10,
                 "complete": False,
@@ -143,7 +144,9 @@ class SkipperProjectionTests(unittest.TestCase):
     def test_quick_matchup_reply_uses_projection_bands_and_drivers(self):
         reply = sandlot_skipper.deterministic_reply("how am i doing in the matchup?", normalized_payload())
 
-        self.assertIn("favored with a slight edge", reply)
+        self.assertIn("project ahead with a slight edge", reply)
+        self.assertIn("Win probability is not calibrated", reply)
+        self.assertIn("medium point-edge strength", reply)
         self.assertIn("Biggest driver:", reply)
         self.assertIn("Move read:", reply)
         self.assertIn("Best lineup action:", reply)

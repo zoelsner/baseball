@@ -153,6 +153,7 @@ jobs:
           specs/player-sheet.spec.ts
           specs/trade.spec.ts
           specs/skipper-web-fallback.spec.ts
+          specs/today-projection.spec.ts
           specs/today.spec.ts
           --grep-invert "renders matchup card with shape-correct scores and margin|shows opponent label from snapshot"
 

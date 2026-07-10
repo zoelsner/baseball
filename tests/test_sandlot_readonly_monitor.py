@@ -19,6 +19,11 @@ def healthy_lineup_contract(snapshot_id):
         "snapshot_id": snapshot_id,
         "slot_moves": slot_moves,
         "input_hash": "a" * 64,
+        "projected_benefit": {
+            "points": 2.0,
+            "win_probability_delta": None,
+            "probability_calibrated": False,
+        },
         "freshness_policy": {"requires_live_preflight": True},
         "post_write_verification": {"required": True},
         "confirmation": {
@@ -74,15 +79,29 @@ def healthy_payloads():
                 },
                 "recommendations": {
                     "model_version": "matchup_projection_v4",
-                    "base_projection": {"projected_my": 100.0},
+                    "base_projection": {"projected_my": 100.0, "probability_calibrated": False},
+                    "thresholds": {
+                        "points_delta": 1.0,
+                        "win_probability_delta": None,
+                        "probability_calibrated": False,
+                    },
                     "recommendations": [{
                         "rank": 1,
                         "points_delta": 2.0,
-                        "win_probability_delta": 0.02,
+                        "win_probability_delta": None,
+                        "probability_calibrated": False,
+                        "confidence_basis": "projected_points_magnitude",
                         "replacement_card": {
+                            "confidence_basis": "projected_points_magnitude",
                             "move_in": {"id": "mine-in"},
                             "move_out": {"id": "mine-out"},
-                            "projected_benefit": {"new_projected_my": 102.0},
+                            "projected_benefit": {
+                                "new_projected_my": 102.0,
+                                "win_probability_delta": None,
+                                "base_win_probability": None,
+                                "new_win_probability": None,
+                                "probability_calibrated": False,
+                            },
                             "movability": {
                                 "participants": {
                                     "move_in": {"id": "mine-in"},
@@ -264,6 +283,21 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         self.assertIn("matchup_contract_version", codes)
         self.assertIn("matchup_dominated_duplicate", codes)
         self.assertIn("matchup_movability_coverage", codes)
+
+    def test_uncalibrated_probability_cannot_drive_actionable_matchup_advice(self):
+        payloads = healthy_payloads()
+        matchup = payloads["/api/snapshot/latest"]["matchup"]
+        recommendation = matchup["recommendations"]["recommendations"][0]
+        recommendation["win_probability_delta"] = 0.02
+        recommendation["replacement_card"]["projected_benefit"]["new_win_probability"] = 0.57
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            "matchup_uncalibrated_action_claim",
+            {item["code"] for item in report["failures"]},
+        )
 
     def test_transport_failure_is_sanitized_and_fails(self):
         payloads = healthy_payloads()

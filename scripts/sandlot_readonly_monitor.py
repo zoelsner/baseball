@@ -477,6 +477,16 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
     if isinstance(block, dict) and isinstance(projection, dict):
         if block.get("model_version") != projection.get("model_version"):
             fail("matchup_model_mismatch", "Projection and recommendation model versions did not match")
+        if projection.get("probability_calibrated") is False:
+            thresholds = block.get("thresholds") if isinstance(block.get("thresholds"), dict) else {}
+            if (
+                thresholds.get("probability_calibrated") is not False
+                or thresholds.get("win_probability_delta") is not None
+            ):
+                fail(
+                    "matchup_uncalibrated_action_claim",
+                    "Matchup recommendations used a probability threshold before calibration",
+                )
 
     proposal_entries: list[dict[str, Any]] = []
     seen_outcomes: set[tuple[str, str]] = set()
@@ -492,7 +502,20 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
             fail("matchup_rank_order", "Matchup recommendation ranks were not contiguous")
         points = _number(recommendation.get("points_delta"))
         win_delta = _number(recommendation.get("win_probability_delta"))
-        if points is None or points <= 0 or win_delta is None or win_delta < 0:
+        probability_calibrated = recommendation.get("probability_calibrated") is True
+        if points is None or points <= 0:
+            fail("matchup_nonpositive_recommendation", f"Matchup recommendation {index + 1} had no positive edge")
+        if isinstance(projection, dict) and projection.get("probability_calibrated") is False:
+            if (
+                probability_calibrated
+                or recommendation.get("win_probability_delta") is not None
+                or recommendation.get("confidence_basis") != "projected_points_magnitude"
+            ):
+                fail(
+                    "matchup_uncalibrated_action_claim",
+                    f"Matchup recommendation {index + 1} exposed an uncalibrated probability edge",
+                )
+        elif win_delta is None or win_delta < 0:
             fail("matchup_nonpositive_recommendation", f"Matchup recommendation {index + 1} had no positive edge")
         if previous_points is not None and points is not None and points > previous_points + 0.05:
             fail("matchup_rank_order", "Matchup recommendations were not ordered by projected point edge")
@@ -503,6 +526,15 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
         if not isinstance(card, dict):
             fail("matchup_card_missing", f"Matchup recommendation {index + 1} had no replacement card")
             continue
+        if (
+            isinstance(projection, dict)
+            and projection.get("probability_calibrated") is False
+            and card.get("confidence_basis") != "projected_points_magnitude"
+        ):
+            fail(
+                "matchup_uncalibrated_action_claim",
+                f"Matchup recommendation {index + 1} card mislabeled point-edge strength as confidence",
+            )
         proposal_entries.append({"proposal": card.get("proposal")})
         move_in = card.get("move_in") if isinstance(card.get("move_in"), dict) else {}
         move_out = card.get("move_out") if isinstance(card.get("move_out"), dict) else {}
@@ -515,6 +547,17 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
             seen_outcomes.add(outcome)
 
         benefit = card.get("projected_benefit") if isinstance(card.get("projected_benefit"), dict) else {}
+        if isinstance(projection, dict) and projection.get("probability_calibrated") is False:
+            if (
+                benefit.get("probability_calibrated") is not False
+                or benefit.get("win_probability_delta") is not None
+                or benefit.get("base_win_probability") is not None
+                or benefit.get("new_win_probability") is not None
+            ):
+                fail(
+                    "matchup_uncalibrated_action_claim",
+                    f"Matchup recommendation {index + 1} card exposed uncalibrated probability evidence",
+                )
         new_projected_my = _number(benefit.get("new_projected_my"))
         if base_projected_my is not None and new_projected_my is not None and points is not None:
             if abs((new_projected_my - base_projected_my) - points) > 0.11:
@@ -522,6 +565,16 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
 
         proposal = card.get("proposal") if isinstance(card.get("proposal"), dict) else {}
         contract = proposal.get("contract") if isinstance(proposal.get("contract"), dict) else {}
+        contract_benefit = contract.get("projected_benefit") if isinstance(contract.get("projected_benefit"), dict) else {}
+        if isinstance(projection, dict) and projection.get("probability_calibrated") is False:
+            if (
+                contract_benefit.get("probability_calibrated") is not False
+                or contract_benefit.get("win_probability_delta") is not None
+            ):
+                fail(
+                    "matchup_uncalibrated_action_claim",
+                    f"Matchup recommendation {index + 1} contract exposed an uncalibrated probability edge",
+                )
         slot_moves = contract.get("slot_moves") if isinstance(contract.get("slot_moves"), list) else []
         slot_move_ids = {str(move.get("player_id") or "") for move in slot_moves if isinstance(move, dict)} - {""}
         movability = card.get("movability") if isinstance(card.get("movability"), dict) else {}

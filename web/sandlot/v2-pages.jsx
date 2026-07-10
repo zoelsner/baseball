@@ -135,6 +135,9 @@ function v2BuildLineupSwapSkipperPrompt(card, mode='quick') {
   const moveOut = card?.move_out || {};
   const benefit = card?.projected_benefit || {};
   const proposal = card?.proposal || {};
+  const evidenceLabel = benefit.probability_calibrated === true
+    ? `Confidence: ${card?.confidence || 'unknown'}`
+    : `Point-edge strength: ${card?.confidence || 'unknown'}`;
   const deep = mode === 'deep';
   return [
     deep
@@ -144,7 +147,7 @@ function v2BuildLineupSwapSkipperPrompt(card, mode='quick') {
     `Move IN: ${moveIn.name || 'Unknown player'} (${moveIn.positions || 'UT'}${moveIn.team ? `, ${moveIn.team}` : ''}) from ${moveIn.from_slot || '?'} to ${moveIn.to_slot || '?'}.`,
     `Move OUT: ${moveOut.name || 'Unknown player'} (${moveOut.positions || 'UT'}${moveOut.team ? `, ${moveOut.team}` : ''}) from ${moveOut.from_slot || '?'} to ${moveOut.to_slot || '?'}.`,
     proposal.id ? `Proposal: ${proposal.id} (${proposal.status || 'blocked'}; writes enabled: ${proposal.writes_enabled === true ? 'yes' : 'no'}).` : null,
-    `Projected benefit: ${v2Signed(benefit.points, 1)} points. Confidence: ${card?.confidence || 'unknown'}. Risk: ${card?.risk_label || 'unknown'}.`,
+    `Projected benefit: ${v2Signed(benefit.points, 1)} points. ${evidenceLabel}. Risk: ${card?.risk_label || 'unknown'}.`,
     card?.reason ? `Sandlot reason: ${card.reason}` : null,
     card?.short_term_outlook ? `Short-term outlook: ${card.short_term_outlook}` : null,
     card?.risk ? `Risk note: ${card.risk}` : null,
@@ -770,29 +773,43 @@ function v2MatchupInfo(matchup) {
 }
 
 function v2ProjectionInfo(projection) {
-  if (!projection || projection.win_probability === null || projection.win_probability === undefined) return null;
-  const probability = Math.max(0, Math.min(1, v2Number(projection.win_probability)));
-  const pct = Math.round(probability * 100);
-  const color = pct >= 60 ? V2.ok : pct >= 45 ? V2.warn : V2.bad;
-  const band = pct >= 70 ? 'COMFORTABLE' : pct >= 55 ? 'SLIGHT EDGE' : pct > 45 ? 'TOSS-UP' : pct > 30 ? 'UPHILL' : 'STEEP UPHILL';
-  const shortBand = pct >= 70 ? 'EDGE' : pct >= 55 ? 'LEAN' : pct > 45 ? 'TOSS' : pct > 30 ? 'RISK' : 'LONG';
+  if (!projection || projection.projected_my === null || projection.projected_my === undefined
+      || projection.projected_opp === null || projection.projected_opp === undefined) return null;
   const projectedMy = v2Number(projection.projected_my);
   const projectedOpp = v2Number(projection.projected_opp);
+  const projectedMargin = projectedMy - projectedOpp;
+  const hasProbability = projection.win_probability !== null && projection.win_probability !== undefined;
+  const probabilityCalibrated = projection.probability_calibrated === true && hasProbability;
+  const probability = probabilityCalibrated
+    ? Math.max(0, Math.min(1, v2Number(projection.win_probability)))
+    : null;
+  const pct = probability === null ? null : Math.round(probability * 100);
+  const color = probabilityCalibrated
+    ? (pct >= 60 ? V2.ok : pct >= 45 ? V2.warn : V2.bad)
+    : (projectedMargin >= 5 ? V2.ok : projectedMargin > -5 ? V2.warn : V2.bad);
+  const band = probabilityCalibrated
+    ? (pct >= 70 ? 'COMFORTABLE' : pct >= 55 ? 'SLIGHT EDGE' : pct > 45 ? 'TOSS-UP' : pct > 30 ? 'UPHILL' : 'STEEP UPHILL')
+    : (projectedMargin >= 15 ? 'PROJECTED EDGE' : projectedMargin >= 5 ? 'PROJECTED LEAN' : projectedMargin > -5 ? 'PROJECTED TOSS-UP' : projectedMargin > -15 ? 'PROJECTED UPHILL' : 'PROJECTED DEFICIT');
+  const shortBand = probabilityCalibrated
+    ? (pct >= 70 ? 'EDGE' : pct >= 55 ? 'LEAN' : pct > 45 ? 'TOSS' : pct > 30 ? 'RISK' : 'LONG')
+    : 'MODEL';
   return {
     band,
     shortBand,
     color,
-    dash: (probability * 188.5).toFixed(1),
+    dash: probability === null ? null : (probability * 188.5).toFixed(1),
     projectedMy: projectedMy.toFixed(1),
     projectedOpp: projectedOpp.toFixed(1),
-    projectedMargin: projectedMy - projectedOpp,
+    projectedMargin,
+    probabilityCalibrated,
+    probabilityLabel: projection.probability_calibrated === false ? 'probability uncalibrated' : 'probability unavailable',
     complete: Boolean(projection.complete),
   };
 }
 
 function V2WinProbabilityRing({ projection }) {
   const info = v2ProjectionInfo(projection);
-  if (!info) return null;
+  if (!info || !info.probabilityCalibrated) return null;
   return (
     <div style={{ width:66, height:66, position:'relative', flexShrink:0 }}>
       <svg width="66" height="66" viewBox="0 0 74 74">
@@ -816,6 +833,12 @@ function v2MoveChainText(chain) {
   }).join('; ');
 }
 
+function v2MatchupEvidenceLabel(confidence, probabilityCalibrated) {
+  return probabilityCalibrated === true
+    ? `${confidence} confidence`
+    : `${confidence} point edge`;
+}
+
 function V2MatchupRecommendationCard({ recommendations }) {
   if (!recommendations) return null;
   const top = recommendations.recommendations?.[0] || null;
@@ -834,6 +857,7 @@ function V2MatchupRecommendationCard({ recommendations }) {
   if (top) {
     const points = v2Number(top.points_delta);
     const confidence = top.confidence || 'medium';
+    const evidenceLabel = v2MatchupEvidenceLabel(confidence, top.probability_calibrated);
     const chain = top.action?.chain || [];
     return (
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:'14px 15px', display:'flex', flexDirection:'column', gap:9 }}>
@@ -847,7 +871,7 @@ function V2MatchupRecommendationCard({ recommendations }) {
           {v2MoveChainText(chain)}
         </div>
         <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-          <span style={chipStyle}>{confidence} confidence</span>
+          <span style={chipStyle}>{evidenceLabel}</span>
           {(top.reason_chips || []).slice(0,3).map(chip => <span key={chip} style={chipStyle}>{chip}</span>)}
         </div>
       </div>
@@ -1016,6 +1040,7 @@ function v2AttentionQueue(health, matchupRecommendations, options={}) {
   if (top) {
     const points = v2Number(top.points_delta);
     const confidence = top.confidence || 'medium';
+    const evidenceLabel = v2MatchupEvidenceLabel(confidence, top.probability_calibrated);
     const replacementCard = top.replacement_card || null;
     const moveIn = replacementCard?.move_in || {};
     const moveOut = replacementCard?.move_out || {};
@@ -1028,7 +1053,7 @@ function v2AttentionQueue(health, matchupRecommendations, options={}) {
       title:'Lineup hot swap',
       context:moveIn.name && moveOut.name ? `${moveIn.name} for ${moveOut.name}` : 'Roster decision',
       reason:replacementCard?.reason || `${v2MoveChainText(top.action?.chain || [])}. Projected gain ${points >= 0 ? '+' : ''}${points.toFixed(1)} points.`,
-      chips:[`${confidence} confidence`, ...(top.reason_chips || [])].slice(0, 3),
+      chips:[evidenceLabel, ...(top.reason_chips || [])].slice(0, 3),
       action:'Blocked',
       nav:'roster',
       replacement:replacementCard,
@@ -1175,6 +1200,11 @@ function V2MatchupStatusCard({
             {showProjection ? (
               <div style={{ marginTop:7, color:projectionInfo.color, fontSize:12.5, fontWeight:850, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums', whiteSpace:'nowrap' }}>
                 Projected {projectionInfo.projectedMy} - {projectionInfo.projectedOpp}
+              </div>
+            ) : null}
+            {showProjection && !projectionInfo.probabilityCalibrated ? (
+              <div style={{ marginTop:4, color:V2.muted, fontSize:10.5, fontWeight:800 }}>
+                FP/G estimate · {projectionInfo.probabilityLabel}
               </div>
             ) : null}
             {showProjectionFallback ? (
@@ -1391,6 +1421,7 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
   const moveOut = card.move_out || {};
   const benefit = card.projected_benefit || {};
   const confidence = card.confidence || 'medium';
+  const evidenceLabel = v2MatchupEvidenceLabel(confidence, benefit.probability_calibrated);
   const risk = card.risk_label || 'unknown';
   const execution = card.execution || item.blockedAction || {};
   const proposal = item.proposal || card.proposal || {};
@@ -1442,7 +1473,7 @@ function V2LineupHotSwapCard({ item, last, onAskSkipper }) {
 
       <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
         <span style={{ background:confidenceTone.bg, color:confidenceTone.fg, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
-          {confidence} confidence
+          {evidenceLabel}
         </span>
         <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'4px 8px', fontSize:10.5, fontWeight:900 }}>
           {risk} risk
@@ -3628,6 +3659,8 @@ function v2ProjectionScheduleText(projection) {
 }
 
 function v2ProjectionRiskText(projection) {
+  if (projection?.probability_calibrated === false) return 'Probability uncalibrated';
+  if (projection?.win_probability === null || projection?.win_probability === undefined) return 'Probability unavailable';
   const risk = String(projection?.drivers?.risk_level || '').toLowerCase();
   if (risk === 'high') return 'High swing risk';
   if (risk === 'medium') return 'Medium swing risk';

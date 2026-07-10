@@ -75,7 +75,9 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(rec["rank"], 1)
         self.assertEqual(rec["action"]["move_shape"], "freeing_up_swap")
         self.assertEqual(rec["points_delta"], 4.0)
-        self.assertGreater(rec["win_probability_delta"], 0)
+        self.assertIsNone(rec["win_probability_delta"])
+        self.assertFalse(rec["probability_calibrated"])
+        self.assertEqual(rec["confidence_basis"], "projected_points_magnitude")
         self.assertIn(rec["confidence"], {"medium", "high"})
         self.assertIn("legal 3B/1B chain", rec["reason_chips"])
         card = rec["replacement_card"]
@@ -103,6 +105,8 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(contract["freshness_policy"]["confirmation_max_age_seconds"], 120)
         self.assertTrue(contract["post_write_verification"]["required"])
         self.assertEqual(contract["confirmation"]["mode"], "exact_contract_match")
+        self.assertIsNone(contract["projected_benefit"]["win_probability_delta"])
+        self.assertFalse(contract["projected_benefit"]["probability_calibrated"])
         self.assertEqual(
             contract["confirmation"]["expected"]["input_hash"],
             contract["input_hash"],
@@ -124,8 +128,29 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertFalse(card["safety"]["live_writes"])
         self.assertFalse(card["safety"]["add_drop"])
         self.assertEqual(card["safety"]["movability"], "unknown")
+        self.assertEqual(card["risk_label"], "unknown")
+        self.assertEqual(card["confidence_basis"], "projected_points_magnitude")
+        self.assertIn("win probability is not calibrated", card["risk"])
+        self.assertIsNone(card["projected_benefit"]["win_probability_delta"])
+        self.assertFalse(card["projected_benefit"]["probability_calibrated"])
         self.assertIn("latest Fantrax snapshot", card["provenance"]["source"])
+        self.assertIsNone(result["thresholds"]["win_probability_delta"])
+        self.assertFalse(result["thresholds"]["probability_calibrated"])
         self.assertIsNone(result["no_action"])
+
+    def test_uncalibrated_probability_does_not_suppress_large_point_gain(self):
+        data = snapshot([
+            player("weak2b", slot="2B", positions="2B", fppg=1.0),
+            player("bench2b", slot="BN", positions="2B", fppg=6.0),
+        ])
+        data["matchup"]["my_score"] = 500
+        data["matchup"]["opponent_score"] = 0
+
+        result = sandlot_matchup.rank_matchup_improvement_actions(data)
+
+        self.assertEqual(result["recommendations"][0]["points_delta"], 5.0)
+        self.assertIsNone(result["recommendations"][0]["win_probability_delta"])
+        self.assertEqual(result["recommendations"][0]["confidence"], "high")
 
     def test_suppresses_longer_chain_when_direct_swap_has_same_outcome(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([

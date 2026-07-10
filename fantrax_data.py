@@ -989,7 +989,27 @@ def extract_matchup(api: FantraxAPI, my_team_id: str) -> dict | None:
     if current is None:
         return None
 
-    for matchup in getattr(current, "matchups", []) or []:
+    current_payload = _matchup_payload(current, my_team_id)
+    if current_payload is None:
+        return None
+
+    completed_periods = [
+        period
+        for period in periods.values()
+        if getattr(period, "end", None) and getattr(period, "end") < today
+    ]
+    for period in sorted(completed_periods, key=lambda item: getattr(item, "end"), reverse=True):
+        completed_payload = _matchup_payload(period, my_team_id, complete=True)
+        if completed_payload is None:
+            continue
+        if completed_payload.get("period_number") != current_payload.get("period_number"):
+            current_payload["latest_completed"] = completed_payload
+        break
+    return current_payload
+
+
+def _matchup_payload(period: Any, my_team_id: str, *, complete: bool | None = None) -> dict | None:
+    for matchup in getattr(period, "matchups", []) or []:
         away = getattr(matchup, "away", None)
         home = getattr(matchup, "home", None)
         away_id = getattr(away, "id", None)
@@ -1004,13 +1024,13 @@ def extract_matchup(api: FantraxAPI, my_team_id: str) -> dict | None:
         margin = round(float(my_score or 0) - float(opponent_score or 0), 2)
         return {
             "source": "fantrax_schedule",
-            "period_number": getattr(getattr(current, "period", None), "number", None),
-            "period_name": getattr(current, "name", None),
-            "start": str(getattr(current, "start", "")) or None,
-            "end": str(getattr(current, "end", "")) or None,
-            "days": getattr(current, "days", None),
-            "complete": getattr(current, "complete", None),
-            "current": getattr(current, "current", None),
+            "period_number": getattr(getattr(period, "period", None), "number", None),
+            "period_name": getattr(period, "name", None),
+            "start": str(getattr(period, "start", "")) or None,
+            "end": str(getattr(period, "end", "")) or None,
+            "days": getattr(period, "days", None),
+            "complete": bool(complete) if complete is not None else getattr(period, "complete", None),
+            "current": getattr(period, "current", None),
             "matchup_key": getattr(matchup, "matchup_key", None),
             "my_team_id": my_team_id,
             "my_team_name": getattr(away if is_away else home, "name", None) or str(away if is_away else home),

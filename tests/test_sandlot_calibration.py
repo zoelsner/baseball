@@ -28,6 +28,34 @@ class ProjectionCalibrationTests(unittest.TestCase):
         self.assertEqual(payload["actual_opp"], 10.0)
         self.assertEqual(payload["actual_winner"], "me")
 
+    def test_actual_result_payload_uses_latest_completed_matchup(self):
+        snapshot = {
+            "league_id": "league",
+            "team_id": "me",
+            "matchup": {
+                "complete": False,
+                "period_number": 5,
+                "my_score": 0,
+                "opponent_score": 0,
+                "latest_completed": {
+                    "complete": True,
+                    "period_number": 4,
+                    "my_team_id": "me",
+                    "opponent_team_id": "opp",
+                    "my_score": 12,
+                    "opponent_score": 10,
+                },
+            },
+        }
+
+        payload = sandlot_matchup.actual_result_payload(snapshot)
+
+        self.assertEqual(payload["matchup_key"], "league:4:me:opp")
+        self.assertEqual(payload["period_id"], "4")
+        self.assertEqual(payload["actual_my"], 12.0)
+        self.assertEqual(payload["actual_opp"], 10.0)
+        self.assertEqual(payload["actual_winner"], "me")
+
     def test_calibration_report_groups_metrics_by_model_and_surface(self):
         rows = [
             {

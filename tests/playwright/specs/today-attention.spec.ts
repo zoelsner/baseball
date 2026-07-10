@@ -26,6 +26,8 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
         recommendations: [{
           points_delta: 2.4,
           confidence: 'high',
+          confidence_basis: 'projected_points_magnitude',
+          probability_calibrated: false,
           reason_chips: ['bench upgrade'],
           action: {
             chain: [
@@ -82,12 +84,13 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
                 move_out: { id: 'corner', name: 'Cold Corner', state: 'locked' },
               },
             },
-            projected_benefit: { points: 2.4, win_probability_delta: 0.02 },
+            projected_benefit: { points: 2.4, win_probability_delta: null, probability_calibrated: false },
             reason: 'Move Bench Bat into UT and Cold Corner to BN because the lineup-only simulation sees bench upgrade.',
             short_term_outlook: 'Bench Bat has 2 remaining games at 4.2 FP/G; Cold Corner has 1 remaining game at 0.8 FP/G.',
-            risk: 'Medium risk: this is a lineup-only projection. Confirm Fantrax lock status before acting.',
+            risk: 'Risk unknown: win probability is not calibrated. Confirm Fantrax lock status before acting.',
             confidence: 'high',
-            risk_label: 'medium',
+            confidence_basis: 'projected_points_magnitude',
+            risk_label: 'unknown',
             provenance: {
               source: 'latest Fantrax snapshot',
               slot_provenance: 'trusted',
@@ -176,8 +179,8 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('OUT', { exact: true })).toBeVisible();
     await expect(page.getByText('IN', { exact: true })).toBeVisible();
     await expect(queueSection.getByText('+2.4', { exact: true })).toBeVisible();
-    await expect(page.getByText('high confidence', { exact: true })).toBeVisible();
-    await expect(page.getByText('medium risk', { exact: true })).toBeVisible();
+    await expect(page.getByText('high point edge', { exact: true })).toBeVisible();
+    await expect(page.getByText('unknown risk', { exact: true })).toBeVisible();
     await expect(page.getByText('latest Fantrax snapshot', { exact: true })).toBeVisible();
     if (process.env.SANDLOT_EXPECT_SLOT_GATE === '1') {
       await expect(page.getByText('Locked', { exact: true })).toBeVisible();

@@ -208,6 +208,11 @@ def projection_log_payload(
 
 def actual_result_payload(snapshot: dict[str, Any]) -> dict[str, Any] | None:
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
+    if not matchup:
+        return None
+    if not matchup.get("complete"):
+        latest_completed = matchup.get("latest_completed")
+        matchup = latest_completed if isinstance(latest_completed, dict) else None
     if not matchup or not matchup.get("complete"):
         return None
     actual_my = _number(matchup.get("my_score"))
@@ -505,9 +510,20 @@ def rank_matchup_improvement_actions(
         limit=max(limit * 4, 10),
         min_points_delta=0.0,
     )
+    base_projection = simulation.get("base_projection")
+    probability_calibrated = bool(
+        isinstance(base_projection, dict)
+        and base_projection.get("probability_calibrated") is True
+    )
+    confidence_basis = (
+        "calibrated_probability_and_projected_points"
+        if probability_calibrated
+        else "projected_points_magnitude"
+    )
     thresholds = {
         "points_delta": min_points_delta,
-        "win_probability_delta": min_win_probability_delta,
+        "win_probability_delta": min_win_probability_delta if probability_calibrated else None,
+        "probability_calibrated": probability_calibrated,
     }
     recommendations: list[dict[str, Any]] = []
     best_rejected_delta = (simulation.get("no_action") or {}).get("best_rejected_delta")
@@ -520,18 +536,27 @@ def rank_matchup_improvement_actions(
             win_delta,
             min_points_delta=min_points_delta,
             min_win_probability_delta=min_win_probability_delta,
+            probability_calibrated=probability_calibrated,
         ):
             if best_rejected_delta is None or points_delta > best_rejected_delta:
                 best_rejected_delta = points_delta
             continue
-        confidence = _recommendation_confidence(points_delta, win_delta)
-        risk_label = _recommendation_risk(action.get("new_win_probability"))
+        confidence = _recommendation_confidence(
+            points_delta,
+            win_delta,
+            probability_calibrated=probability_calibrated,
+        )
+        risk_label = _recommendation_risk(
+            action.get("new_win_probability"),
+            probability_calibrated=probability_calibrated,
+        )
         replacement_card = _lineup_replacement_card(
             action=action,
             snapshot=snapshot,
             base_projection=simulation.get("base_projection"),
             confidence=confidence,
             risk_label=risk_label,
+            probability_calibrated=probability_calibrated,
         )
         if replacement_card is None:
             continue
@@ -544,9 +569,11 @@ def rank_matchup_improvement_actions(
             },
             "replacement_card": replacement_card,
             "points_delta": action.get("points_delta"),
-            "win_probability_delta": action.get("win_probability_delta"),
-            "new_win_probability": action.get("new_win_probability"),
+            "win_probability_delta": action.get("win_probability_delta") if probability_calibrated else None,
+            "new_win_probability": action.get("new_win_probability") if probability_calibrated else None,
+            "probability_calibrated": probability_calibrated,
             "confidence": confidence,
+            "confidence_basis": confidence_basis,
             "risk_label": risk_label,
             "reason_chips": action.get("reason_chips") or [],
         })
@@ -575,7 +602,8 @@ def rank_matchup_improvement_actions(
             "reason": reason,
             "best_rejected_delta": round(best_rejected_delta, 1) if best_rejected_delta is not None else None,
             "threshold": min_points_delta,
-            "win_probability_threshold": min_win_probability_delta,
+            "win_probability_threshold": min_win_probability_delta if probability_calibrated else None,
+            "probability_calibrated": probability_calibrated,
         },
     }
 
@@ -586,21 +614,31 @@ def _clears_meaningful_threshold(
     *,
     min_points_delta: float,
     min_win_probability_delta: float,
+    probability_calibrated: bool,
 ) -> bool:
-    if points_delta <= 0 or win_probability_delta < 0:
+    if points_delta <= 0:
         return False
+    if not probability_calibrated:
+        return points_delta >= min_points_delta
     return points_delta >= min_points_delta and win_probability_delta >= min_win_probability_delta
 
 
-def _recommendation_confidence(points_delta: float, win_probability_delta: float) -> str:
-    if win_probability_delta >= 0.05 or points_delta >= 5:
+def _recommendation_confidence(
+    points_delta: float,
+    win_probability_delta: float,
+    *,
+    probability_calibrated: bool,
+) -> str:
+    if points_delta >= 5 or (probability_calibrated and win_probability_delta >= 0.05):
         return "high"
-    if win_probability_delta >= 0.02 or points_delta >= 2:
+    if points_delta >= 2 or (probability_calibrated and win_probability_delta >= 0.02):
         return "medium"
     return "light"
 
 
-def _recommendation_risk(new_win_probability: Any) -> str:
+def _recommendation_risk(new_win_probability: Any, *, probability_calibrated: bool) -> str:
+    if not probability_calibrated:
+        return "unknown"
     probability = _number(new_win_probability)
     if probability is None:
         return "unknown"
@@ -731,6 +769,7 @@ def _lineup_replacement_card(
     base_projection: dict[str, Any] | None,
     confidence: str,
     risk_label: str,
+    probability_calibrated: bool,
 ) -> dict[str, Any] | None:
     chain = action.get("chain") if isinstance(action.get("chain"), list) else []
     promoted = next((step for step in chain if _is_bench_slot(step.get("from_slot")) and not _is_bench_slot(step.get("to_slot"))), None)
@@ -790,15 +829,17 @@ def _lineup_replacement_card(
             chain=chain,
             points_delta=points_delta,
             win_delta=win_delta,
+            probability_calibrated=probability_calibrated,
         ),
         "move_in": move_in,
         "move_out": move_out,
         "movability": movability,
         "projected_benefit": {
             "points": round(points_delta, 1),
-            "win_probability_delta": round(win_delta, 4),
-            "base_win_probability": round(base_win, 4) if base_win is not None else None,
-            "new_win_probability": round(new_win, 4) if new_win is not None else None,
+            "win_probability_delta": round(win_delta, 4) if probability_calibrated else None,
+            "base_win_probability": round(base_win, 4) if probability_calibrated and base_win is not None else None,
+            "new_win_probability": round(new_win, 4) if probability_calibrated and new_win is not None else None,
+            "probability_calibrated": probability_calibrated,
             "new_projected_my": action.get("new_projected_my"),
             "new_projected_opp": action.get("new_projected_opp"),
         },
@@ -810,8 +851,16 @@ def _lineup_replacement_card(
         "risk": (
             f"{risk_label.title()} risk: this is a lineup-only projection. "
             "Confirm Fantrax lock status, actual starts, and late scratches before acting."
+            if probability_calibrated
+            else "Risk unknown: win probability is not calibrated. Confirm Fantrax lock status, "
+            "actual starts, and late scratches before acting."
         ),
         "confidence": confidence,
+        "confidence_basis": (
+            "calibrated_probability_and_projected_points"
+            if probability_calibrated
+            else "projected_points_magnitude"
+        ),
         "risk_label": risk_label,
         "provenance": {
             "source": "latest Fantrax snapshot",
@@ -820,7 +869,11 @@ def _lineup_replacement_card(
             "move_in_slot_source": move_in.get("slot_source"),
             "move_out_slot_source": move_out.get("slot_source"),
             "movability_source": movability.get("source"),
-            "scoring": "snapshot FP/G and remaining-games projection",
+            "scoring": (
+                "snapshot FP/G, remaining games, and calibrated win probability"
+                if probability_calibrated
+                else "snapshot FP/G and remaining games; win probability excluded until calibrated"
+            ),
         },
         "safety": {
             "lineup_only": True,
@@ -843,6 +896,7 @@ def _lineup_swap_proposal(
     chain: list[dict[str, Any]] | None = None,
     points_delta: float = 0.0,
     win_delta: float = 0.0,
+    probability_calibrated: bool = False,
 ) -> dict[str, Any]:
     proposal_id = "lineup-swap:{out_id}:{in_id}:{slot}".format(
         out_id=move_out.get("id") or "unknown-out",
@@ -866,6 +920,7 @@ def _lineup_swap_proposal(
             chain=chain or [],
             points_delta=points_delta,
             win_delta=win_delta,
+            probability_calibrated=probability_calibrated,
         ),
         "safety_checks": [
             {
@@ -999,6 +1054,7 @@ def _lineup_swap_contract(
     chain: list[dict[str, Any]],
     points_delta: float,
     win_delta: float,
+    probability_calibrated: bool,
 ) -> dict[str, Any]:
     movability_state = str((movability or {}).get("state") or "unknown")
     blocked_by = ["executor_ready"]
@@ -1025,7 +1081,8 @@ def _lineup_swap_contract(
         "requires_multi_step": len(slot_moves) > 2,
         "projected_benefit": {
             "points": round(points_delta, 1),
-            "win_probability_delta": round(win_delta, 4),
+            "win_probability_delta": round(win_delta, 4) if probability_calibrated else None,
+            "probability_calibrated": probability_calibrated,
         },
         "movability": {
             "state": movability_state,
