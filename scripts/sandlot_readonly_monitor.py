@@ -231,6 +231,8 @@ def evaluate_payloads(
                 card.get("confidence") == "Low"
                 or add.get("age") is None
                 or move_out.get("age") is None
+                or not _trusted_age_source(add.get("age_source"))
+                or not _trusted_age_source(move_out.get("age_source"))
                 or "inferred" in score_source
             ):
                 untrusted_count += 1
@@ -417,7 +419,11 @@ def _validate_trade_index(snapshot: dict[str, Any], roster: Any, fail) -> dict[s
     if missing_names:
         fail("trade_index_names", "Trade index included players without names")
 
-    valid_ages = sum(1 for row in trade_rows if _valid_age(row.get("age")))
+    valid_ages = sum(
+        1
+        for row in trade_rows
+        if _valid_age(row.get("age")) and _trusted_age_source(row.get("age_source"))
+    )
     valid_values = sum(1 for row in trade_rows if _valid_fppg(row.get("fppg")))
     if valid_ages != len(trade_rows):
         fail(
@@ -604,6 +610,11 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
 def _valid_age(value: Any) -> bool:
     parsed = _number(value)
     return parsed is not None and parsed.is_integer() and 16 <= parsed <= 50
+
+
+def _trusted_age_source(value: Any) -> bool:
+    source = str(value or "").strip().casefold()
+    return bool(source) and not any(token in source for token in ("unknown", "fallback", "inferred", "legacy"))
 
 
 def _valid_fppg(value: Any) -> bool:

@@ -1415,12 +1415,28 @@ def _normalize_fa_player(entry: dict, stat_keys: list[str]) -> dict:
     else:
         stats = {"_cells": cell_values}
 
+    age = None
+    age_source = None
+    for key in ROSTER_AGE_FIELDS:
+        age = _plausible_roster_age(scorer.get(key))
+        if age is not None:
+            age_source = f"raw.scorer.{key}"
+            break
+    if age is None:
+        for key in ("Age", "AGE", "age"):
+            age = _plausible_roster_age(stats.get(key))
+            if age is not None:
+                age_source = f"stats.{key}"
+                break
+
     return {
         "id": scorer.get("scorerId") or scorer.get("playerId") or scorer.get("id"),
         "name": scorer.get("name") or scorer.get("fullName"),
         "team": scorer.get("teamShortName") or scorer.get("teamName"),
         "positions": scorer.get("posShortNames") or scorer.get("positions"),
         "multi_positions": entry.get("multiPositions"),
+        "age": age,
+        "age_source": age_source,
         "stats": stats,
     }
 

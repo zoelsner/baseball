@@ -313,13 +313,15 @@ def _add_candidate(row: dict[str, Any]) -> dict[str, Any] | None:
     if fpg is None:
         return None
     tokens = _position_tokens(row)
+    age, age_source = _age_with_source(row, stats)
     return {
         "id": str(row.get("id") or _slug(row.get("name") or "free-agent")),
         "name": row.get("name") or "Unknown free agent",
         "team": row.get("team") or "",
         "positions": _position_display(row, tokens),
         "tokens": tokens,
-        "age": _age(row, stats),
+        "age": age,
+        "age_source": age_source,
         "fpg": round(fpg, 2),
         "score_source": source,
         "true_fpg": true_fpg,
@@ -360,6 +362,7 @@ def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) 
                 "tokens": tokens,
                 "slot": row.get("slot") or row.get("slot_full") or "",
                 "age": _age(row, {}),
+                "age_source": _age_with_source(row, {})[1],
                 "fpg": round(fpg if fpg is not None else 0.0, 2),
                 "injury": row.get("injury") or row.get("status"),
                 "is_bench": is_bench,
@@ -391,6 +394,7 @@ def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) 
                 "tokens": tokens,
                 "slot": row.get("slot") or row.get("slot_full") or "",
                 "age": _age(row, {}),
+                "age_source": _age_with_source(row, {})[1],
                 "fpg": round(fpg, 2),
                 "injury": row.get("injury") or row.get("status"),
                 "is_bench": _is_bench(row),
@@ -457,6 +461,7 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
             "team": add["team"],
             "positions": add["positions"],
             "age": add["age"],
+            "age_source": add.get("age_source"),
             "fpg": round(float(add["fpg"]), 1),
             "score_source": add["score_source"],
         },
@@ -467,6 +472,7 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
             "positions": move["positions"],
             "slot": move["slot"],
             "age": move["age"],
+            "age_source": move.get("age_source"),
             "fpg": round(float(move["fpg"]), 1),
             "injury": move["injury"],
         },
@@ -716,10 +722,25 @@ def _truthy(value: Any) -> bool:
 
 
 def _age(row: dict[str, Any], stats: dict[str, Any]) -> int | None:
-    for value in (row.get("age"), stats.get("Age"), stats.get("AGE"), stats.get("age")):
-        parsed = _number(value)
+    return _age_with_source(row, stats)[0]
+
+
+def _age_with_source(row: dict[str, Any], stats: dict[str, Any]) -> tuple[int | None, str | None]:
+    parsed = _number(row.get("age"))
+    source = str(row.get("age_source") or "").strip()
+    has_raw_provenance = isinstance(row.get("raw"), dict)
+    if parsed is not None and 16 <= parsed <= 50:
+        if _trusted_age_source(source):
+            return int(parsed), source
+        # Compatibility for normalized/synthetic rows that predate explicit
+        # provenance. Real Fantrax roster rows carry `raw` and must fail closed.
+        if not has_raw_provenance:
+            return int(parsed), "legacy.normalized_age"
+
+    for key in ("Age", "AGE", "age"):
+        parsed = _number(stats.get(key))
         if parsed is not None and 16 <= parsed <= 50:
-            return int(parsed)
+            return int(parsed), f"stats.{key}"
     cells = stats.get("_cells")
     if isinstance(cells, list) and len(cells) >= 5:
         parsed_age = _number(cells[2])
@@ -731,8 +752,13 @@ def _age(row: dict[str, Any], stats: dict[str, Any]) -> int | None:
             and 16 <= parsed_age <= 50
             and _plausible_fpg(per_game)
         ):
-            return int(parsed_age)
-    return None
+            return int(parsed_age), "stats._cells[2]"
+    return None, None
+
+
+def _trusted_age_source(value: Any) -> bool:
+    source = str(value or "").strip().casefold()
+    return bool(source) and not any(token in source for token in ("unknown", "fallback", "inferred", "legacy"))
 
 
 def _number(value: Any) -> float | None:

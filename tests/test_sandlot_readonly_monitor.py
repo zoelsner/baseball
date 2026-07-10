@@ -57,13 +57,13 @@ def healthy_payloads():
             "taken_at": "2026-07-10T15:30:00Z",
             "freshness": {"state": "fresh", "age_minutes": 30},
             "roster": [
-                {"id": "mine-out", "name": "Roster Player", "age": 29, "fppg": 2.0},
-                {"id": "mine-in", "name": "Bench Player", "age": 27, "fppg": 4.0},
+                {"id": "mine-out", "name": "Roster Player", "age": 29, "age_source": "raw.scorer.playerAge", "fppg": 2.0},
+                {"id": "mine-in", "name": "Bench Player", "age": 27, "age_source": "raw.scorer.playerAge", "fppg": 4.0},
             ],
             "player_index": [
-                {"id": "mine-out", "name": "Roster Player", "source": "mine", "age": 29, "fppg": 2.0},
-                {"id": "mine-in", "name": "Bench Player", "source": "mine", "age": 27, "fppg": 4.0},
-                {"id": "league-1", "name": "League Player", "source": "league", "age": 31, "fppg": 3.0},
+                {"id": "mine-out", "name": "Roster Player", "source": "mine", "age": 29, "age_source": "raw.scorer.playerAge", "fppg": 2.0},
+                {"id": "mine-in", "name": "Bench Player", "source": "mine", "age": 27, "age_source": "raw.scorer.playerAge", "fppg": 4.0},
+                {"id": "league-1", "name": "League Player", "source": "league", "age": 31, "age_source": "raw.scorer.playerAge", "fppg": 3.0},
             ],
             "matchup": {
                 "projection": {
@@ -153,8 +153,8 @@ def healthy_payloads():
             "cards": [{
                 "net_delta": 1.2,
                 "confidence": "Medium",
-                "add": {"age": 28, "score_source": "FP/G"},
-                "move_out": {"age": 31},
+                "add": {"age": 28, "age_source": "stats.Age", "score_source": "FP/G"},
+                "move_out": {"age": 31, "age_source": "raw.scorer.playerAge"},
             }],
             "data_quality": quality,
         },
@@ -256,6 +256,18 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         codes = {item["code"] for item in report["failures"]}
         self.assertIn("trade_index_age_coverage", codes)
         self.assertIn("trade_index_value_coverage", codes)
+
+    def test_numeric_age_without_trusted_source_fails_trade_and_waiver_contracts(self):
+        payloads = healthy_payloads()
+        payloads["/api/snapshot/latest"]["player_index"][1]["age_source"] = "inferred"
+        payloads["/api/waiver-swaps/latest"]["cards"][0]["move_out"]["age_source"] = None
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("trade_index_age_coverage", codes)
+        self.assertIn("waivers_untrusted_card", codes)
 
     def test_matchup_contract_rejects_legacy_claims_duplicates_and_unchecked_bridge(self):
         payloads = healthy_payloads()

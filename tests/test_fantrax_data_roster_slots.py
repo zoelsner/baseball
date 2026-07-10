@@ -539,6 +539,23 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(data["rows"][0]["age"], 23)
         self.assertEqual(data["rows"][0]["age_source"], "raw.scorer.playerAge")
 
+    def test_free_agent_normalization_carries_explicit_age_provenance(self):
+        player = fantrax_data._normalize_fa_player(
+            {
+                "scorer": {
+                    "scorerId": "fa-1",
+                    "name": "Young Free Agent",
+                    "playerAge": "22",
+                    "posShortNames": "OF",
+                },
+                "cells": [{"content": "4.5"}],
+            },
+            ["FP/G"],
+        )
+
+        self.assertEqual(player["age"], 22)
+        self.assertEqual(player["age_source"], "raw.scorer.playerAge")
+
     def test_raw_roster_cell_age_requires_valid_stat_schema_fingerprint(self):
         cases = (
             ("missing-fpts", "", "2.5", "23"),

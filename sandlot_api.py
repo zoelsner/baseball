@@ -695,6 +695,7 @@ def _player_index(
                 "positions": r.get("positions"),
                 "fppg": r.get("fppg"),
                 "age": r.get("age"),
+                "age_source": r.get("age_source"),
                 "source": source,
                 "team_id": team_id,
             })

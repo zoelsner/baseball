@@ -402,8 +402,8 @@ def _has_fppg(row: dict[str, Any]) -> bool:
 
 def _has_actionable_free_agent(row: dict[str, Any]) -> bool:
     stats = row.get("stats") if isinstance(row.get("stats"), dict) else {}
-    age = _free_agent_age(row, stats)
-    if age is None or not 16 <= age <= 50:
+    age, age_source = _free_agent_age_with_source(row, stats)
+    if age is None or age_source is None or not 16 <= age <= 50:
         return False
 
     for key in TRUE_FPG_KEYS:
@@ -420,19 +420,37 @@ def _has_actionable_free_agent(row: dict[str, Any]) -> bool:
 
 
 def _free_agent_age(row: dict[str, Any], stats: dict[str, Any]) -> float | None:
-    explicit = _first_number(row.get("age"), stats.get("Age"), stats.get("AGE"), stats.get("age"))
-    if explicit is not None:
-        return explicit
+    return _free_agent_age_with_source(row, stats)[0]
+
+
+def _free_agent_age_with_source(
+    row: dict[str, Any],
+    stats: dict[str, Any],
+) -> tuple[float | None, str | None]:
+    explicit = _first_number(row.get("age"))
+    source = str(row.get("age_source") or "").strip()
+    if explicit is not None and _trusted_age_source(source):
+        return explicit, source
+
+    for key in ("Age", "AGE", "age"):
+        explicit = _first_number(stats.get(key))
+        if explicit is not None:
+            return explicit, f"stats.{key}"
 
     cells = stats.get("_cells")
     if not isinstance(cells, list) or len(cells) < 5:
-        return None
+        return None, None
     age = _number(cells[2])
     score = _number(cells[3])
     per_game = _number(cells[4])
     if age is None or score is None or not 16 <= age <= 50 or not _plausible_fpg(per_game):
-        return None
-    return age
+        return None, None
+    return age, "stats._cells[2]"
+
+
+def _trusted_age_source(value: Any) -> bool:
+    source = str(value or "").strip().casefold()
+    return bool(source) and not any(token in source for token in ("unknown", "fallback", "inferred", "legacy"))
 
 
 def _normalized_stat_value(stats: dict[str, Any], key: str) -> Any:

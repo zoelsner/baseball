@@ -41,7 +41,7 @@ def good_snapshot():
         },
         "free_agents": {
             "players": [
-                {"id": "fa", "name": "Free Agent", "positions": "2B", "age": 29, "stats": {"FP/G": 4.0}},
+                {"id": "fa", "name": "Free Agent", "positions": "2B", "age": 29, "age_source": "raw.scorer.playerAge", "stats": {"FP/G": 4.0}},
             ],
         },
     }
@@ -280,6 +280,23 @@ class SnapshotDataQualityTests(unittest.TestCase):
             "Dynasty-safe free-agent pool has 0/2 players with trusted per-game value and age",
             quality["add_drop_recommendation_reasons"],
         )
+
+    def test_add_drop_pauses_when_numeric_age_has_no_provenance(self):
+        snapshot = good_snapshot()
+        snapshot["free_agents"] = {
+            "players": [{
+                "id": "untrusted-age",
+                "name": "Untrusted Age",
+                "positions": "OF",
+                "age": 27,
+                "stats": {"FP/G": 5.0},
+            }],
+        }
+
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+        self.assertFalse(quality["add_drop_recommendations_ready"])
+        self.assertEqual(quality["free_agent_pool"]["usable_players"], 0)
 
     def test_schema_checked_free_agent_cell_age_can_unlock_trusted_candidate(self):
         snapshot = good_snapshot()

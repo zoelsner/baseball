@@ -317,6 +317,19 @@ class TradeValidationTests(unittest.TestCase):
                     "missing a valid age for dynasty grading",
                 )
 
+    def test_raw_age_without_provenance_is_rejected(self):
+        snapshot = trade_snapshot()
+        row = snapshot["data"]["all_team_rosters"]["opp"]["rows"][0]
+        row["raw"] = {}
+        row.pop("age_source", None)
+
+        self.assert_grade_error(
+            snapshot,
+            ["m1"],
+            ["o1"],
+            "missing a valid age for dynasty grading",
+        )
+
     def test_young_players_require_manual_dynasty_review_on_either_side(self):
         for side in ("give", "get"):
             with self.subTest(side=side):

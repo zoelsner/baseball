@@ -199,6 +199,7 @@ class WaiverSwapCandidateTests(unittest.TestCase):
         roster = [
             {"id": "young", "name": "Young Upside", "slot": "RES", "positions": "OF", "fppg": 0.5, "age": 23},
             {"id": "unknown", "name": "Unknown Age", "slot": "RES", "positions": "OF", "fppg": 0.4},
+            {"id": "untrusted", "name": "Untrusted Age", "slot": "RES", "positions": "OF", "fppg": 0.2, "age": 29, "raw": {}},
             {"id": "veteran", "name": "Veteran Reserve", "slot": "RES", "positions": "OF", "fppg": 0.3, "age": 29},
         ]
         free_agents = [
@@ -212,9 +213,10 @@ class WaiverSwapCandidateTests(unittest.TestCase):
         )
 
         self.assertEqual({card["move_out"]["name"] for card in cards}, {"Veteran Reserve"})
-        self.assertEqual(diagnostics["protected_move_out_count"], 2)
+        self.assertEqual(diagnostics["protected_move_out_count"], 3)
         self.assertIn("Young Upside", diagnostics["protected_move_outs"])
         self.assertIn("Unknown Age", diagnostics["protected_move_outs"])
+        self.assertIn("Untrusted Age", diagnostics["protected_move_outs"])
 
     def test_schema_checked_free_agent_cell_age_is_preserved(self):
         candidate = sandlot_waivers._add_candidate(
@@ -231,6 +233,7 @@ class WaiverSwapCandidateTests(unittest.TestCase):
 
         self.assertIsNotNone(candidate)
         self.assertEqual(candidate["age"], 27)
+        self.assertEqual(candidate["age_source"], "stats._cells[2]")
         self.assertTrue(candidate["true_fpg"])
 
 

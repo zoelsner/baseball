@@ -638,7 +638,15 @@ def _age(row: dict[str, Any]) -> float | None:
         return None
     if age < MIN_VALID_DYNASTY_AGE or age > MAX_VALID_DYNASTY_AGE:
         return None
+    source = str(row.get("age_source") or "").strip()
+    if isinstance(row.get("raw"), dict) and not _trusted_age_source(source):
+        return None
     return age
+
+
+def _trusted_age_source(value: Any) -> bool:
+    source = str(value or "").strip().casefold()
+    return bool(source) and not any(token in source for token in ("unknown", "fallback", "inferred", "legacy"))
 
 
 def _weak_positions(rows: list[dict[str, Any]], limit: int = 3) -> list[str]:
@@ -700,6 +708,7 @@ def _slim_player(row: dict[str, Any]) -> dict[str, Any]:
         "team": row.get("team"),
         "fppg": _number(row.get("fppg")),
         "age": _number(row.get("age")),
+        "age_source": row.get("age_source"),
         "injury": row.get("injury"),
     }
 
