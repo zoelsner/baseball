@@ -457,7 +457,8 @@ def _normalize_split(
         })
         return base
     # pitching
-    ip = _to_float(stat.get("inningsPitched"))
+    raw_ip = stat.get("inningsPitched")
+    ip = _innings_pitched(raw_ip)
     h = _to_int(stat.get("hits"))
     er = _to_int(stat.get("earnedRuns"))
     bb = _to_int(stat.get("baseOnBalls"))
@@ -468,13 +469,14 @@ def _normalize_split(
     hold = _to_int(stat.get("holds")) > 0
     gs = _to_int(stat.get("gamesStarted")) > 0
     base.update({
-        "ip": ip, "h": h, "er": er, "bb": bb, "k": k,
+        "ip": ip, "ip_display": _innings_display(raw_ip, ip),
+        "h": h, "er": er, "bb": bb, "k": k,
         "win": win, "save": save,
         "loss": loss, "hold": hold, "gs": gs,
         # Quality start: 6+ innings, 3 or fewer earned runs, as the starter.
         "qs": bool(gs and ip >= 6.0 and er <= 3),
         "avg_game": None,
-        "line": _pitching_line(ip, h, er, bb, k, win, save),
+        "line": _pitching_line(ip, h, er, bb, k, win, save, ip_display=_innings_display(raw_ip, ip)),
         "fpts_estimated": _pitching_fpts(ip, k, er, bb, h, win, save),
     })
     return base
@@ -500,8 +502,18 @@ def _hitting_line(ab: int, h: int, hr: int, rbi: int, bb: int, k: int, sb: int, 
     return ", ".join(parts + extras)
 
 
-def _pitching_line(ip: float, h: int, er: int, bb: int, k: int, win: bool, save: bool) -> str:
-    ip_str = f"{ip:.1f}".rstrip("0").rstrip(".")
+def _pitching_line(
+    ip: float,
+    h: int,
+    er: int,
+    bb: int,
+    k: int,
+    win: bool,
+    save: bool,
+    *,
+    ip_display: str | None = None,
+) -> str:
+    ip_str = ip_display or f"{ip:.1f}".rstrip("0").rstrip(".")
     parts = [f"{ip_str} IP", f"{k} K", f"{er} ER"]
     if h:
         parts.append(f"{h} H")
@@ -678,3 +690,25 @@ def _to_float(v: Any) -> float:
         return float(v) if v is not None else 0.0
     except (TypeError, ValueError):
         return 0.0
+
+
+def _innings_pitched(value: Any) -> float:
+    """Convert MLB's baseball notation (6.2 = 6 innings, 2 outs) to innings."""
+    text = str(value or "0").strip()
+    match = re.fullmatch(r"(\d+)(?:\.([0-2]))?", text)
+    if match:
+        innings = int(match.group(1))
+        outs = int(match.group(2) or 0)
+        return innings + outs / 3.0
+    parsed = _to_float(value)
+    if parsed < 0:
+        return 0.0
+    log.warning("Unexpected inningsPitched value %r; treating as decimal innings", value)
+    return parsed
+
+
+def _innings_display(value: Any, innings: float) -> str:
+    text = str(value or "").strip()
+    if re.fullmatch(r"\d+(?:\.[0-2])?", text):
+        return text if "." in text else f"{text}.0"
+    return f"{innings:.2f}".rstrip("0").rstrip(".")

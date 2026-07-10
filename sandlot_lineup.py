@@ -22,10 +22,13 @@ hand from the game log and the schedule.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from sandlot_autopsy import (  # noqa: F401 — shared canonical rules
+    INJURED_SLOTS,
     PITCHER_TOKENS,
+    PROTECTED_SLOTS,
     _fits,
     _is_pitcher_slot,
     _max_assign,
@@ -41,7 +44,8 @@ FULL_ACTIVE_TEMPLATE = (
 )
 
 # Injury flags that keep a player out of the proposal entirely.
-BLOCKED_INJURIES = {"OUT", "SUSP", "IR"}
+BLOCKED_INJURIES = {"OUT", "SUSP", "IR", "IL", "IL10", "IL60"}
+RECENT_FORM_GAMES = 10
 
 
 def blended_rate(recent_avg: float, recent_n: int, season_avg: float, season_n: int) -> float:
@@ -87,6 +91,82 @@ def expected_games(
     return team_games_next * share
 
 
+def project_week(
+    tokens: set[str],
+    *,
+    hitting_season_points: list[float],
+    hitting_recent_points: list[float],
+    pitching_season_points: list[float],
+    pitching_recent_points: list[float],
+    team_games_next: int,
+    team_games_recent: int,
+    starts_recent: int,
+    probable_starts: int,
+) -> dict[str, Any]:
+    """Project hitting and pitching opportunities independently.
+
+    Two-way players cannot use one merged per-game rate: hitting follows the
+    team schedule, while pitching follows starts/appearance cadence.
+    """
+    components: list[dict[str, Any]] = []
+
+    def add_component(
+        group: str,
+        season: list[float],
+        recent: list[float],
+        expected: float,
+        unit: str,
+    ) -> None:
+        recent_form = recent[-RECENT_FORM_GAMES:]
+        recent_avg = sum(recent_form) / len(recent_form) if recent_form else 0.0
+        season_avg = sum(season) / len(season) if season else 0.0
+        rate = blended_rate(recent_avg, len(recent_form), season_avg, len(season))
+        components.append({
+            "group": group,
+            "rate": rate,
+            "expected": expected,
+            "unit": unit,
+            "points": rate * expected,
+            "season_n": len(season),
+            "recent_n": len(recent_form),
+        })
+
+    hitter_tokens = tokens - PITCHER_TOKENS
+    pitcher_tokens = tokens & PITCHER_TOKENS
+    if hitter_tokens:
+        hitter_expected = expected_games(
+            hitter_tokens,
+            team_games_next=team_games_next,
+            team_games_recent=team_games_recent,
+            games_recent=len(hitting_recent_points),
+            starts_recent=0,
+            probable_starts=0,
+        )
+        add_component("hitting", hitting_season_points, hitting_recent_points, hitter_expected, "games")
+    if pitcher_tokens:
+        pitcher_expected = expected_games(
+            pitcher_tokens,
+            team_games_next=team_games_next,
+            team_games_recent=team_games_recent,
+            games_recent=len(pitching_recent_points),
+            starts_recent=starts_recent,
+            probable_starts=probable_starts,
+        )
+        starter_usage = starts_recent > 0 and starts_recent * 2 >= len(pitching_recent_points)
+        add_component(
+            "pitching",
+            pitching_season_points,
+            pitching_recent_points,
+            pitcher_expected,
+            "starts" if starter_usage else "outings",
+        )
+
+    return {
+        "projected_total": round(sum(component["points"] for component in components), 1),
+        "components": components,
+    }
+
+
 def propose(entries: list[dict[str, Any]], template: list[str] | None = None) -> dict[str, Any]:
     """Exact-optimal lineup from projected entries.
 
@@ -100,22 +180,43 @@ def propose(entries: list[dict[str, Any]], template: list[str] | None = None) ->
 
     hit_only, pit_only, two_way = [], [], []
     for e in entries:
+        slot = str(e.get("slot") or "").strip().upper()
+        injury = str(e.get("injury") or "").strip().upper()
+        try:
+            projected = float(e.get("proj"))
+        except (TypeError, ValueError):
+            continue
+        if (
+            not math.isfinite(projected)
+            or slot in INJURED_SLOTS
+            or slot in PROTECTED_SLOTS
+            or injury in BLOCKED_INJURIES
+        ):
+            continue
         tokens = e["tokens"]
-        item = (float(e["proj"]), e["name"], tokens)
         can_hit = bool(tokens - PITCHER_TOKENS)
         can_pit = bool(tokens & PITCHER_TOKENS)
         if can_hit and can_pit:
-            two_way.append(item)
+            hitter_value = _side_projection(e, "hitter", projected)
+            pitcher_value = _side_projection(e, "pitcher", projected)
+            two_way.append(
+                (
+                    (hitter_value, e["name"], tokens),
+                    (pitcher_value, e["name"], tokens),
+                )
+            )
         elif can_pit:
-            pit_only.append(item)
+            pit_only.append((projected, e["name"], tokens))
         elif can_hit:
-            hit_only.append(item)
+            hit_only.append((projected, e["name"], tokens))
 
     best_total, best_asg = float("-inf"), []
     for combo in range(1 << len(two_way)):
         hside, pside = list(hit_only), list(pit_only)
-        for i, item in enumerate(two_way):
-            (hside if combo & (1 << i) else pside).append(item)
+        for i, (hitter_item, pitcher_item) in enumerate(two_way):
+            (hside if combo & (1 << i) else pside).append(
+                hitter_item if combo & (1 << i) else pitcher_item
+            )
         hv, ha = _max_assign(hit_slots, hside)
         pv, pa = _max_assign(pit_slots, pside)
         if hv + pv > best_total:
@@ -140,3 +241,22 @@ def propose(entries: list[dict[str, Any]], template: list[str] | None = None) ->
         "projected_total": round(best_total, 1),
         "unfilled": unfilled,
     }
+
+
+def _side_projection(entry: dict[str, Any], side: str, fallback: float) -> float:
+    field = "hitter_proj" if side == "hitter" else "pitcher_proj"
+    try:
+        value = float(entry.get(field))
+    except (TypeError, ValueError):
+        return fallback
+    return value if math.isfinite(value) else fallback
+
+
+def projected_for_slot(entry: dict[str, Any], slot: str) -> float:
+    """Return the scoring value Fantrax awards from this assigned slot group."""
+    try:
+        fallback = float(entry.get("proj") or 0.0)
+    except (TypeError, ValueError):
+        fallback = 0.0
+    side = "pitcher" if _is_pitcher_slot(slot) else "hitter"
+    return _side_projection(entry, side, fallback)

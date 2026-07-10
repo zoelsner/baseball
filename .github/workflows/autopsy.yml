@@ -2,15 +2,9 @@ name: Lineup autopsy
 
 on:
   workflow_dispatch: {}
-  push:
-    branches:
-      - claude/debug-railway-crash-AvUM7
-    paths:
-      - ".github/workflows/autopsy.yml"
-      - "scripts/run_autopsy.py"
-      - "sandlot_autopsy.py"
-      - "sandlot_scoring.py"
-      - "mlb_stats.py"
+  schedule:
+    # Runs after the 4am ET Monday optimizer; read-only DB + MLB Stats API.
+    - cron: "30 9 * * 1"
 
 permissions:
   contents: read
@@ -20,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

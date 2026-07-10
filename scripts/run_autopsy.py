@@ -42,6 +42,7 @@ import sandlot_scoring as scoring  # noqa: E402
 
 ET = ZoneInfo("America/New_York")
 GAME_LOG_THREADS = 8
+MIN_TRUSTED_COVERAGE = 0.90
 
 
 def snapshot_day(taken_at, roster_meta) -> str:
@@ -126,7 +127,7 @@ def resolve_mlb_ids(conn, players, season):
 
 
 def fetch_daily_points(players, resolved, season):
-    """fid -> {date_iso: league points} from MLB game logs (league scoring)."""
+    """Return points plus explicit per-player fetch provenance."""
 
     def groups_for(tokens):
         groups = []
@@ -138,6 +139,7 @@ def fetch_daily_points(players, resolved, season):
 
     def fetch(fid):
         daily: dict[str, float] = defaultdict(float)
+        failures = []
         for group in groups_for(players[fid]["tokens"]):
             try:
                 for game in mlb_stats.fetch_game_log(resolved[fid], season=season, group=group):
@@ -146,13 +148,29 @@ def fetch_daily_points(players, resolved, season):
                         daily[day] += scoring.game_points(game, group)
             except Exception as exc:  # noqa: BLE001 — a missing log is data, not fatal
                 print(f"  game log failed for {players[fid]['name']}: {exc}", flush=True)
-        return fid, dict(daily)
+                failures.append(f"{group}: {type(exc).__name__}")
+        return fid, dict(daily), failures
 
-    points = {}
+    points, successful_ids, failures = {}, set(), {}
     with ThreadPoolExecutor(max_workers=GAME_LOG_THREADS) as pool:
-        for fid, daily in pool.map(fetch, list(resolved)):
+        for fid, daily, player_failures in pool.map(fetch, list(resolved)):
             points[fid] = daily
-    return points
+            if player_failures:
+                failures[fid] = player_failures
+            else:
+                successful_ids.add(fid)
+    return points, successful_ids, failures
+
+
+def coverage_is_trusted(coverage):
+    points_coverage = coverage.get("points_coverage")
+    id_coverage = coverage.get("id_coverage")
+    return (
+        isinstance(points_coverage, (int, float))
+        and isinstance(id_coverage, (int, float))
+        and points_coverage >= MIN_TRUSTED_COVERAGE
+        and id_coverage >= MIN_TRUSTED_COVERAGE
+    )
 
 
 def week_windows(by_day):
@@ -184,7 +202,7 @@ def run():
 
     print(f"snapshot days: {len(by_day)} ({min(by_day)} .. {max(by_day)})")
     print(f"players seen: {len(players)}, mlb-resolved: {len(resolved)}, unresolved: {len(unresolved)}")
-    points = fetch_daily_points(players, resolved, season)
+    points, successful_point_ids, game_log_failures = fetch_daily_points(players, resolved, season)
     last_game_day = max((d for daily in points.values() for d in daily), default=None)
 
     team_weeks = defaultdict(list)
@@ -202,11 +220,12 @@ def run():
             week_points = {
                 fid: sum(points[fid].get(d, 0.0) for d in window)
                 for fid in (r.get("id") for r in rows)
-                if fid in points
+                if fid in successful_point_ids
             }
             result = core.team_day(rows, week_points)
             result["date"] = label
             result["coverage"] = core.coverage(rows, week_points, set(resolved))
+            result["trusted"] = coverage_is_trusted(result["coverage"])
             team_weeks[tid].append(result)
 
     report = {"teams": {}, "diagnostics": {
@@ -215,6 +234,11 @@ def run():
         "last_game_day": last_game_day,
         "players_seen": len(players),
         "players_resolved": len(resolved),
+        "game_log_failure_count": len(game_log_failures),
+        "game_log_failures": {
+            players[fid]["name"] or fid: failures
+            for fid, failures in game_log_failures.items()
+        },
         "unresolved_players": sorted(
             players[f]["name"] for f in unresolved if players[f]["name"]
         ),
@@ -222,16 +246,21 @@ def run():
         "my_team_id": my_team_id,
     }}
     for tid, wks in team_weeks.items():
-        agg = core.autopsy(wks)
+        trusted_wks = [week for week in wks if week["trusted"]]
+        agg = core.autopsy(trusted_wks)
         cov = [w["coverage"]["points_coverage"] for w in wks
                if w["coverage"]["points_coverage"] is not None]
         agg["avg_points_coverage"] = round(sum(cov) / len(cov), 3) if cov else None
+        agg["trusted_weeks"] = len(trusted_wks)
+        agg["excluded_weeks"] = len(wks) - len(trusted_wks)
         agg["team_name"] = team_names[tid]
         agg["is_me"] = tid == my_team_id
         agg["weeks_detail"] = [
             {"week": w["date"], "actual": w["actual"], "optimal": w["optimal"],
              "points_left": w["points_left"],
-             "best_lineup": w["assignment"]} for w in wks
+             "trusted": w["trusted"],
+             "coverage": w["coverage"],
+             "best_lineup": w["assignment"] if w["trusted"] else []} for w in wks
         ]
         report["teams"][tid] = agg
 
@@ -241,23 +270,24 @@ def run():
         f"# Weekly lineup efficiency — {len(weeks)} scoring weeks "
         f"({min(weeks)} .. {max(weeks)}), league-exact scoring",
         "",
-        "| # | Team | Eff % | Actual | Optimal | Left on bench | Left/week | Coverage |",
-        "|---|------|------:|-------:|--------:|--------------:|----------:|---------:|",
+        "| # | Team | Eff % | Actual | Optimal | Left on bench | Left/week | Coverage | Trusted |",
+        "|---|------|------:|-------:|--------:|--------------:|----------:|---------:|--------:|",
     ]
     for i, t in enumerate(ranked, 1):
         eff = f"{t['efficiency'] * 100:.1f}%" if t["efficiency"] is not None else "—"
-        cov = f"{t['avg_points_coverage'] * 100:.0f}%" if t["avg_points_coverage"] else "—"
+        cov = f"{t['avg_points_coverage'] * 100:.0f}%" if t["avg_points_coverage"] is not None else "—"
         me = " **(me)**" if t["is_me"] else ""
         left_per_week = t["points_left_total"] / t["days"] if t["days"] else 0.0
         lines.append(
             f"| {i} | {t['team_name']}{me} | {eff} | {t['actual_total']:.1f} "
             f"| {t['optimal_total']:.1f} | {t['points_left_total']:.1f} "
-            f"| {left_per_week:.1f} | {cov} |"
+            f"| {left_per_week:.1f} | {cov} | {t['trusted_weeks']}/{t['trusted_weeks'] + t['excluded_weeks']} |"
         )
     lines += ["", "_Weekly-hindsight optimal: the best Monday lineup given "
               "perfect foresight of the week's scores, holding the team's own "
               "slot template fixed. Partial weeks are scored through the last "
-              "completed game day._"]
+              "completed game day. Weeks below 90% player-id or game-log "
+              "coverage are excluded from efficiency totals._"]
     summary = "\n".join(lines)
     print("\n" + summary)
 
@@ -266,9 +296,11 @@ def run():
     if mine:
         print(f"\nMy weeks ({mine['team_name']}):")
         for w in mine["weeks_detail"]:
+            trust = "trusted" if w["trusted"] else "excluded: low coverage"
             print(f"  {w['week']}: actual {w['actual']:.1f} / optimal {w['optimal']:.1f} "
-                  f"(left {w['points_left']:.1f})")
-            print(f"    best lineup: {w['best_lineup']}")
+                  f"(left {w['points_left']:.1f}; {trust})")
+            if w["trusted"]:
+                print(f"    best lineup: {w['best_lineup']}")
 
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if step_summary:

@@ -16,23 +16,27 @@ Important caveats baked into the rules below:
   * HINDSIGHT-optimal, not decision-time optimal. We know each player's actual
     score, so "points left" is an upper bound on what perfect foresight could
     have captured — it is NOT a claim the manager could have known this.
-  * SAME-DAY injury reality. A player sitting in an IL/IR slot (or flagged
-    OUT/SUSP/IR) could not have been legally activated that day, so they are
-    excluded from the optimal pool. A benched (BN) healthy player, however,
-    *could* have started, so they are eligible for the optimal lineup.
+  * SAME-DAY injury reality. A player sitting in an injury slot (or carrying a
+    blocking injury flag) could not have been legally activated that day, so
+    they are excluded from the optimal pool. A benched (BN/RES) healthy player
+    could have started. Dynasty MIN/MINORS assets stay protected and excluded.
 """
 
 # --- Canonical slot sets -----------------------------------------------------
 # Reserve slots hold healthy, roster-able players who simply were not started;
 # they ARE activatable in hindsight so they belong to the optimal pool.
-RESERVE_SLOTS = {"BN", "RES", "MIN"}
+RESERVE_SLOTS = {"BN", "RES"}
+# Dynasty-minors assets are not ordinary bench options. Promoting them can have
+# irreversible roster/contract consequences, so analytics must never claim
+# they were freely startable in the weekly hindsight lineup.
+PROTECTED_SLOTS = {"MIN", "MINORS"}
 # Injured slots (and OUT/SUSP/IR injury flags) mark players who could not have
 # been legally fielded that day; excluded from the optimal pool entirely.
-INJURED_SLOTS = {"IL", "IR"}
+INJURED_SLOTS = {"IL", "IR", "IL10", "IL60", "INJ", "INJ RES"}
 # Any eligibility token in this set marks a player as usable in a pitcher slot.
 PITCHER_TOKENS = {"P", "SP", "RP"}
 # Injury flags that disqualify a player from same-day activation.
-BLOCKED_INJURIES = {"OUT", "SUSP", "IR"}
+BLOCKED_INJURIES = {"OUT", "SUSP", "IR", "IL", "IL10", "IL60"}
 # Outfield sub-position tokens Fantrax rarely emits but which are OF-eligible.
 _OF_SUBTOKENS = {"LF", "CF", "RF"}
 
@@ -65,7 +69,7 @@ def eligibility_tokens(row):
     if not tokens:
         slot = (row.get("slot") or "").strip().upper()
         # Only fall back if the slot names a real fielding position.
-        if slot and slot not in RESERVE_SLOTS and slot not in INJURED_SLOTS \
+        if slot and slot not in RESERVE_SLOTS and slot not in PROTECTED_SLOTS and slot not in INJURED_SLOTS \
                 and slot not in ("UT", "DH"):
             tokens.add(slot)
     return tokens
@@ -73,7 +77,12 @@ def eligibility_tokens(row):
 
 def _is_active_slot(slot):
     slot = (slot or "").strip().upper()
-    return bool(slot) and slot not in RESERVE_SLOTS and slot not in INJURED_SLOTS
+    return (
+        bool(slot)
+        and slot not in RESERVE_SLOTS
+        and slot not in PROTECTED_SLOTS
+        and slot not in INJURED_SLOTS
+    )
 
 
 def slot_template(rows):
@@ -198,7 +207,7 @@ def _candidate_pool(rows):
     pool = []
     for r in rows:
         slot = (r.get("slot") or "").strip().upper()
-        if slot in INJURED_SLOTS:
+        if slot in INJURED_SLOTS or slot in PROTECTED_SLOTS:
             continue
         injury = (r.get("injury") or "").strip().upper()
         if injury in BLOCKED_INJURIES:

@@ -2,13 +2,6 @@ name: Skipper evals
 
 on:
   workflow_dispatch: {}
-  push:
-    branches:
-      - claude/debug-railway-crash-AvUM7
-    paths:
-      - ".github/workflows/evals.yml"
-      - "scripts/run_skipper_evals.py"
-      - "sandlot_skipper.py"
 
 permissions:
   contents: read
@@ -18,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

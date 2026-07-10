@@ -7,9 +7,9 @@ Smoke, 2026). They apply to the normalized per-game rows produced by
 Differences vs the generic Yahoo-style ``fpts_estimated`` baseline that ships
 with mlb_stats: IP pays 3.0 (not 2.25), quality starts pay 3, holds pay 3.5,
 losses cost 2, wins pay 2 (not 5), saves pay 4 (not 5), hitter K costs only
-0.5, and HBP/CS are scored. Pitcher-as-hitter categories exist in the league
-config but are ignored here — in the universal-DH era pitchers essentially
-never bat.
+0.5, and HBP/CS are scored. Fantrax repeats hitter categories under the
+pitching scoring group for two-way players; the lineup runner scores their
+hitting and pitching logs separately, then combines the two opportunity models.
 """
 
 from __future__ import annotations
