@@ -25,9 +25,9 @@ jobs:
       # by setting `SANDLOT_URL` in the repo's Actions secrets.
       SANDLOT_URL: ${{ secrets.SANDLOT_URL || 'https://web-production-90664.up.railway.app' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: npm
@@ -38,7 +38,7 @@ jobs:
 
       - name: Cache Playwright browsers
         id: pw-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: pw-${{ runner.os }}-${{ hashFiles('tests/playwright/package-lock.json') }}
@@ -67,7 +67,14 @@ jobs:
           echo "Railway never reported ok:true within 5 min" >&2
           exit 1
 
-      - name: Run Playwright
+      - name: Run production API contracts on pull requests
+        if: github.event_name == 'pull_request'
+        env:
+          CI: "true"
+        run: npx playwright test specs/attention-api.spec.ts
+
+      - name: Run deployed application Playwright
+        if: github.event_name != 'pull_request'
         env:
           CI: "true"
         run: npx playwright test
@@ -88,9 +95,9 @@ jobs:
       SANDLOT_URL: http://127.0.0.1:4173
       SANDLOT_EXPECT_SLOT_GATE: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: npm
@@ -110,7 +117,7 @@ jobs:
 
       - name: Cache Playwright browsers
         id: local-pw-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: pw-${{ runner.os }}-${{ hashFiles('tests/playwright/package-lock.json') }}
@@ -135,11 +142,19 @@ jobs:
           echo "Local Sandlot frontend never became reachable" >&2
           exit 1
 
-      - name: Run local Attention Queue browser tests
+      - name: Run deterministic branch browser tests
         working-directory: tests/playwright
         env:
           CI: "true"
-        run: npx playwright test specs/today-attention.spec.ts
+        run: >-
+          npx playwright test
+          specs/smoke.spec.ts
+          specs/today-attention.spec.ts
+          specs/player-sheet.spec.ts
+          specs/trade.spec.ts
+          specs/skipper-web-fallback.spec.ts
+          specs/today.spec.ts
+          --grep-invert "renders matchup card with shape-correct scores and margin|shows opponent label from snapshot"
 
       - name: Upload local HTML report on failure
         if: failure()
