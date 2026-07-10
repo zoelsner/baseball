@@ -463,7 +463,15 @@ def simulate_lineup_move_impact(
                         seen.add(key)
                         actions.append(action)
 
-    actions.sort(key=lambda action: (action["points_delta"], action["win_probability_delta"]), reverse=True)
+    actions = _collapse_dominated_lineup_outcomes(actions)
+    actions.sort(
+        key=lambda action: (
+            action["points_delta"],
+            action["win_probability_delta"],
+            -len(action.get("chain") or []),
+        ),
+        reverse=True,
+    )
     actions = actions[: max(0, limit)]
     if actions:
         return {
@@ -737,13 +745,31 @@ def _lineup_replacement_card(
     move_out_row = by_id.get(str(demoted.get("player_id") or ""))
     if not move_in_row or not move_out_row:
         return None
-    if _is_protected_lineup_row(move_in_row) or _is_protected_lineup_row(move_out_row):
+    core_ids = {_player_id(move_in_row), _player_id(move_out_row)}
+    additional_rows: list[dict[str, Any]] = []
+    additional_ids: set[str] = set()
+    for step in chain:
+        player_id = str(step.get("player_id") or "")
+        row = by_id.get(player_id)
+        if not row or player_id in core_ids or player_id in additional_ids:
+            continue
+        additional_ids.add(player_id)
+        additional_rows.append(row)
+    if any(
+        _is_protected_lineup_row(row)
+        for row in [move_in_row, move_out_row, *additional_rows]
+    ):
         return None
 
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
     period_start = _parse_date(matchup.get("start"))
     period_end = _parse_date(matchup.get("end"))
-    movability = _lineup_movability(move_in_row, move_out_row, now=_movability_now(snapshot))
+    movability = _lineup_movability(
+        move_in_row,
+        move_out_row,
+        additional_rows=additional_rows,
+        now=_movability_now(snapshot),
+    )
     move_in = _player_card_summary(move_in_row, promoted, period_end, period_start)
     move_out = _player_card_summary(move_out_row, demoted, period_end, period_start)
     points_delta = _number(action.get("points_delta")) or 0.0
@@ -875,6 +901,7 @@ def _lineup_movability(
     move_in_row: dict[str, Any],
     move_out_row: dict[str, Any],
     *,
+    additional_rows: list[dict[str, Any]] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
@@ -882,6 +909,8 @@ def _lineup_movability(
         "move_in": _player_movability(move_in_row, now=now),
         "move_out": _player_movability(move_out_row, now=now),
     }
+    for index, row in enumerate(additional_rows or [], start=1):
+        participants[f"bridge_{index}"] = _player_movability(row, now=now)
     locked = [item for item in participants.values() if item["state"] == "locked"]
     unknown = [item for item in participants.values() if item["state"] == "unknown"]
     if locked:
@@ -907,7 +936,7 @@ def _lineup_movability(
     return {
         "state": "movable",
         "label": "Movable",
-        "reason": "Fantrax raw data and MLB game-start timing do not mark either participant unavailable.",
+        "reason": "Fantrax raw data and MLB game-start timing do not mark any slot-move participant unavailable.",
         "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
         "participants": participants,
     }
@@ -1383,6 +1412,56 @@ def _chain_key(chain: list[dict[str, Any]]) -> tuple[tuple[str, str, str], ...]:
         )
         for step in chain
     )
+
+
+def _lineup_outcome_key(action: dict[str, Any]) -> tuple[str, str] | None:
+    chain = action.get("chain") if isinstance(action.get("chain"), list) else []
+    promoted = next(
+        (
+            step
+            for step in chain
+            if _is_bench_slot(step.get("from_slot")) and not _is_bench_slot(step.get("to_slot"))
+        ),
+        None,
+    )
+    demoted = next(
+        (
+            step
+            for step in chain
+            if not _is_bench_slot(step.get("from_slot")) and _is_bench_slot(step.get("to_slot"))
+        ),
+        None,
+    )
+    if not promoted or not demoted:
+        return None
+    promoted_id = str(promoted.get("player_id") or "")
+    demoted_id = str(demoted.get("player_id") or "")
+    return (promoted_id, demoted_id) if promoted_id and demoted_id else None
+
+
+def _collapse_dominated_lineup_outcomes(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the safest/simplest action for each active-in, active-out outcome."""
+    unkeyed: list[dict[str, Any]] = []
+    best_by_outcome: dict[tuple[str, str], dict[str, Any]] = {}
+    for action in actions:
+        key = _lineup_outcome_key(action)
+        if key is None:
+            unkeyed.append(action)
+            continue
+        current = best_by_outcome.get(key)
+        candidate_score = (
+            -len(action.get("chain") or []),
+            _number(action.get("points_delta")) or 0.0,
+            _number(action.get("win_probability_delta")) or 0.0,
+        )
+        current_score = (
+            -len(current.get("chain") or []),
+            _number(current.get("points_delta")) or 0.0,
+            _number(current.get("win_probability_delta")) or 0.0,
+        ) if current else None
+        if current_score is None or candidate_score > current_score:
+            best_by_outcome[key] = action
+    return [*best_by_outcome.values(), *unkeyed]
 
 
 def _recommendation_quality(

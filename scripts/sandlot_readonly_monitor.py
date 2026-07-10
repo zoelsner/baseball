@@ -159,6 +159,13 @@ def evaluate_payloads(
             "freshness": freshness_state,
             "lineup_slots_state": lineup_quality.get("state") if isinstance(lineup_quality, dict) else None,
         })
+        trade_index_check = _validate_trade_index(snapshot, roster, fail)
+        trade_index_check["ok"] = not any(item["code"].startswith("trade_index_") for item in failures)
+        checks.append(trade_index_check)
+
+        matchup_check = _validate_matchup_surface(snapshot, snapshot_id, fail)
+        matchup_check["ok"] = not any(item["code"].startswith("matchup_") for item in failures)
+        checks.append(matchup_check)
     elif "/api/snapshot/latest" not in (transport_errors or {}):
         fail("snapshot_missing", "Latest snapshot payload was missing")
 
@@ -206,17 +213,17 @@ def evaluate_payloads(
         if not isinstance(cards, list):
             fail("waivers_cards_invalid", "Waiver cards field was not a list")
             cards = []
+        protected_anchor_count = 0
+        nonpositive_count = 0
+        untrusted_count = 0
         for index, card in enumerate(cards):
             move_out = card.get("move_out") if isinstance(card, dict) and isinstance(card.get("move_out"), dict) else {}
             move_out_name = " ".join(str(move_out.get("name") or "").split()).casefold()
             if move_out_name in NEVER_DROP_PLAYER_NAMES:
-                fail(
-                    "waivers_protected_anchor",
-                    f"Waiver card {index + 1} attempted to move out an owner-protected anchor",
-                )
+                protected_anchor_count += 1
             delta = _number(card.get("net_delta")) if isinstance(card, dict) else None
             if delta is None or delta <= 0:
-                fail("waivers_nonpositive_delta", f"Waiver card {index + 1} did not have a positive net delta")
+                nonpositive_count += 1
                 continue
             add = card.get("add") if isinstance(card.get("add"), dict) else {}
             score_source = str(add.get("score_source") or "").casefold()
@@ -226,10 +233,22 @@ def evaluate_payloads(
                 or move_out.get("age") is None
                 or "inferred" in score_source
             ):
-                fail(
-                    "waivers_untrusted_card",
-                    f"Waiver card {index + 1} was actionable without trusted value and dynasty-age context",
-                )
+                untrusted_count += 1
+        if protected_anchor_count:
+            fail(
+                "waivers_protected_anchor",
+                f"{protected_anchor_count} waiver card(s) attempted to move out an owner-protected anchor",
+            )
+        if nonpositive_count:
+            fail(
+                "waivers_nonpositive_delta",
+                f"{nonpositive_count} waiver card(s) did not have a positive net delta",
+            )
+        if untrusted_count:
+            fail(
+                "waivers_untrusted_card",
+                f"{untrusted_count} waiver card(s) were actionable without trusted value and dynasty-age context",
+            )
         quality = waivers.get("data_quality")
         if isinstance(quality, dict) and quality.get("add_drop_recommendations_ready") is not True:
             warn("waiver_advice_paused", "Add/drop recommendations are currently paused by data quality")
@@ -310,6 +329,14 @@ def _validate_read_only_proposals(
     prefix: str,
     fail,
 ) -> None:
+    reported_codes: set[str] = set()
+
+    def fail_once(code: str, message: str) -> None:
+        if code in reported_codes:
+            return
+        reported_codes.add(code)
+        fail(code, message)
+
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
@@ -317,17 +344,218 @@ def _validate_read_only_proposals(
         if not isinstance(proposal, dict):
             continue
         if proposal.get("writes_enabled") is not False:
-            fail(f"{prefix}_write_boundary", f"{prefix} proposal {index + 1} did not keep writes disabled")
+            fail_once(f"{prefix}_write_boundary", f"{prefix} proposal {index + 1} did not keep writes disabled")
         if proposal.get("executable") is True or proposal.get("status") == "executable":
-            fail(f"{prefix}_executable_proposal", f"{prefix} proposal {index + 1} was marked executable")
+            fail_once(f"{prefix}_executable_proposal", f"{prefix} proposal {index + 1} was marked executable")
         contract = proposal.get("contract")
-        if isinstance(contract, dict):
-            contract_snapshot_id = contract.get("snapshot_id")
-            if snapshot_id is None or str(contract_snapshot_id) != snapshot_id:
-                fail(
-                    f"{prefix}_contract_snapshot_mismatch",
-                    f"{prefix} proposal {index + 1} contract was not bound to the latest snapshot",
-                )
+        if not isinstance(contract, dict):
+            fail_once(f"{prefix}_contract_missing", f"{prefix} proposal {index + 1} did not include a contract")
+            continue
+        contract_snapshot_id = contract.get("snapshot_id")
+        if snapshot_id is None or str(contract_snapshot_id) != snapshot_id:
+            fail_once(
+                f"{prefix}_contract_snapshot_mismatch",
+                f"{prefix} proposal {index + 1} contract was not bound to the latest snapshot",
+            )
+        if proposal.get("type") == "lineup_swap":
+            _validate_lineup_contract(contract, prefix, index, fail_once)
+
+
+def _validate_lineup_contract(contract: dict[str, Any], prefix: str, index: int, fail) -> None:
+    label = f"{prefix} proposal {index + 1}"
+    if contract.get("version") != 2:
+        fail(f"{prefix}_contract_version", f"{label} did not use lineup contract version 2")
+    input_hash = contract.get("input_hash")
+    if not isinstance(input_hash, str) or len(input_hash) != 64:
+        fail(f"{prefix}_contract_hash", f"{label} did not include a stable input hash")
+    freshness = contract.get("freshness_policy")
+    if not isinstance(freshness, dict) or freshness.get("requires_live_preflight") is not True:
+        fail(f"{prefix}_freshness_policy", f"{label} did not require a live freshness preflight")
+    post_write = contract.get("post_write_verification")
+    if not isinstance(post_write, dict) or post_write.get("required") is not True:
+        fail(f"{prefix}_post_write_verification", f"{label} did not require post-write verification")
+    confirmation = contract.get("confirmation")
+    expected = confirmation.get("expected") if isinstance(confirmation, dict) else None
+    if (
+        not isinstance(confirmation, dict)
+        or confirmation.get("mode") != "exact_contract_match"
+        or not isinstance(expected, dict)
+        or expected.get("proposal_id") != contract.get("proposal_id")
+        or expected.get("input_hash") != input_hash
+        or expected.get("snapshot_id") != contract.get("snapshot_id")
+        or expected.get("slot_moves") != contract.get("slot_moves")
+    ):
+        fail(f"{prefix}_exact_confirmation", f"{label} was not bound to an exact confirmation payload")
+
+
+def _validate_trade_index(snapshot: dict[str, Any], roster: Any, fail) -> dict[str, Any]:
+    index = snapshot.get("player_index")
+    if not isinstance(index, list):
+        fail("trade_index_missing", "Trade player index was missing")
+        index = []
+
+    trade_rows = [
+        row
+        for row in index
+        if isinstance(row, dict) and row.get("source") in {"mine", "league"}
+    ]
+    mine_rows = [row for row in trade_rows if row.get("source") == "mine"]
+    league_rows = [row for row in trade_rows if row.get("source") == "league"]
+    roster_count = len(roster) if isinstance(roster, list) else 0
+    if len(mine_rows) != roster_count:
+        fail(
+            "trade_index_my_roster_mismatch",
+            "Trade index did not preserve every canonical roster player",
+        )
+    if not league_rows:
+        fail("trade_index_league_missing", "Trade index did not include opponent roster players")
+
+    identifiers = [str(row.get("id") or "") for row in trade_rows]
+    if any(not identifier for identifier in identifiers) or len(identifiers) != len(set(identifiers)):
+        fail("trade_index_identity", "Trade index had missing or duplicate player identities")
+    missing_names = sum(1 for row in trade_rows if not str(row.get("name") or "").strip())
+    if missing_names:
+        fail("trade_index_names", "Trade index included players without names")
+
+    valid_ages = sum(1 for row in trade_rows if _valid_age(row.get("age")))
+    valid_values = sum(1 for row in trade_rows if _valid_fppg(row.get("fppg")))
+    if valid_ages != len(trade_rows):
+        fail(
+            "trade_index_age_coverage",
+            f"Trade index age coverage was {valid_ages}/{len(trade_rows)}",
+        )
+    if valid_values != len(trade_rows):
+        fail(
+            "trade_index_value_coverage",
+            f"Trade index FP/G coverage was {valid_values}/{len(trade_rows)}",
+        )
+    return {
+        "name": "trade_index",
+        "mine_count": len(mine_rows),
+        "league_count": len(league_rows),
+        "age_coverage": f"{valid_ages}/{len(trade_rows)}",
+        "value_coverage": f"{valid_values}/{len(trade_rows)}",
+    }
+
+
+def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None, fail) -> dict[str, Any]:
+    matchup = snapshot.get("matchup")
+    if matchup is None:
+        return {"name": "matchup", "state": "none", "recommendation_count": 0}
+    if not isinstance(matchup, dict):
+        fail("matchup_invalid", "Matchup payload was not an object")
+        return {"name": "matchup", "state": "invalid", "recommendation_count": 0}
+
+    quality = snapshot.get("data_quality") if isinstance(snapshot.get("data_quality"), dict) else {}
+    projection = matchup.get("projection")
+    if not isinstance(projection, dict):
+        if quality.get("projection_ready") is not False:
+            fail("matchup_projection_missing", "Matchup projection was missing despite no explicit pause state")
+    else:
+        if projection.get("scoring_basis") != "current_snapshot_fppg_x_remaining_games":
+            fail("matchup_scoring_basis", "Matchup projection did not identify its FP/G scoring basis")
+        if projection.get("probability_calibrated") is not False:
+            fail("matchup_probability_claim", "Matchup win probability was not explicitly marked uncalibrated")
+        if not isinstance(projection.get("complete"), bool):
+            fail("matchup_completion_state", "Matchup projection completion state was not explicit")
+        for field in ("projected_my", "projected_opp"):
+            if _number(projection.get(field)) is None:
+                fail("matchup_projection_value", f"Matchup projection {field} was not finite")
+        probability = _number(projection.get("win_probability"))
+        if probability is None or not 0 <= probability <= 1:
+            fail("matchup_probability_range", "Matchup win probability was outside 0..1")
+        for field in ("my_remaining_games", "opp_remaining_games"):
+            value = _number(projection.get(field))
+            if value is None or value < 0:
+                fail("matchup_game_volume", f"Matchup projection {field} was invalid")
+
+    block = matchup.get("recommendations")
+    recommendations = block.get("recommendations") if isinstance(block, dict) else None
+    if not isinstance(recommendations, list):
+        fail("matchup_recommendations_invalid", "Matchup recommendations were not a list")
+        recommendations = []
+    if isinstance(block, dict) and isinstance(projection, dict):
+        if block.get("model_version") != projection.get("model_version"):
+            fail("matchup_model_mismatch", "Projection and recommendation model versions did not match")
+
+    proposal_entries: list[dict[str, Any]] = []
+    seen_outcomes: set[tuple[str, str]] = set()
+    unchecked_movability_count = 0
+    base_projection = block.get("base_projection") if isinstance(block, dict) else None
+    base_projected_my = _number(base_projection.get("projected_my")) if isinstance(base_projection, dict) else None
+    previous_points: float | None = None
+    for index, recommendation in enumerate(recommendations):
+        if not isinstance(recommendation, dict):
+            fail("matchup_recommendation_invalid", f"Matchup recommendation {index + 1} was not an object")
+            continue
+        if recommendation.get("rank") != index + 1:
+            fail("matchup_rank_order", "Matchup recommendation ranks were not contiguous")
+        points = _number(recommendation.get("points_delta"))
+        win_delta = _number(recommendation.get("win_probability_delta"))
+        if points is None or points <= 0 or win_delta is None or win_delta < 0:
+            fail("matchup_nonpositive_recommendation", f"Matchup recommendation {index + 1} had no positive edge")
+        if previous_points is not None and points is not None and points > previous_points + 0.05:
+            fail("matchup_rank_order", "Matchup recommendations were not ordered by projected point edge")
+        if points is not None:
+            previous_points = points
+
+        card = recommendation.get("replacement_card")
+        if not isinstance(card, dict):
+            fail("matchup_card_missing", f"Matchup recommendation {index + 1} had no replacement card")
+            continue
+        proposal_entries.append({"proposal": card.get("proposal")})
+        move_in = card.get("move_in") if isinstance(card.get("move_in"), dict) else {}
+        move_out = card.get("move_out") if isinstance(card.get("move_out"), dict) else {}
+        outcome = (str(move_in.get("id") or ""), str(move_out.get("id") or ""))
+        if not all(outcome):
+            fail("matchup_outcome_identity", f"Matchup recommendation {index + 1} lacked player identities")
+        elif outcome in seen_outcomes:
+            fail("matchup_dominated_duplicate", "Matchup recommendations repeated the same active-in/active-out outcome")
+        else:
+            seen_outcomes.add(outcome)
+
+        benefit = card.get("projected_benefit") if isinstance(card.get("projected_benefit"), dict) else {}
+        new_projected_my = _number(benefit.get("new_projected_my"))
+        if base_projected_my is not None and new_projected_my is not None and points is not None:
+            if abs((new_projected_my - base_projected_my) - points) > 0.11:
+                fail("matchup_benefit_math", f"Matchup recommendation {index + 1} point benefit did not reconcile")
+
+        proposal = card.get("proposal") if isinstance(card.get("proposal"), dict) else {}
+        contract = proposal.get("contract") if isinstance(proposal.get("contract"), dict) else {}
+        slot_moves = contract.get("slot_moves") if isinstance(contract.get("slot_moves"), list) else []
+        slot_move_ids = {str(move.get("player_id") or "") for move in slot_moves if isinstance(move, dict)} - {""}
+        movability = card.get("movability") if isinstance(card.get("movability"), dict) else {}
+        participants = movability.get("participants") if isinstance(movability.get("participants"), dict) else {}
+        participant_ids = {
+            str(participant.get("id") or "")
+            for participant in participants.values()
+            if isinstance(participant, dict)
+        } - {""}
+        if slot_move_ids and participant_ids != slot_move_ids:
+            unchecked_movability_count += 1
+
+    _validate_read_only_proposals(proposal_entries, snapshot_id, "matchup", fail)
+    if unchecked_movability_count:
+        fail(
+            "matchup_movability_coverage",
+            f"{unchecked_movability_count} matchup recommendation(s) did not evaluate every slot-move participant",
+        )
+    return {
+        "name": "matchup",
+        "state": "ready" if isinstance(projection, dict) else "paused",
+        "recommendation_count": len(recommendations),
+        "model_version": projection.get("model_version") if isinstance(projection, dict) else None,
+    }
+
+
+def _valid_age(value: Any) -> bool:
+    parsed = _number(value)
+    return parsed is not None and parsed.is_integer() and 16 <= parsed <= 50
+
+
+def _valid_fppg(value: Any) -> bool:
+    parsed = _number(value)
+    return parsed is not None and abs(parsed) <= 100
 
 
 def _freshness_state(payload: dict[str, Any]) -> str | None:

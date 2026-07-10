@@ -127,6 +127,67 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertIn("latest Fantrax snapshot", card["provenance"]["source"])
         self.assertIsNone(result["no_action"])
 
+    def test_suppresses_longer_chain_when_direct_swap_has_same_outcome(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player("cortes", slot="OF", positions=["OF", "UT"], fppg=2.0),
+            player("bridge", slot="UT", positions=["SS", "OF", "UT"], fppg=5.0),
+            player("lile", slot="BN", positions=["OF", "UT"], fppg=4.0),
+        ]))
+
+        matching = [
+            recommendation
+            for recommendation in result["recommendations"]
+            if recommendation["replacement_card"]["move_in"]["id"] == "lile"
+            and recommendation["replacement_card"]["move_out"]["id"] == "cortes"
+        ]
+
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["action"]["move_shape"], "direct_swap")
+        self.assertEqual(len(matching[0]["action"]["chain"]), 2)
+
+    def test_multi_step_chain_checks_bridge_player_movability(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player(
+                "locked-corner",
+                slot="3B",
+                positions=["1B", "3B"],
+                fppg=4.0,
+                raw=raw_lineup_change(True),
+            ),
+            player(
+                "weak1b",
+                slot="1B",
+                positions="1B",
+                fppg=1.0,
+                raw=raw_lineup_change(False),
+            ),
+            player(
+                "bench3b",
+                slot="BN",
+                positions="3B",
+                fppg=5.0,
+                raw=raw_lineup_change(False),
+            ),
+        ]))
+
+        chain_card = next(
+            recommendation["replacement_card"]
+            for recommendation in result["recommendations"]
+            if recommendation["action"]["move_shape"] == "freeing_up_swap"
+        )
+
+        self.assertEqual(chain_card["movability"]["state"], "locked")
+        self.assertEqual(
+            chain_card["movability"]["participants"]["bridge_1"]["id"],
+            "locked-corner",
+        )
+        self.assertEqual(
+            chain_card["movability"]["participants"]["bridge_1"]["state"],
+            "locked",
+        )
+        self.assertIn("locked-corner", chain_card["movability"]["reason"])
+        self.assertEqual(chain_card["proposal"]["safety_checks"][3]["state"], "blocked")
+
     def test_locked_movability_surfaces_but_keeps_recommendation_non_executable(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
             player("weak2b", slot="2B", positions="2B", fppg=1.0, raw=raw_lineup_change(True)),

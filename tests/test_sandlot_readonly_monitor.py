@@ -1,3 +1,4 @@
+import copy
 import unittest
 from datetime import datetime, timezone
 
@@ -5,6 +6,31 @@ from scripts import sandlot_readonly_monitor as monitor
 
 
 NOW = datetime(2026, 7, 10, 16, 0, tzinfo=timezone.utc)
+
+
+def healthy_lineup_contract(snapshot_id):
+    slot_moves = [
+        {"order": 1, "player_id": "mine-in", "from_slot": "RES", "to_slot": "OF"},
+        {"order": 2, "player_id": "mine-out", "from_slot": "OF", "to_slot": "RES"},
+    ]
+    return {
+        "version": 2,
+        "proposal_id": "lineup:test",
+        "snapshot_id": snapshot_id,
+        "slot_moves": slot_moves,
+        "input_hash": "a" * 64,
+        "freshness_policy": {"requires_live_preflight": True},
+        "post_write_verification": {"required": True},
+        "confirmation": {
+            "mode": "exact_contract_match",
+            "expected": {
+                "proposal_id": "lineup:test",
+                "snapshot_id": snapshot_id,
+                "slot_moves": slot_moves,
+                "input_hash": "a" * 64,
+            },
+        },
+    }
 
 
 def healthy_payloads():
@@ -25,7 +51,55 @@ def healthy_payloads():
             "snapshot_id": snapshot_id,
             "taken_at": "2026-07-10T15:30:00Z",
             "freshness": {"state": "fresh", "age_minutes": 30},
-            "roster": [{"id": "mine-1", "name": "Roster Player"}],
+            "roster": [
+                {"id": "mine-out", "name": "Roster Player", "age": 29, "fppg": 2.0},
+                {"id": "mine-in", "name": "Bench Player", "age": 27, "fppg": 4.0},
+            ],
+            "player_index": [
+                {"id": "mine-out", "name": "Roster Player", "source": "mine", "age": 29, "fppg": 2.0},
+                {"id": "mine-in", "name": "Bench Player", "source": "mine", "age": 27, "fppg": 4.0},
+                {"id": "league-1", "name": "League Player", "source": "league", "age": 31, "fppg": 3.0},
+            ],
+            "matchup": {
+                "projection": {
+                    "model_version": "matchup_projection_v4",
+                    "scoring_basis": "current_snapshot_fppg_x_remaining_games",
+                    "probability_calibrated": False,
+                    "projected_my": 100.0,
+                    "projected_opp": 99.0,
+                    "my_remaining_games": 10,
+                    "opp_remaining_games": 10,
+                    "win_probability": 0.55,
+                    "complete": False,
+                },
+                "recommendations": {
+                    "model_version": "matchup_projection_v4",
+                    "base_projection": {"projected_my": 100.0},
+                    "recommendations": [{
+                        "rank": 1,
+                        "points_delta": 2.0,
+                        "win_probability_delta": 0.02,
+                        "replacement_card": {
+                            "move_in": {"id": "mine-in"},
+                            "move_out": {"id": "mine-out"},
+                            "projected_benefit": {"new_projected_my": 102.0},
+                            "movability": {
+                                "participants": {
+                                    "move_in": {"id": "mine-in"},
+                                    "move_out": {"id": "mine-out"},
+                                },
+                            },
+                            "proposal": {
+                                "type": "lineup_swap",
+                                "status": "blocked",
+                                "writes_enabled": False,
+                                "executable": False,
+                                "contract": healthy_lineup_contract(snapshot_id),
+                            },
+                        },
+                    }],
+                },
+            },
             "errors": [],
             "data_quality": quality,
         },
@@ -116,10 +190,12 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         report = monitor.evaluate_payloads(payloads, checked_at=NOW)
 
         self.assertFalse(report["ok"])
-        self.assertEqual(
-            [item["code"] for item in report["failures"]].count("waivers_nonpositive_delta"),
-            2,
-        )
+        matching = [
+            item for item in report["failures"]
+            if item["code"] == "waivers_nonpositive_delta"
+        ]
+        self.assertEqual(len(matching), 1)
+        self.assertIn("2 waiver card(s)", matching[0]["message"])
 
     def test_low_confidence_or_age_blind_waiver_card_fails(self):
         payloads = healthy_payloads()
@@ -150,6 +226,45 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         self.assertIn("waivers_protected_anchor", codes)
         self.assertIn("waivers_nonpositive_delta", codes)
 
+    def test_trade_index_requires_complete_age_and_value_provenance(self):
+        payloads = healthy_payloads()
+        payloads["/api/snapshot/latest"]["player_index"][1]["age"] = None
+        payloads["/api/snapshot/latest"]["player_index"][2]["fppg"] = float("inf")
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("trade_index_age_coverage", codes)
+        self.assertIn("trade_index_value_coverage", codes)
+
+    def test_matchup_contract_rejects_legacy_claims_duplicates_and_unchecked_bridge(self):
+        payloads = healthy_payloads()
+        matchup = payloads["/api/snapshot/latest"]["matchup"]
+        projection = matchup["projection"]
+        projection.pop("scoring_basis")
+        projection["probability_calibrated"] = True
+
+        first = matchup["recommendations"]["recommendations"][0]
+        first["replacement_card"]["proposal"]["contract"]["version"] = 1
+        first["replacement_card"]["proposal"]["contract"]["slot_moves"].insert(
+            1,
+            {"order": 2, "player_id": "bridge", "from_slot": "UT", "to_slot": "OF"},
+        )
+        duplicate = copy.deepcopy(first)
+        duplicate["rank"] = 2
+        matchup["recommendations"]["recommendations"].append(duplicate)
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("matchup_scoring_basis", codes)
+        self.assertIn("matchup_probability_claim", codes)
+        self.assertIn("matchup_contract_version", codes)
+        self.assertIn("matchup_dominated_duplicate", codes)
+        self.assertIn("matchup_movability_coverage", codes)
+
     def test_transport_failure_is_sanitized_and_fails(self):
         payloads = healthy_payloads()
         payloads.pop("/api/attention")
@@ -174,6 +289,24 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         self.assertTrue(report["ok"])
         codes = {item["code"] for item in report["warnings"]}
         self.assertEqual(codes, {"lineup_advice_paused", "waiver_advice_paused"})
+
+    def test_explicitly_paused_projection_does_not_fail_monitor(self):
+        payloads = healthy_payloads()
+        snapshot = payloads["/api/snapshot/latest"]
+        snapshot["data_quality"]["projection_ready"] = False
+        snapshot["matchup"]["projection"] = None
+        snapshot["matchup"]["recommendations"] = {
+            "model_version": "matchup_projection_v4",
+            "base_projection": None,
+            "recommendations": [],
+            "no_action": {"reason": "Projection data incomplete"},
+        }
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertTrue(report["ok"])
+        matchup_check = next(check for check in report["checks"] if check["name"] == "matchup")
+        self.assertEqual(matchup_check["state"], "paused")
 
 
 if __name__ == "__main__":
