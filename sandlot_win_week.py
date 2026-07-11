@@ -11,6 +11,7 @@ import copy
 import math
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import quote
 
 import sandlot_data_quality
 import sandlot_future_games
@@ -169,6 +170,7 @@ def build_plan(
         "taken_at": snapshot.get("snapshot_taken_at"),
         "read_only": True,
         "writes_enabled": False,
+        "handoffs": _fantrax_handoffs(snapshot),
         "matchup": _matchup_context(matchup, base_projection),
         "summary": _summary(matchup, base_projection, primary, no_action_reason),
         "primary_action_id": primary.get("id") if primary else None,
@@ -184,6 +186,26 @@ def build_plan(
                 isinstance(base_projection, dict)
                 and base_projection.get("probability_calibrated") is True
             ),
+        },
+    }
+
+
+def _fantrax_handoffs(snapshot: dict[str, Any]) -> dict[str, Any]:
+    league_id = str(snapshot.get("league_id") or "").strip()
+    team_id = str(snapshot.get("team_id") or "").strip()
+    if not league_id or not team_id:
+        return {}
+    url = (
+        "https://www.fantrax.com/fantasy/league/"
+        f"{quote(league_id, safe='')}/team/roster;teamId={quote(team_id, safe='')}"
+    )
+    return {
+        "lineup": {
+            "label": "Open Fantrax lineup",
+            "url": url,
+            "method": "GET",
+            "read_only": True,
+            "writes_enabled": False,
         },
     }
 

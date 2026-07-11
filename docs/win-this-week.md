@@ -151,6 +151,20 @@ the production read-only monitor require writes to remain disabled. Any future
 executor handoff is a separate confirmation contract and is not implied by an
 action being ranked first.
 
+### Read-only Fantrax handoff
+
+When the snapshot contains trusted league and team IDs, the plan exposes
+`handoffs.lineup` for the existing Fantrax roster route:
+
+`https://www.fantrax.com/fantasy/league/{league_id}/team/roster;teamId={team_id}`
+
+The handoff is explicitly `GET`, `read_only: true`, and
+`writes_enabled: false`. Today opens it in a separate tab for lineup and
+lineup-plan actions. It does not submit a form, call Sandlot's actions API, or
+confirm a mutation. Waiver actions continue to open Sandlot's internal waiver
+review because a stable Fantrax add/drop route has not been independently
+proven.
+
 ## Verification
 
 - deterministic unit tests cover cross-surface ranking, lower-rate streaming,

@@ -114,6 +114,15 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
       snapshot_id: 'snapshot-attention-test',
       read_only: true,
       writes_enabled: false,
+      handoffs: {
+        lineup: {
+          label: 'Open Fantrax lineup',
+          url: 'https://www.fantrax.com/fantasy/league/league-test/team/roster;teamId=team-test',
+          method: 'GET',
+          read_only: true,
+          writes_enabled: false,
+        },
+      },
       primary_action_id: 'waiver:test:add:drop',
       summary: {
         headline: 'Up 6.1; the best current path adds about 5.8 projected points to protect the lead.',
@@ -347,6 +356,27 @@ test.describe('Today — Attention Queue', () => {
     await expect(panel.getByText('Start Small Upgrade over Current Starter', { exact: true })).toBeVisible();
     await expect(panel.getByText('+0.4 pts', { exact: true })).toBeVisible();
     await expect(panel.getByText(/below Sandlot's 1.0-point meaningful-gain threshold/)).toBeVisible();
+  });
+
+  test('opens lineup plans on the verified read-only Fantrax roster route', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Fantrax lineup handoff is verified against the rebuilt local bundle.');
+    const snapshot = baseSnapshot();
+    snapshot.win_this_week.actions[0].kind = 'lineup';
+    snapshot.win_this_week.actions[0].state = 'act_now';
+    snapshot.win_this_week.actions[0].title = 'Start Bench Bat over Current Starter';
+    await mockSnapshot(page, snapshot);
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    const handoff = panel.getByRole('link', { name: 'Open Fantrax lineup' });
+    await expect(handoff).toHaveAttribute(
+      'href',
+      'https://www.fantrax.com/fantasy/league/league-test/team/roster;teamId=team-test',
+    );
+    await expect(handoff).toHaveAttribute('target', '_blank');
+    await expect(panel.getByRole('button', { name: 'Open waiver board' })).toHaveCount(0);
   });
 
   test('blocks an expired primary action until the plan is refreshed', async ({ page }) => {

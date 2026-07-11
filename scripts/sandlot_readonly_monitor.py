@@ -740,6 +740,24 @@ def _validate_win_this_week(
                 fail(f"{prefix}_outlook_missing", "Win This Week did not explain the post-action matchup outlook")
         elif after is not None:
             fail(f"{prefix}_outlook_math", "Win This Week exposed a post-action margin without comparable inputs")
+    if any(
+        isinstance(action, dict) and action.get("kind") in {"lineup", "lineup_plan"}
+        for action in actions
+    ):
+        handoffs = plan.get("handoffs") if isinstance(plan.get("handoffs"), dict) else {}
+        lineup_handoff = handoffs.get("lineup") if isinstance(handoffs.get("lineup"), dict) else {}
+        url = str(lineup_handoff.get("url") or "")
+        if (
+            lineup_handoff.get("method") != "GET"
+            or lineup_handoff.get("read_only") is not True
+            or lineup_handoff.get("writes_enabled") is not False
+            or not url.startswith("https://www.fantrax.com/fantasy/league/")
+            or "/team/roster;teamId=" not in url
+        ):
+            fail(
+                f"{prefix}_lineup_handoff",
+                "Win This Week lineup action lacked a verified read-only Fantrax roster handoff",
+            )
     if plan.get("state") == "no_action":
         no_action = plan.get("no_action") if isinstance(plan.get("no_action"), dict) else {}
         if not str(no_action.get("reason") or "").strip():
@@ -788,6 +806,8 @@ def _validate_win_this_week(
 def _win_plan_signature(plan: dict[str, Any]) -> tuple[Any, ...]:
     actions = plan.get("actions") if isinstance(plan.get("actions"), list) else []
     summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
+    handoffs = plan.get("handoffs") if isinstance(plan.get("handoffs"), dict) else {}
+    lineup_handoff = handoffs.get("lineup") if isinstance(handoffs.get("lineup"), dict) else {}
     no_action = plan.get("no_action") if isinstance(plan.get("no_action"), dict) else {}
     alternatives = no_action.get("alternatives") if isinstance(no_action.get("alternatives"), list) else []
     return (
@@ -798,6 +818,10 @@ def _win_plan_signature(plan: dict[str, Any]) -> tuple[Any, ...]:
         summary.get("outlook"),
         summary.get("projected_margin_before_action"),
         summary.get("projected_margin_after_action"),
+        lineup_handoff.get("url"),
+        lineup_handoff.get("method"),
+        lineup_handoff.get("read_only"),
+        lineup_handoff.get("writes_enabled"),
         tuple(
             (
                 action.get("id"),

@@ -103,6 +103,13 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertEqual(plan["state"], "ready")
         self.assertTrue(plan["read_only"])
         self.assertFalse(plan["writes_enabled"])
+        self.assertEqual(plan["handoffs"]["lineup"], {
+            "label": "Open Fantrax lineup",
+            "url": "https://www.fantrax.com/fantasy/league/league/team/roster;teamId=me",
+            "method": "GET",
+            "read_only": True,
+            "writes_enabled": False,
+        })
         self.assertEqual(plan["summary"]["headline"], "Down 10.0; the best current path adds about 9.0 projected points.")
         self.assertEqual(plan["summary"]["projected_margin_before_action"], -11.0)
         self.assertEqual(plan["summary"]["projected_margin_after_action"], -2.0)

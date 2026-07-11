@@ -51,6 +51,15 @@ def healthy_payloads():
         "snapshot_id": snapshot_id,
         "read_only": True,
         "writes_enabled": False,
+        "handoffs": {
+            "lineup": {
+                "label": "Open Fantrax lineup",
+                "url": "https://www.fantrax.com/fantasy/league/league/team/roster;teamId=me",
+                "method": "GET",
+                "read_only": True,
+                "writes_enabled": False,
+            },
+        },
         "primary_action_id": "lineup:test",
         "actions": [{
             "id": "lineup:test",
@@ -295,6 +304,21 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         codes = {item["code"] for item in report["failures"]}
         self.assertIn("win_this_week_outlook_math", codes)
         self.assertIn("win_this_week_embedded_outlook_math", codes)
+
+    def test_win_this_week_lineup_handoff_must_remain_read_only_fantrax_get(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["handoffs"]["lineup"].update({"method": "POST", "writes_enabled": True})
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_lineup_handoff", codes)
+        self.assertIn("win_this_week_embedded_lineup_handoff", codes)
 
     def test_win_this_week_no_action_requires_reasoned_alternatives(self):
         payloads = healthy_payloads()

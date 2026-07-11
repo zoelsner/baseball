@@ -1127,6 +1127,9 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
   const actions = Array.isArray(plan.actions) ? plan.actions : [];
   const primary = actions[0] || null;
   const alternatives = Array.isArray(plan.no_action?.alternatives) ? plan.no_action.alternatives : [];
+  const lineupHandoff = plan.handoffs?.lineup?.read_only === true && plan.handoffs?.lineup?.method === 'GET'
+    ? plan.handoffs.lineup
+    : null;
   const deadlineExpired = v2WinWeekDeadlineExpired(primary?.deadline);
   const monitor = (plan.monitoring_actions || [])[0] || null;
   const points = v2Number(primary?.expected_points?.estimate);
@@ -1243,7 +1246,12 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
             </div>
           ) : null}
 
-          <div style={{ marginTop:14, display:'grid', gridTemplateColumns:deadlineExpired || primary.kind !== 'waiver' ? '1fr' : '1fr 1fr', gap:9 }}>
+          <div style={{
+            marginTop:14,
+            display:'grid',
+            gridTemplateColumns:deadlineExpired || (!lineupHandoff && primary.kind !== 'waiver') ? '1fr' : '1fr 1fr',
+            gap:9,
+          }}>
             {deadlineExpired ? (
               <button onClick={onRefresh} style={{ minHeight:44, background:V2.warn, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
                 Refresh plan
@@ -1257,6 +1265,11 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
               <button onClick={()=>onNav('fa')} style={{ minHeight:44, background:V2.surface, color:V2.body, border:`1px solid ${V2.hairline}`, borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
                 Open waiver board
               </button>
+            ) : null}
+            {!deadlineExpired && primary.kind !== 'waiver' && lineupHandoff ? (
+              <a href={lineupHandoff.url} target="_blank" rel="noopener noreferrer" style={{ minHeight:44, background:V2.surface, color:V2.body, border:`1px solid ${V2.hairline}`, borderRadius:999, padding:'11px 14px', display:'flex', alignItems:'center', justifyContent:'center', textDecoration:'none', fontSize:12.5, fontWeight:850 }}>
+                {lineupHandoff.label || 'Open Fantrax lineup'}
+              </a>
             ) : null}
           </div>
         </div>
