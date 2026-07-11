@@ -152,16 +152,15 @@ The current production plan optimizes legal static lineup states. A future
 day-by-day optimizer must first prove the league's Fantrax lineup-change cadence
 and lock semantics; it never assumes daily changes from MLB schedules alone.
 
-League-rule refreshes now retain a bounded, schema-sanitized diagnostic of
+Roster refreshes now retain a bounded, schema-sanitized diagnostic of
 possible policy fields. Raw values, arbitrary descendant fields, URLs, emails,
 notes, and tokens are not exposed through the snapshot API. The public payload
 reports only an unclassified evidence count plus semantic hints such as
-`weekly` or `player_game`. The collector checks supported read-only Fantrax
-league-rule methods sequentially instead of accepting the first shallow
-success, under one 15-second total deadline and a three-second per-method cap.
-It publishes only the fixed method names that were attempted and returned
-usable responses, and keeps one selected raw response in the private snapshot
-rather than duplicating every endpoint payload.
+`weekly` or `player_game`. Policy evidence is derived from the canonical
+`getTeamRosterInfo` response already required for every refresh; Sandlot does
+not issue speculative league-rule requests. A private temporary field carries
+the sanitized evidence during collection, then is removed from roster metadata
+and promoted into the canonical league-rules quality slot.
 
 Until an exact live Fantrax path is fixture-backed and the solver ships,
 `data_quality.schedule_optimizer_ready` remains `false` and

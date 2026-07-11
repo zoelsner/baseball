@@ -81,100 +81,60 @@ class FantraxLineupPolicyObservationTests(unittest.TestCase):
         self.assertEqual(policy["candidates"], [])
 
 
-class FantraxLeagueRulesAcquisitionTests(unittest.TestCase):
-    @staticmethod
-    def _response(payload):
-        response = Mock(status_code=200)
-        response.json.return_value = {"responses": [payload]}
-        return response
+class FantraxRosterPolicyAcquisitionTests(unittest.TestCase):
+    def test_captures_roster_policy_fields_without_unrelated_values(self):
+        raw = {
+            "displayedSelections": {"lineupChangeSystem": "CLASSIC"},
+            "params": {"daily": False, "origDaily": False},
+            "miscData": {
+                "autoSubmitLineupChanges": True,
+                "applyToFuturePeriods": True,
+                "ownerEmail": "owner@example.com",
+            },
+        }
 
-    def test_later_policy_response_is_not_masked_by_first_success(self):
-        session = Mock()
-        session.post.side_effect = [
-            self._response({"leagueName": "Private"}),
-            self._response({"settings": {"lineupChangePeriod": "WEEKLY"}}),
-            *[self._response({"error": "unsupported"}) for _ in range(4)],
-        ]
-
-        rules = fantrax_data.extract_league_rules(session, "league-1")
-
-        self.assertEqual(session.post.call_count, 6)
-        self.assertTrue(all(call.kwargs["timeout"] <= 3 for call in session.post.call_args_list))
-        self.assertEqual(rules["method"], "getLeagueRules")
-        self.assertEqual(rules["policy_method"], "getLeagueInfo")
-        self.assertEqual(rules["lineup_change_policy"]["state"], "observed_unclassified")
-        self.assertEqual(rules["lineup_change_policy"]["candidates"][0]["hint"], "weekly")
-        self.assertEqual(
-            rules["lineup_change_policy"]["successful_methods"],
-            ["getLeagueRules", "getLeagueInfo"],
+        policy = fantrax_data._lineup_change_policy_observation(
+            raw,
+            method="getTeamRosterInfo",
         )
-        self.assertNotIn("Private", str(rules["lineup_change_policy"]))
 
-    def test_scoring_and_policy_can_come_from_different_methods(self):
-        session = Mock()
-        session.post.side_effect = [
-            self._response({"categories": [{"name": "HR", "points": 4}]}),
-            self._response({"settings": {"lineupLockScope": "INDIVIDUAL_GAME"}}),
-            *[self._response({"errorMsg": "unsupported"}) for _ in range(4)],
-        ]
+        self.assertEqual(policy["state"], "observed_unclassified")
+        self.assertEqual(policy["candidates"], [
+            {"path": "displayedSelections.lineupChangeSystem", "value_type": "str", "hint": "classic"},
+            {"path": "params.daily", "value_type": "bool", "hint": "not_daily"},
+            {"path": "params.origDaily", "value_type": "bool", "hint": "not_daily"},
+            {"path": "miscData.autoSubmitLineupChanges", "value_type": "bool", "hint": None},
+            {"path": "miscData.applyToFuturePeriods", "value_type": "bool", "hint": None},
+        ])
+        self.assertNotIn("owner@example.com", str(policy))
 
-        rules = fantrax_data.extract_league_rules(session, "league-1")
+    def test_roster_capture_is_opt_in_and_promoted_without_private_duplicate(self):
+        api = Mock()
+        raw = {
+            "displayedSelections": {"lineupChangeSystem": "CLASSIC"},
+            "miscData": {"statusTotals": []},
+            "tables": [],
+        }
+        roster = fantrax_data._RawRoster(api, "team-1", raw)
 
-        self.assertEqual(rules["method"], "getLeagueRules")
-        self.assertEqual(rules["policy_method"], "getLeagueInfo")
-        self.assertEqual(rules["scoring_method"], "getLeagueRules")
-        self.assertEqual(rules["scoring_categories"], [{"name": "HR", "points": 4}])
+        with patch.object(fantrax_data, "_team_roster", return_value=roster):
+            normal = fantrax_data.extract_roster(api, "team-1")
+            captured = fantrax_data.extract_roster(
+                api,
+                "team-1",
+                capture_lineup_policy=True,
+            )
 
-    def test_all_successful_methods_remain_fail_closed_without_policy_fields(self):
-        session = Mock()
-        session.post.side_effect = [self._response({"ok": True}) for _ in range(6)]
+        self.assertNotIn("_lineup_change_policy", normal)
+        snapshot = {"roster": captured, "league_rules": None}
+        fantrax_data._promote_roster_lineup_policy(snapshot)
 
-        rules = fantrax_data.extract_league_rules(session, "league-1")
-
-        policy = rules["lineup_change_policy"]
-        self.assertEqual(rules["method"], "getLeagueRules")
-        self.assertEqual(policy["state"], "missing")
-        self.assertEqual(policy["candidates"], [])
-        self.assertEqual(len(policy["methods_checked"]), 6)
-        self.assertEqual(len(policy["successful_methods"]), 6)
-
-    def test_richest_policy_response_wins_without_persisting_its_raw_payload(self):
-        session = Mock()
-        session.post.side_effect = [
-            self._response({"settings": {"lineupChangePeriod": "WEEKLY"}, "private": "first raw"}),
-            self._response({
-                "settings": {
-                    "lineupChangePeriod": "WEEKLY",
-                    "lineupLockScope": "INDIVIDUAL_GAME",
-                },
-                "private": "later raw",
-            }),
-            *[self._response({"error": "unsupported"}) for _ in range(4)],
-        ]
-
-        rules = fantrax_data.extract_league_rules(session, "league-1")
-
-        self.assertEqual(rules["method"], "getLeagueRules")
-        self.assertEqual(rules["policy_method"], "getLeagueInfo")
+        self.assertNotIn("_lineup_change_policy", snapshot["roster"])
+        self.assertEqual(snapshot["league_rules"]["method"], "getTeamRosterInfo")
         self.assertEqual(
-            rules["lineup_change_policy"]["candidates"],
-            [
-                {"path": "settings.lineupChangePeriod", "value_type": "str", "hint": "weekly"},
-                {"path": "settings.lineupLockScope", "value_type": "str", "hint": "player_game"},
-            ],
+            snapshot["league_rules"]["lineup_change_policy"]["successful_methods"],
+            ["getTeamRosterInfo"],
         )
-        self.assertEqual(rules["raw"]["private"], "first raw")
-
-    def test_sequential_probe_obeys_one_total_deadline(self):
-        session = Mock()
-        session.post.side_effect = TimeoutError("slow Fantrax")
-
-        with patch.object(fantrax_data, "monotonic", side_effect=[0, 0, 4, 8, 12, 16]):
-            rules = fantrax_data.extract_league_rules(session, "league-1")
-
-        self.assertIsNone(rules)
-        self.assertEqual(session.post.call_count, 4)
-        self.assertTrue(all(call.kwargs["timeout"] <= 3 for call in session.post.call_args_list))
 
 
 if __name__ == "__main__":
