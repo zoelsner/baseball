@@ -424,6 +424,56 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertTrue(payload["win_this_week"]["read_only"])
         self.assertFalse(payload["win_this_week"]["writes_enabled"])
         self.assertEqual(payload["win_this_week"]["snapshot_id"], 501)
+        self.assertEqual(payload["win_this_week"]["schedule_optimizer"]["state"], "policy_missing")
+        self.assertFalse(payload["win_this_week"]["schedule_optimizer"]["writes_enabled"])
+
+    def test_self_declared_policy_does_not_advertise_a_nonexistent_optimizer(self):
+        row = snapshot_row()
+        row["data"]["league_rules"] = {
+            "lineup_change_policy": {
+                "state": "trusted",
+                "cadence": "weekly",
+                "lock_scope": "period",
+                "change_limit": None,
+                "source": "fantrax.fixture.lineupPeriod",
+                "reason": "Fixture-backed weekly cadence.",
+            },
+        }
+
+        plan = sandlot_win_week.build_plan(row, now=NOW)
+
+        self.assertEqual(plan["schedule_optimizer"]["state"], "policy_missing")
+        self.assertIsNone(plan["schedule_optimizer"]["policy"]["cadence"])
+        self.assertIsNone(plan["schedule_optimizer"]["policy"]["lock_scope"])
+        self.assertTrue(plan["read_only"])
+        self.assertFalse(plan["writes_enabled"])
+
+    def test_unclassified_policy_evidence_does_not_change_static_action_ranking(self):
+        row = snapshot_row()
+        baseline = sandlot_win_week.build_plan(row, now=NOW)
+        row["data"]["league_rules"] = {
+            "lineup_change_policy": {
+                "state": "observed_unclassified",
+                "cadence": None,
+                "lock_scope": None,
+                "change_limit": None,
+                "source": "fantrax.getLeagueRules.raw",
+                "reason": "Exact mapping is not trusted yet.",
+                "candidates": [{
+                    "path": "settings.lineupChangePeriod",
+                    "value_type": "str",
+                    "hint": "weekly",
+                }],
+            },
+        }
+
+        observed = sandlot_win_week.build_plan(row, now=NOW)
+
+        self.assertEqual(observed["actions"], baseline["actions"])
+        self.assertEqual(observed["summary"], baseline["summary"])
+        self.assertEqual(observed["schedule_optimizer"]["state"], "policy_unclassified")
+        self.assertEqual(observed["schedule_optimizer"]["policy"]["candidate_count"], 1)
+        self.assertNotIn("candidates", observed["schedule_optimizer"]["policy"])
 
     def test_dedicated_endpoint_matches_snapshot_plan_exactly(self):
         row = snapshot_row()

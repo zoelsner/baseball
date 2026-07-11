@@ -1342,16 +1342,120 @@ def extract_league_rules(session: requests.Session, league_id: str) -> dict | No
             if first.get("error") or first.get("errorMsg") or first.get("pageError"):
                 continue
             scoring_categories = _find_scoring_categories(first)
+            lineup_change_policy = _lineup_change_policy_observation(first, method=method)
             log.info("League rules fetched via method=%s", method)
             return {
                 "method": method,
                 "scoring_categories": scoring_categories,
+                "lineup_change_policy": lineup_change_policy,
                 "raw": first,
             }
         except Exception as e:
             log.debug("League rules method %s raised: %s", method, e)
             continue
     log.info("League rules unavailable: all candidate methods failed")
+    return None
+
+
+def _lineup_change_policy_observation(node: Any, *, method: str) -> dict[str, Any]:
+    """Capture sanitized rule evidence without guessing cadence semantics.
+
+    Fantrax rule payloads vary by endpoint and sport. Until an exact live path
+    is fixture-backed, matching scalar fields are diagnostic evidence only and
+    must never unlock the day-by-day optimizer.
+    """
+    candidates: list[dict[str, Any]] = []
+    visited = 0
+
+    def walk(value: Any, path: tuple[str, ...] = (), depth: int = 0) -> None:
+        nonlocal visited
+        visited += 1
+        if depth > 12 or visited > 5000 or len(candidates) >= 40:
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if visited >= 5000 or len(candidates) >= 40:
+                    break
+                walk(child, (*path, str(key)), depth + 1)
+            return
+        if isinstance(value, list):
+            for index, child in enumerate(value[:50]):
+                if visited >= 5000 or len(candidates) >= 40:
+                    break
+                walk(child, (*path, str(index)), depth + 1)
+            return
+        if not path or not _is_lineup_policy_path(path):
+            return
+        if value is None or isinstance(value, (str, int, float, bool)):
+            hint = _lineup_policy_value_hint(value)
+            if isinstance(value, str) and hint is None:
+                return
+            safe_path = _safe_lineup_policy_path(path)
+            if safe_path:
+                candidates.append({
+                    "path": safe_path,
+                    "value_type": type(value).__name__,
+                    "hint": hint,
+                })
+
+    walk(node)
+    if candidates:
+        log.info(
+            "Observed unclassified Fantrax lineup-policy paths via %s: %s",
+            method,
+            [candidate["path"] for candidate in candidates],
+        )
+    state = "observed_unclassified" if candidates else "missing"
+    reason = (
+        "Fantrax exposed possible lineup-policy fields, but no exact cadence/lock mapping is trusted yet."
+        if candidates
+        else "Fantrax league rules did not expose a recognizable lineup cadence or lock field."
+    )
+    return {
+        "state": state,
+        "cadence": None,
+        "lock_scope": None,
+        "change_limit": None,
+        "source": f"fantrax.{method}.raw",
+        "reason": reason,
+        "candidates": candidates,
+    }
+
+
+def _is_lineup_policy_path(path: tuple[str, ...]) -> bool:
+    leaf = re.sub(r"[^a-z0-9]", "", path[-1].casefold()) if path else ""
+    policy_tokens = ("change", "period", "lock", "deadline", "frequency")
+    if "lineup" in leaf and any(token in leaf for token in policy_tokens):
+        return True
+    return "roster" in leaf and any(token in leaf for token in policy_tokens)
+
+
+def _safe_lineup_policy_path(path: tuple[str, ...]) -> str | None:
+    safe: list[str] = []
+    for part in path:
+        if part.isdigit():
+            safe.append("[]")
+        elif re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", part):
+            safe.append(part)
+        else:
+            return None
+    return ".".join(safe)
+
+
+def _lineup_policy_value_hint(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = re.sub(r"[^a-z0-9]", "", value.casefold())
+    if "daily" in normalized:
+        return "daily"
+    if "weekly" in normalized:
+        return "weekly"
+    if "individual" in normalized and "game" in normalized:
+        return "player_game"
+    if "global" in normalized and "day" in normalized:
+        return "global_day"
+    if normalized in {"period", "scoringperiod"}:
+        return "period"
     return None
 
 

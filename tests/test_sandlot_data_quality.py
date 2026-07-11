@@ -57,6 +57,30 @@ class SnapshotDataQualityTests(unittest.TestCase):
         self.assertEqual(quality["future_games"]["covered_players"], 2)
         self.assertEqual(quality["fppg"]["covered_players"], 2)
         self.assertEqual(quality["free_agent_pool"]["usable_players"], 1)
+        self.assertFalse(quality["schedule_optimizer_ready"])
+        self.assertTrue(quality["projection_ready"])
+
+    def test_self_declared_policy_cannot_unlock_schedule_optimizer(self):
+        snapshot = good_snapshot()
+        snapshot["league_rules"] = {
+            "lineup_change_policy": {
+                "state": "trusted",
+                "cadence": "weekly",
+                "lock_scope": "period",
+                "change_limit": None,
+                "source": "fantrax.getLeagueRules.raw.settings.lineupPeriod",
+                "reason": "Fixture-backed Fantrax weekly lineup rule.",
+            },
+        }
+
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+        self.assertFalse(quality["schedule_optimizer_ready"])
+        self.assertFalse(quality["lineup_change_policy"]["trusted"])
+        self.assertIsNone(quality["lineup_change_policy"]["cadence"])
+        self.assertIsNone(quality["lineup_change_policy"]["lock_scope"])
+        self.assertTrue(quality["projection_ready"])
+        self.assertTrue(quality["lineup_recommendations_ready"])
 
     def test_missing_roster_marks_projection_not_ready(self):
         snapshot = good_snapshot()
@@ -373,6 +397,30 @@ class SnapshotDataQualityTests(unittest.TestCase):
 
         self.assertFalse(payload["data_quality"]["projection_ready"])
         self.assertIsNone(payload["matchup"]["projection"])
+
+    def test_snapshot_payload_surfaces_sanitized_lineup_policy(self):
+        snapshot = good_snapshot()
+        snapshot["league_rules"] = {
+            "lineup_change_policy": {
+                "state": "observed_unclassified",
+                "cadence": None,
+                "lock_scope": None,
+                "change_limit": None,
+                "source": "fantrax.getLeagueRules.raw",
+                "reason": "Exact mapping is not trusted yet.",
+                "candidates": [{"path": "settings.lineupPeriod", "value_type": "str", "hint": "weekly"}],
+            },
+        }
+
+        payload = _snapshot_payload({"id": 124, "data": snapshot})
+
+        policy = payload["data_quality"]["lineup_change_policy"]
+        self.assertEqual(policy["state"], "observed_unclassified")
+        self.assertEqual(policy["candidate_count"], 1)
+        self.assertEqual(policy["candidate_hints"], ["weekly"])
+        self.assertNotIn("candidates", policy)
+        self.assertNotIn("lineup_change_policy", payload)
+        self.assertFalse(payload["data_quality"]["schedule_optimizer_ready"])
 
     def test_waiver_payload_pauses_cards_when_recommendation_data_incomplete(self):
         snapshot = good_snapshot()

@@ -106,10 +106,12 @@ season-rate player when the weekly math supports it. The normal waiver board
 retains its existing positive-rate filter; expanded streaming candidates are
 used only inside Win This Week and must pass exact post-add simulation.
 
-For latency, Sandlot first ranks a bounded candidate frontier by a cheap
-schedule-backed weekly-points ceiling. Only the best eight candidates receive
-the expensive full post-add roster and sequential lineup simulation. The
-ceiling is a pruning tool only; it is never exposed as the final action impact.
+Sandlot preserves the complete deterministic waiver-card frontier until the
+schedule-backed weekly-points ceiling is applied. This prevents a lower-rate,
+higher-volume streamer from disappearing behind a season-rate cutoff. Only the
+best eight schedule-ranked candidates receive the expensive full post-add
+roster and sequential lineup simulation. The ceiling is a pruning tool only;
+it is never exposed as the final action impact.
 
 Waiver legality remains `provisionally_legal` until a fresh Fantrax preflight
 confirms that the player is still available and transaction locks have not
@@ -143,6 +145,24 @@ monitor also rejects expired action deadlines and any drift between the plan
 embedded in `/api/snapshot/latest` and `/api/win-this-week/latest`.
 For a `no_action` state, it additionally requires a reason plus the structured
 alternatives list, and validates any displayed point estimate as comparable.
+
+## Day-by-day schedule optimizer readiness
+
+The current production plan optimizes legal static lineup states. A future
+day-by-day optimizer must first prove the league's Fantrax lineup-change cadence
+and lock semantics; it never assumes daily changes from MLB schedules alone.
+
+League-rule refreshes now retain a bounded, schema-sanitized diagnostic of
+possible policy fields. Raw values, arbitrary descendant fields, URLs, emails,
+notes, and tokens are not exposed through the snapshot API. The public payload
+reports only an unclassified evidence count plus semantic hints such as
+`weekly` or `player_game`.
+
+Until an exact live Fantrax path is fixture-backed and the solver ships,
+`data_quality.schedule_optimizer_ready` remains `false` and
+`win_this_week.schedule_optimizer.state` is `policy_missing` or
+`policy_unclassified`. This separate gate does not pause the existing static
+projection, lineup advice, or waiver ranking.
 
 ## Safety Boundary
 
