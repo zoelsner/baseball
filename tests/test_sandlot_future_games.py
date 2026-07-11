@@ -117,6 +117,78 @@ class SandlotFutureGamesTests(unittest.TestCase):
         self.assertEqual(row["future_games"], [])
         self.assertEqual(row["future_games_count"], 0)
 
+    def test_enriches_free_agents_through_the_shared_team_schedule_cache(self):
+        fetch_calls = []
+
+        def fetcher(team_id, start, end, *, season=None, now=None):
+            fetch_calls.append(team_id)
+            return [game(23), game(24)]
+
+        snapshot = {
+            "matchup": {"start": "2026-06-22", "end": "2026-06-28"},
+            "roster": {
+                "rows": [{
+                    "id": "rostered-nyy",
+                    "name": "Rostered Hitter",
+                    "team": "NYY",
+                    "slot": "OF",
+                    "positions": "OF",
+                }],
+            },
+            "free_agents": {
+                "method": "getPlayerStats",
+                "players": [
+                    {
+                        "id": "free-agent-nyy",
+                        "name": "Free Agent Hitter",
+                        "team": "NYY",
+                        "positions": "2B",
+                        "stats": {"FP/G": 4.0},
+                    },
+                    {
+                        "id": "free-agent-unknown",
+                        "name": "Unknown Team Hitter",
+                        "team": "XXX",
+                        "positions": "OF",
+                        "stats": {"FP/G": 3.0},
+                    },
+                ],
+            },
+        }
+
+        enriched = sandlot_future_games.enrich_snapshot_future_games(
+            snapshot,
+            now=datetime(2026, 6, 22, 12, tzinfo=timezone.utc),
+            schedule_fetcher=fetcher,
+            team_resolver=lambda abbr, _season: 147 if abbr == "NYY" else None,
+        )
+
+        free_agents = {row["id"]: row for row in enriched["free_agents"]["players"]}
+        self.assertEqual(enriched["free_agents"]["method"], "getPlayerStats")
+        self.assertEqual(free_agents["free-agent-nyy"]["future_games_status"], "ok")
+        self.assertEqual(free_agents["free-agent-nyy"]["future_games_scope"], "team_games")
+        self.assertEqual(free_agents["free-agent-nyy"]["future_games_count"], 2)
+        self.assertEqual(free_agents["free-agent-unknown"]["future_games_status"], "unresolved_team")
+        self.assertEqual(fetch_calls, [147])
+        self.assertEqual(enriched["future_games_provenance"]["schedule_fetch_count"], 1)
+        self.assertEqual(enriched["future_games_provenance"]["rows_seen"], 3)
+
+    def test_non_dict_free_agent_rows_are_preserved(self):
+        snapshot = {
+            "matchup": {"start": "2026-06-22", "end": "2026-06-28"},
+            "free_agents": {"players": [None, "bad-row"]},
+        }
+
+        enriched = sandlot_future_games.enrich_snapshot_future_games(
+            snapshot,
+            now=datetime(2026, 6, 22, 12, tzinfo=timezone.utc),
+            schedule_fetcher=lambda *_args, **_kwargs: [],
+            team_resolver=lambda *_args: 147,
+        )
+
+        self.assertEqual(enriched["free_agents"]["players"], [None, "bad-row"])
+        self.assertEqual(enriched["future_games_provenance"]["rows_seen"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

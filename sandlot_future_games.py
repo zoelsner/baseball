@@ -99,6 +99,24 @@ def enrich_snapshot_future_games(
             }
         updated["all_team_rosters"] = enriched_rosters
 
+    free_agents = snapshot.get("free_agents")
+    if isinstance(free_agents, dict) and isinstance(free_agents.get("players"), list):
+        updated["free_agents"] = {
+            **free_agents,
+            "players": [
+                _enrich_row(
+                    row,
+                    window=window,
+                    season=season,
+                    schedule_fetcher=schedule_fetcher,
+                    team_resolver=team_resolver,
+                    schedule_cache=schedule_cache,
+                    diagnostics=diagnostics,
+                )
+                for row in free_agents.get("players") or []
+            ],
+        }
+
     diagnostics["schedule_fetch_count"] = len(schedule_cache)
     updated["future_games_provenance"] = diagnostics
     return updated
