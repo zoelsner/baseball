@@ -27,6 +27,7 @@ ENDPOINTS = (
     "/api/attention",
     "/api/hot-swaps/latest",
     "/api/waiver-swaps/latest",
+    "/api/win-this-week/latest",
 )
 NEVER_DROP_PLAYER_NAMES = {"aaron judge"}
 
@@ -166,6 +167,15 @@ def evaluate_payloads(
         matchup_check = _validate_matchup_surface(snapshot, snapshot_id, fail)
         matchup_check["ok"] = not any(item["code"].startswith("matchup_") for item in failures)
         checks.append(matchup_check)
+        embedded_plan = snapshot.get("win_this_week")
+        if isinstance(embedded_plan, dict):
+            before_failures = len(failures)
+            embedded_check = _validate_win_this_week(embedded_plan, snapshot_id, fail, prefix="win_this_week_embedded")
+            embedded_check["name"] = "win_this_week_embedded"
+            embedded_check["ok"] = len(failures) == before_failures
+            checks.append(embedded_check)
+        else:
+            fail("win_this_week_embedded_missing", "Snapshot did not include the Win This Week plan")
     elif "/api/snapshot/latest" not in (transport_errors or {}):
         fail("snapshot_missing", "Latest snapshot payload was missing")
 
@@ -205,6 +215,15 @@ def evaluate_payloads(
         })
     elif "/api/hot-swaps/latest" not in (transport_errors or {}):
         fail("hot_swaps_missing", "Hot-swaps payload was missing")
+
+    win_this_week = payloads.get("/api/win-this-week/latest")
+    if isinstance(win_this_week, dict):
+        before_failures = len(failures)
+        win_check = _validate_win_this_week(win_this_week, snapshot_id, fail, prefix="win_this_week")
+        win_check["ok"] = len(failures) == before_failures
+        checks.append(win_check)
+    elif "/api/win-this-week/latest" not in (transport_errors or {}):
+        fail("win_this_week_missing", "Win This Week payload was missing")
 
     waivers = payloads.get("/api/waiver-swaps/latest")
     if isinstance(waivers, dict):
@@ -612,6 +631,68 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
         "state": "ready" if isinstance(projection, dict) else "paused",
         "recommendation_count": len(recommendations),
         "model_version": projection.get("model_version") if isinstance(projection, dict) else None,
+    }
+
+
+def _validate_win_this_week(
+    plan: dict[str, Any],
+    snapshot_id: str | None,
+    fail,
+    *,
+    prefix: str,
+) -> dict[str, Any]:
+    _require_matching_snapshot_id(prefix, plan, snapshot_id, fail)
+    if plan.get("read_only") is not True or plan.get("writes_enabled") is not False:
+        fail(f"{prefix}_write_boundary", "Win This Week did not explicitly remain read-only")
+    actions = plan.get("actions")
+    if not isinstance(actions, list):
+        fail(f"{prefix}_actions_invalid", "Win This Week actions field was not a list")
+        actions = []
+    probability_calibrated = ((plan.get("diagnostics") or {}).get("probability_calibrated") is True)
+    previous_points: float | None = None
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
+            fail(f"{prefix}_action_invalid", f"Win This Week action {index + 1} was not an object")
+            continue
+        if action.get("rank") != index + 1:
+            fail(f"{prefix}_rank_order", "Win This Week ranks were not contiguous")
+        points_block = action.get("expected_points") if isinstance(action.get("expected_points"), dict) else {}
+        points = _number(points_block.get("estimate"))
+        if points is None or points <= 0 or points_block.get("comparable") is not True:
+            fail(f"{prefix}_impact_invalid", f"Win This Week action {index + 1} lacked comparable positive impact")
+        if previous_points is not None and points is not None and points > previous_points + 0.05:
+            fail(f"{prefix}_rank_order", "Win This Week actions were not ordered by expected points")
+        if points is not None:
+            previous_points = points
+        deadline = action.get("deadline") if isinstance(action.get("deadline"), dict) else {}
+        if deadline.get("state") != "known" or not deadline.get("at"):
+            fail(f"{prefix}_deadline_missing", f"Win This Week action {index + 1} lacked an exact deadline")
+        dynasty = action.get("dynasty_cost") if isinstance(action.get("dynasty_cost"), dict) else {}
+        if dynasty.get("level") not in {"none", "low", "medium", "high", "unknown"}:
+            fail(f"{prefix}_dynasty_cost_missing", f"Win This Week action {index + 1} lacked dynasty cost")
+        legality = action.get("legality") if isinstance(action.get("legality"), dict) else {}
+        if legality.get("state") not in {"snapshot_verified", "provisionally_legal"}:
+            fail(f"{prefix}_legality_missing", f"Win This Week action {index + 1} lacked a legal-path state")
+        if action.get("writes_enabled") is not False:
+            fail(f"{prefix}_write_boundary", f"Win This Week action {index + 1} did not keep writes disabled")
+        if not probability_calibrated and action.get("win_probability_delta") is not None:
+            fail(f"{prefix}_probability_claim", "Win This Week exposed an uncalibrated probability delta")
+        for step in action.get("steps") or []:
+            if not isinstance(step, dict) or step.get("action") != "move_out":
+                continue
+            move_out_name = " ".join(str(step.get("player_name") or "").split()).casefold()
+            if move_out_name in NEVER_DROP_PLAYER_NAMES:
+                fail(f"{prefix}_protected_anchor", "Win This Week attempted to move out an owner-protected anchor")
+    primary_id = plan.get("primary_action_id")
+    expected_primary = actions[0].get("id") if actions and isinstance(actions[0], dict) else None
+    if primary_id != expected_primary:
+        fail(f"{prefix}_primary_mismatch", "Win This Week primary action did not match rank 1")
+    return {
+        "name": prefix,
+        "state": plan.get("state"),
+        "action_count": len(actions),
+        "monitoring_count": len(plan.get("monitoring_actions")) if isinstance(plan.get("monitoring_actions"), list) else None,
+        "writes_enabled": plan.get("writes_enabled"),
     }
 
 

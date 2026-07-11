@@ -167,6 +167,16 @@ def compute_projection(
     }
 
 
+def player_can_play_slot(row: dict[str, Any], slot: str) -> bool:
+    """Public eligibility check for deterministic hypothetical roster planning."""
+    return _can_play_slot(row, slot)
+
+
+def player_movability(row: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    """Public read-only movability evidence for lineup and transaction planning."""
+    return _player_movability(row, now=now)
+
+
 def projection_log_payload(
     snapshot_id: int,
     snapshot: dict[str, Any],

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { waitForAppMount } from '../fixtures/sandlot';
+import { gotoTab, waitForAppMount } from '../fixtures/sandlot';
 
 function baseSnapshot(overrides: Record<string, any> = {}) {
   return {
@@ -108,6 +108,45 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
         }],
       },
     },
+    win_this_week: {
+      model_version: 'win_this_week_v1',
+      state: 'ready',
+      snapshot_id: 'snapshot-attention-test',
+      read_only: true,
+      writes_enabled: false,
+      primary_action_id: 'waiver:test:add:drop',
+      summary: {
+        headline: 'Up 6.1; the best current path adds about 5.8 projected points to protect the lead.',
+        win_probability_excluded_reason: 'Win probability is not calibrated; actions are ranked by projected remaining-week points.',
+      },
+      actions: [{
+        id: 'waiver:test:add:drop',
+        rank: 1,
+        kind: 'waiver',
+        state: 'review_now',
+        title: 'Add Impact Streamer and move out Cold Corner',
+        steps: [
+          { action: 'add', player_id: 'impact-streamer', player_name: 'Impact Streamer' },
+          { action: 'move_out', player_id: 'corner', player_name: 'Cold Corner' },
+        ],
+        expected_points: { estimate: 5.8, comparable: true },
+        win_probability_delta: null,
+        probability_calibrated: false,
+        deadline: { state: 'known', at: '2026-06-07T22:40:00Z' },
+        confidence: 'medium',
+        dynasty_cost: { level: 'low', reason: 'No major dynasty concern from age alone.' },
+        legality: { state: 'provisionally_legal', requires_live_preflight: true },
+        writes_enabled: false,
+      }],
+      monitoring_actions: [{
+        id: 'monitor:waiver:test:add:drop',
+        kind: 'monitor',
+        state: 'scheduled_check',
+        title: 'Recheck Fantrax and MLB status before the action deadline',
+        reason: 'Availability, lineup confirmation, and Fantrax locks can change after the snapshot.',
+      }],
+      diagnostics: { probability_calibrated: false },
+    },
     data_quality: {
       projection_ready: true,
       recommendations_ready: true,
@@ -151,6 +190,12 @@ test.describe('Today — Attention Queue', () => {
 
     await expect(page.getByText('Matchup · Leading')).toBeVisible();
     await expect(page.getByText('snapshot 12m old')).toBeVisible();
+    await expect(page.getByText('Win This Week', { exact: true })).toBeVisible();
+    await expect(page.getByText('Review now', { exact: true })).toBeVisible();
+    await expect(page.getByText('Add Impact Streamer and move out Cold Corner', { exact: true })).toBeVisible();
+    await expect(page.getByText('+5.8', { exact: true })).toBeVisible();
+    await expect(page.getByText('Live preflight required', { exact: true })).toBeVisible();
+    await expect(page.getByText('Read-only', { exact: true })).toBeVisible();
     await expect(page.getByText('1 hot swap')).toBeVisible();
     await expect(page.getByText('Leading by 6.1 · 2d left; this swap adds +2.4 projected points to protect the edge.')).toBeVisible();
     await expect(page.getByText('1 urgent · 1 check · 1 review')).toBeVisible();
@@ -163,6 +208,7 @@ test.describe('Today — Attention Queue', () => {
       return box!.y;
     };
     const matchupTop = await yOf(page.getByText('Matchup · Leading'));
+    const winThisWeekTop = await yOf(page.getByText('Win This Week', { exact: true }));
     const hotSwapsTop = await yOf(page.getByText('1 hot swap'));
     const judge = await yOf(page.getByRole('button', { name: /Aaron Judge/ }));
     const webb = await yOf(page.getByRole('button', { name: /Logan Webb/ }));
@@ -170,6 +216,8 @@ test.describe('Today — Attention Queue', () => {
     const replacement = await yOf(page.getByText('Bench Bat for Cold Corner'));
 
     expect(matchupTop).toBeLessThan(hotSwapsTop);
+    expect(matchupTop).toBeLessThan(winThisWeekTop);
+    expect(winThisWeekTop).toBeLessThan(hotSwapsTop);
     expect(replacement).toBeLessThan(judge);
     expect(webb).toBeGreaterThan(judge);
     expect(cold).toBeGreaterThan(webb);
@@ -195,6 +243,17 @@ test.describe('Today — Attention Queue', () => {
     await expect(queueSection.getByRole('button', { name: /Propose swap blocked/i })).toBeDisabled();
     await expect(queueSection.getByRole('button', { name: /Ask Skipper/i })).toBeVisible();
     await expect(queueSection.getByRole('button', { name: /Deep research/i })).toBeVisible();
+
+    const winPanel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(winPanel.getByRole('button', { name: 'Pressure-test with Skipper' })).toBeVisible();
+    await expect(winPanel.getByRole('button', { name: 'Open waiver board' })).toBeVisible();
+    await winPanel.getByRole('button', { name: 'Pressure-test with Skipper' }).click();
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/top Win This Week action/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Expected remaining-week impact: \+5.8 points/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Add Impact Streamer/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Move out Cold Corner/);
+
+    await gotoTab(page, 'Today');
 
     await queueSection.getByRole('button', { name: /Ask Skipper/i }).click();
     await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Pressure-test this lineup-only hot swap/);

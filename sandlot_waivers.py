@@ -165,6 +165,7 @@ def build_waiver_cards(
     fa_players: list[dict[str, Any]],
     snapshot_id: int,
     limit: int = CARD_LIMIT,
+    allow_nonpositive_rate: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     weak_positions = _weak_positions(roster_rows)
     move_candidates, protected_move_outs = _move_out_candidates(roster_rows, weak_positions)
@@ -179,7 +180,13 @@ def build_waiver_cards(
     candidates: list[dict[str, Any]] = []
     for add in add_candidates:
         for move in move_candidates:
-            card = _pair_card(snapshot_id, add, move, weak_positions)
+            card = _pair_card(
+                snapshot_id,
+                add,
+                move,
+                weak_positions,
+                allow_nonpositive_rate=allow_nonpositive_rate,
+            )
             if card:
                 candidates.append(card)
 
@@ -407,7 +414,14 @@ def _move_out_candidates(rows: list[dict[str, Any]], weak_positions: list[str]) 
     return fallback[:6], protected
 
 
-def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak_positions: list[str]) -> dict[str, Any] | None:
+def _pair_card(
+    snapshot_id: int,
+    add: dict[str, Any],
+    move: dict[str, Any],
+    weak_positions: list[str],
+    *,
+    allow_nonpositive_rate: bool = False,
+) -> dict[str, Any] | None:
     add_tokens = add["tokens"]
     move_tokens = move["tokens"]
     direct = sorted((add_tokens & move_tokens) - {"P"})
@@ -415,7 +429,7 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
     same_group = _same_position_group(add_tokens, move_tokens)
     net_delta = round(float(add["fpg"]) - float(move["fpg"]), 2)
 
-    if net_delta <= 0:
+    if net_delta <= 0 and not allow_nonpositive_rate:
         return None
 
     if direct:
@@ -433,7 +447,11 @@ def _pair_card(snapshot_id: int, add: dict[str, Any], move: dict[str, Any], weak
     dynasty_note, dynasty_penalty = _dynasty_note(move)
     fallback_penalty = 0 if add["true_fpg"] else -2.0
     loose_penalty = -0.7 if fit == "loose" else 0
-    sort_score = net_delta
+    if allow_nonpositive_rate:
+        remaining_games = len((add.get("raw") or {}).get("future_games") or [])
+        sort_score = float(add["fpg"]) * remaining_games
+    else:
+        sort_score = net_delta
     sort_score += 1.0 if weak_fit else 0
     sort_score += 0.7 if fit == "direct" else 0
     sort_score += 0.5 if move["is_bench"] else 0

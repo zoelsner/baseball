@@ -45,7 +45,30 @@ def healthy_payloads():
         "lineup_slots": {"state": "ok"},
         "add_drop_recommendations_ready": True,
     }
-    return {
+    win_plan = {
+        "model_version": "win_this_week_v1",
+        "state": "ready",
+        "snapshot_id": snapshot_id,
+        "read_only": True,
+        "writes_enabled": False,
+        "primary_action_id": "lineup:test",
+        "actions": [{
+            "id": "lineup:test",
+            "rank": 1,
+            "kind": "lineup",
+            "state": "act_now",
+            "steps": [],
+            "expected_points": {"estimate": 2.0, "comparable": True},
+            "win_probability_delta": None,
+            "deadline": {"state": "known", "at": "2026-07-10T23:05:00+00:00"},
+            "dynasty_cost": {"level": "none"},
+            "legality": {"state": "snapshot_verified"},
+            "writes_enabled": False,
+        }],
+        "monitoring_actions": [],
+        "diagnostics": {"probability_calibrated": False},
+    }
+    payloads = {
         "/api/health": {
             "ok": True,
             "database": "ok",
@@ -119,6 +142,7 @@ def healthy_payloads():
                     }],
                 },
             },
+            "win_this_week": copy.deepcopy(win_plan),
             "errors": [],
             "data_quality": quality,
         },
@@ -158,7 +182,9 @@ def healthy_payloads():
             }],
             "data_quality": quality,
         },
+        "/api/win-this-week/latest": copy.deepcopy(win_plan),
     }
+    return payloads
 
 
 class ReadOnlyMonitorTests(unittest.TestCase):
@@ -181,6 +207,28 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         codes = {item["code"] for item in report["failures"]}
         self.assertIn("snapshot_too_old", codes)
         self.assertIn("snapshot_not_fresh_enough", codes)
+
+    def test_win_this_week_cannot_enable_writes_or_move_out_aaron_judge(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["writes_enabled"] = True
+            plan["actions"][0]["steps"] = [{
+                "action": "move_out",
+                "player_id": "judge",
+                "player_name": "Aaron Judge",
+            }]
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_write_boundary", codes)
+        self.assertIn("win_this_week_protected_anchor", codes)
+        self.assertIn("win_this_week_embedded_write_boundary", codes)
+        self.assertIn("win_this_week_embedded_protected_anchor", codes)
 
     def test_cross_endpoint_snapshot_and_write_boundaries_fail_closed(self):
         payloads = healthy_payloads()
