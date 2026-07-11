@@ -226,6 +226,54 @@ class WinThisWeekTests(unittest.TestCase):
             "weak-2b", "bench-2b", "weak-ss", "bench-ss",
         })
 
+    def test_waiver_plan_also_applies_independent_lineup_gains(self):
+        roster = [
+            roster_player("weak-2b", "Weak Second Baseman", slot="2B", positions="2B", fppg=1.0, age=31),
+            roster_player("weak-ss", "Weak Shortstop", slot="SS", positions="SS", fppg=1.0, age=31),
+            roster_player("bench-ss", "Bench Shortstop", slot="BN", positions="SS", fppg=4.0, age=31),
+        ]
+        impact_add = free_agent(
+            pid="impact-2b",
+            name="Impact Second Baseman",
+            fppg=5.0,
+            games=1,
+            positions="2B",
+            age=31,
+        )
+
+        plan = sandlot_win_week.build_plan(
+            snapshot_row(roster=roster, free_agents=[impact_add]),
+            now=NOW,
+        )
+
+        waiver = next(action for action in plan["actions"] if action["kind"] == "waiver")
+        self.assertEqual(waiver["expected_points"]["estimate"], 7.0)
+        self.assertEqual(waiver["expected_points"]["incremental_over_best_lineup"], 4.0)
+        self.assertTrue(any(step.get("player_id") == "bench-ss" and step.get("to_slot") == "SS" for step in waiver["steps"]))
+        self.assertEqual(len(waiver["lineup_segments"]), 1)
+
+    def test_weekly_candidate_frontier_prefers_more_countable_points(self):
+        roster = [
+            roster_player("weak", "Weak Starter", slot="2B", positions="2B", fppg=1.0, age=31),
+        ]
+        candidates = [
+            free_agent(pid=f"high-rate-{index}", name=f"High Rate {index}", fppg=6.0, games=1, positions="2B", age=31)
+            for index in range(10)
+        ]
+        candidates.append(
+            free_agent(pid="weekly-volume", name="Weekly Volume", fppg=4.0, games=4, positions="2B", age=31)
+        )
+
+        plan = sandlot_win_week.build_plan(
+            snapshot_row(roster=roster, free_agents=candidates),
+            now=NOW,
+        )
+
+        primary = plan["actions"][0]
+        self.assertEqual(primary["kind"], "waiver")
+        self.assertIn("Weekly Volume", primary["title"])
+        self.assertEqual(primary["expected_points"]["estimate"], 15.0)
+
     def test_aaron_judge_never_appears_as_a_waiver_move_out(self):
         roster = [
             roster_player("judge", "Aaron Judge", slot="OF", positions="OF", fppg=0.5, age=34),

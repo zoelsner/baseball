@@ -65,6 +65,15 @@ def build_plan(
             limit=expanded_limit,
             allow_nonpositive_rate=True,
         )
+        waiver_cards.sort(
+            key=lambda card: (
+                _weekly_candidate_ceiling(snapshot, card),
+                _number(card.get("sort_score")) or 0.0,
+                str(card.get("id") or ""),
+            ),
+            reverse=True,
+        )
+        waiver_cards = waiver_cards[:8]
 
     considered: list[dict[str, Any]] = []
     rankable: list[dict[str, Any]] = []
@@ -268,13 +277,72 @@ def _lineup_bundle(
     base_points = _number((base_projection or {}).get("projected_my"))
     if base_points is None:
         return None
+    optimization = _optimize_lineup_snapshot(snapshot, now=now, max_moves=max_moves)
+    segments = optimization["segments"]
+    steps = optimization["steps"]
+    deadline = optimization["deadline"]
+    projected_points = optimization["projected_points"]
+    if len(segments) < 2 or deadline is None:
+        return None
+    total_gain = round(projected_points - base_points, 1)
+    if total_gain <= 0:
+        return None
+    proposal_ids = [str(segment.get("proposal_id") or "unknown") for segment in segments]
+    return {
+        "id": "lineup-plan:" + ":".join(proposal_ids),
+        "kind": "lineup_plan",
+        "state": "act_now",
+        "title": f"Make {len(segments)} lineup changes",
+        "steps": steps,
+        "segments": segments,
+        "expected_points": {
+            "estimate": total_gain,
+            "basis": "sequential legal lineup simulation with the roster re-projected after every slot chain",
+            "comparable": True,
+        },
+        "win_probability_delta": None,
+        "probability_calibrated": False,
+        "deadline": deadline,
+        "confidence": optimization["confidence"],
+        "dynasty_cost": {
+            "level": "none",
+            "reason": "Lineup-only plan; no player leaves the roster.",
+        },
+        "legality": {
+            "state": "snapshot_verified",
+            "verified": ["sequential slot eligibility", "remaining-game provenance", "Fantrax movability flags", "MLB start timing"],
+            "requires_live_preflight": True,
+        },
+        "writes_enabled": False,
+        "source": {"type": "sequential_matchup_plan", "proposal_ids": proposal_ids},
+    }
+
+
+def _optimize_lineup_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    now: datetime,
+    max_moves: int,
+) -> dict[str, Any]:
+    """Return a fully re-simulated lineup state after up to ``max_moves``."""
     working = copy.deepcopy(snapshot)
     working["movability_now"] = now.isoformat()
+    starting_quality = sandlot_data_quality.snapshot_data_quality(working)
+    starting_projection = sandlot_matchup.compute_projection(working, starting_quality)
+    projected_points = _number((starting_projection or {}).get("projected_my"))
     segments: list[dict[str, Any]] = []
     steps: list[dict[str, Any]] = []
     deadline: dict[str, Any] | None = None
     confidence_values: list[str] = []
-    projected_points = base_points
+    if projected_points is None:
+        return {
+            "snapshot": working,
+            "projected_points": None,
+            "segments": segments,
+            "steps": steps,
+            "deadline": deadline,
+            "confidence": "unknown",
+        }
 
     for _index in range(max(0, max_moves)):
         quality = sandlot_data_quality.snapshot_data_quality(working)
@@ -312,39 +380,13 @@ def _lineup_bundle(
         working = next_snapshot
         projected_points = next_points
 
-    if len(segments) < 2 or deadline is None:
-        return None
-    total_gain = round(projected_points - base_points, 1)
-    if total_gain <= 0:
-        return None
-    proposal_ids = [str(segment.get("proposal_id") or "unknown") for segment in segments]
     return {
-        "id": "lineup-plan:" + ":".join(proposal_ids),
-        "kind": "lineup_plan",
-        "state": "act_now",
-        "title": f"Make {len(segments)} lineup changes",
-        "steps": steps,
+        "snapshot": working,
+        "projected_points": projected_points,
         "segments": segments,
-        "expected_points": {
-            "estimate": total_gain,
-            "basis": "sequential legal lineup simulation with the roster re-projected after every slot chain",
-            "comparable": True,
-        },
-        "win_probability_delta": None,
-        "probability_calibrated": False,
+        "steps": steps,
         "deadline": deadline,
         "confidence": _lowest_confidence(confidence_values),
-        "dynasty_cost": {
-            "level": "none",
-            "reason": "Lineup-only plan; no player leaves the roster.",
-        },
-        "legality": {
-            "state": "snapshot_verified",
-            "verified": ["sequential slot eligibility", "remaining-game provenance", "Fantrax movability flags", "MLB start timing"],
-            "requires_live_preflight": True,
-        },
-        "writes_enabled": False,
-        "source": {"type": "sequential_matchup_plan", "proposal_ids": proposal_ids},
     }
 
 
@@ -459,6 +501,9 @@ def _waiver_action(
 
     optimized_points = _number(post_projection.get("projected_my"))
     lineup_steps: list[dict[str, Any]] = []
+    post_lineup_segments: list[dict[str, Any]] = []
+    optimized_snapshot = post_snapshot
+    remaining_lineup_moves = 3
     if path.get("mode") == "bench_then_lineup":
         post_lineup = sandlot_matchup.rank_matchup_improvement_actions(post_snapshot, post_quality, limit=8)
         matching = [
@@ -471,10 +516,34 @@ def _waiver_action(
             diagnostic["reason"] = "The added player has no proven bench-to-active lineup path."
             return None, None, diagnostic
         best_lineup = max(matching, key=lambda item: _number(item.get("points_delta")) or 0.0)
-        optimized_points = (optimized_points or 0.0) + (_number(best_lineup.get("points_delta")) or 0.0)
         lineup_steps = (best_lineup.get("action") or {}).get("chain") or []
+        optimized_snapshot = _apply_lineup_chain(post_snapshot, lineup_steps)
+        if optimized_snapshot is None:
+            diagnostic["reason"] = "The required post-add lineup chain could not be applied to the simulated roster."
+            return None, None, diagnostic
+        optimized_quality = sandlot_data_quality.snapshot_data_quality(optimized_snapshot)
+        optimized_projection = sandlot_matchup.compute_projection(optimized_snapshot, optimized_quality)
+        optimized_points = _number((optimized_projection or {}).get("projected_my"))
+        proposal = ((best_lineup.get("replacement_card") or {}).get("proposal") or {})
+        post_lineup_segments.append({
+            "proposal_id": proposal.get("id"),
+            "points_delta": round(_number(best_lineup.get("points_delta")) or 0.0, 1),
+        })
         lineup_deadline = ((best_lineup.get("replacement_card") or {}).get("deadline") or {})
         deadline = _earlier_deadline(deadline, lineup_deadline)
+        remaining_lineup_moves -= 1
+
+    additional = _optimize_lineup_snapshot(
+        optimized_snapshot,
+        now=now,
+        max_moves=remaining_lineup_moves,
+    )
+    if additional.get("projected_points") is not None:
+        optimized_points = additional["projected_points"]
+    lineup_steps.extend(additional.get("steps") or [])
+    post_lineup_segments.extend(additional.get("segments") or [])
+    if additional.get("deadline"):
+        deadline = _earlier_deadline(deadline, additional["deadline"])
 
     base_points = _number(base_projection.get("projected_my"))
     if optimized_points is None or base_points is None:
@@ -517,6 +586,7 @@ def _waiver_action(
             }] if path.get("mode") == "direct_replacement" else []),
             *lineup_steps,
         ],
+        "lineup_segments": post_lineup_segments,
         "expected_points": {
             "estimate": impact,
             "incremental_over_best_lineup": incremental_over_lineup,
@@ -600,6 +670,34 @@ def _schedule_rejection(row: dict[str, Any]) -> str | None:
     if not isinstance(row.get("future_games"), list):
         return "Free-agent remaining games are missing."
     return None
+
+
+def _weekly_candidate_ceiling(snapshot: dict[str, Any], card: dict[str, Any]) -> float:
+    """Cheap upper-bound ranking before expensive post-add lineup simulation."""
+    add = card.get("add") if isinstance(card.get("add"), dict) else {}
+    move_out = card.get("move_out") if isinstance(card.get("move_out"), dict) else {}
+    add_row = _find_free_agent(snapshot, add.get("id")) or {}
+    move_row = _find_roster_player(snapshot, move_out.get("id")) or {}
+    add_points = (_number(add.get("fpg")) or 0.0) * _countable_games(add_row)
+    move_slot = str(move_row.get("slot") or "").strip().upper()
+    move_points = 0.0
+    if move_slot not in BENCH_SLOTS:
+        move_points = (_number(move_row.get("fppg")) or 0.0) * _countable_games(move_row)
+    return round(add_points - move_points, 3)
+
+
+def _countable_games(row: dict[str, Any]) -> int:
+    games = row.get("future_games") if isinstance(row.get("future_games"), list) else []
+    if not games:
+        return 0
+    if not sandlot_matchup.player_can_play_slot(row, "P"):
+        return len([game for game in games if isinstance(game, dict)])
+    return len([
+        game
+        for game in games
+        if isinstance(game, dict)
+        and any(game.get(key) for key in ("probable_start", "confirmed_start", "scheduled_start", "probable_pitcher"))
+    ])
 
 
 def _player_deadline(row: dict[str, Any], now: datetime) -> dict[str, Any]:
