@@ -1122,7 +1122,7 @@ function v2WinWeekPrompt(action, plan) {
   ].filter(Boolean).join('\n');
 }
 
-function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
+function V2WinThisWeekPanel({ plan, sync={}, onNav, onAskSkipper, onRefresh }) {
   if (!plan) return null;
   const actions = Array.isArray(plan.actions) ? plan.actions : [];
   const primary = actions[0] || null;
@@ -1131,12 +1131,16 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
     ? plan.handoffs.lineup
     : null;
   const deadlineExpired = v2WinWeekDeadlineExpired(primary?.deadline);
+  const staleSnapshot = ['stale', 'old', 'failed', 'loading', 'refreshing', 'missing'].includes(sync.state);
+  const refreshRequired = deadlineExpired || staleSnapshot;
+  const snapshotStateLabel = sync.state === 'refreshing' ? 'refreshing' : sync.state || 'unknown';
+  const snapshotArticle = snapshotStateLabel === 'old' ? 'an' : 'a';
   const monitor = (plan.monitoring_actions || [])[0] || null;
   const points = v2Number(primary?.expected_points?.estimate);
   const kindLabel = primary?.kind === 'waiver' ? 'Waiver move' : 'Lineup move';
-  const stateLabel = deadlineExpired ? 'Refresh required' : primary?.state === 'review_now' ? 'Review now' : 'Best move now';
+  const stateLabel = refreshRequired ? 'Refresh required' : primary?.state === 'review_now' ? 'Review now' : 'Best move now';
   const dynastyLevel = primary?.dynasty_cost?.level || 'unknown';
-  const tone = deadlineExpired
+  const tone = refreshRequired
     ? { fg:V2.warn, bg:V2.warnSoft }
     : plan.state === 'ready'
     ? { fg:V2.accent, bg:V2.accentSoft }
@@ -1167,10 +1171,12 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
       <div style={{ marginTop:9, color:V2.body, fontSize:13.5, lineHeight:1.45, fontWeight:750, textWrap:'pretty' }}>
         {deadlineExpired
           ? 'The stored primary action has passed its deadline. Refresh before making any Fantrax change.'
+          : staleSnapshot
+            ? `This plan comes from ${snapshotArticle} ${snapshotStateLabel} snapshot. Refresh before making any Fantrax change.`
           : plan.summary?.headline || plan.no_action?.reason || 'Waiting for a matchup plan.'}
       </div>
 
-      {!deadlineExpired && plan.summary?.outlook ? (
+      {!refreshRequired && plan.summary?.outlook ? (
         <div style={{ marginTop:7, color:V2.ink, fontSize:12.5, lineHeight:1.4, fontWeight:850, textWrap:'pretty' }}>
           {plan.summary.outlook}
         </div>
@@ -1201,7 +1207,7 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
               <div style={{ color:V2.accent, fontSize:29, lineHeight:0.95, fontWeight:900, fontFamily:V2.fontDisplay, fontVariantNumeric:'tabular-nums' }}>
                 {v2Signed(points, 1)}
               </div>
-              <div style={{ marginTop:5, color:V2.muted, fontSize:10, fontWeight:900, letterSpacing:'0.06em', textTransform:'uppercase' }}>{deadlineExpired ? 'expired estimate' : 'proj. points'}</div>
+              <div style={{ marginTop:5, color:V2.muted, fontSize:10, fontWeight:900, letterSpacing:'0.06em', textTransform:'uppercase' }}>{deadlineExpired ? 'expired estimate' : staleSnapshot ? 'stale estimate' : 'proj. points'}</div>
             </div>
           </div>
 
@@ -1210,7 +1216,7 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
               {dynastyLevel === 'none' ? 'No dynasty cost' : `${dynastyLevel} dynasty cost`}
             </span>
             <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'5px 8px', fontSize:10.5, fontWeight:850 }}>
-              {deadlineExpired ? 'Deadline passed' : primary.legality?.state === 'snapshot_verified' ? 'Snapshot legal' : 'Live preflight required'}
+              {deadlineExpired ? 'Deadline passed' : staleSnapshot ? `Snapshot ${snapshotStateLabel}` : primary.legality?.state === 'snapshot_verified' ? 'Snapshot legal' : 'Live preflight required'}
             </span>
             <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'5px 8px', fontSize:10.5, fontWeight:850 }}>
               Read-only
@@ -1249,24 +1255,24 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
           <div style={{
             marginTop:14,
             display:'grid',
-            gridTemplateColumns:deadlineExpired || (!lineupHandoff && primary.kind !== 'waiver') ? '1fr' : '1fr 1fr',
+            gridTemplateColumns:refreshRequired || (!lineupHandoff && primary.kind !== 'waiver') ? '1fr' : '1fr 1fr',
             gap:9,
           }}>
-            {deadlineExpired ? (
-              <button onClick={onRefresh} style={{ minHeight:44, background:V2.warn, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
-                Refresh plan
+            {refreshRequired ? (
+              <button onClick={onRefresh} disabled={sync.state === 'refreshing'} style={{ minHeight:44, background:V2.warn, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:sync.state === 'refreshing' ? 'not-allowed' : 'pointer', opacity:sync.state === 'refreshing' ? 0.7 : 1, fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
+                {sync.state === 'refreshing' ? 'Refreshing…' : 'Refresh plan'}
               </button>
             ) : (
               <button onClick={()=>onAskSkipper(v2WinWeekPrompt(primary, plan))} style={{ minHeight:44, background:V2.ink, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
                 Pressure-test with Skipper
               </button>
             )}
-            {!deadlineExpired && primary.kind === 'waiver' ? (
+            {!refreshRequired && primary.kind === 'waiver' ? (
               <button onClick={()=>onNav('fa')} style={{ minHeight:44, background:V2.surface, color:V2.body, border:`1px solid ${V2.hairline}`, borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
                 Open waiver board
               </button>
             ) : null}
-            {!deadlineExpired && primary.kind !== 'waiver' && lineupHandoff ? (
+            {!refreshRequired && primary.kind !== 'waiver' && lineupHandoff ? (
               <a href={lineupHandoff.url} target="_blank" rel="noopener noreferrer" style={{ minHeight:44, background:V2.surface, color:V2.body, border:`1px solid ${V2.hairline}`, borderRadius:999, padding:'11px 14px', display:'flex', alignItems:'center', justifyContent:'center', textDecoration:'none', fontSize:12.5, fontWeight:850 }}>
                 {lineupHandoff.label || 'Open Fantrax lineup'}
               </a>
@@ -1379,6 +1385,7 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
 
       <V2WinThisWeekPanel
         plan={model.winThisWeek}
+        sync={sync}
         onNav={onNav}
         onAskSkipper={onAskSkipper}
         onRefresh={onRefresh}

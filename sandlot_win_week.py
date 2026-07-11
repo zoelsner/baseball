@@ -56,14 +56,14 @@ def build_plan(
     if quality.get("add_drop_recommendations_ready") is True:
         roster_rows = ((snapshot.get("roster") or {}).get("rows") or [])
         free_agent_rows = ((snapshot.get("free_agents") or {}).get("players") or [])
-        # Re-score a bounded, schedule-ranked candidate frontier. Exact
-        # post-add simulation is intentionally more expensive than card math.
-        expanded_limit = min(30, max(10, len(free_agent_rows)))
+        # Preserve the complete deterministic card frontier until remaining-
+        # week opportunity is applied. Rate-first truncation can otherwise
+        # erase a lower-rate streamer whose extra games win the week.
         waiver_cards, _expanded_diagnostics = sandlot_waivers.build_waiver_cards(
             roster_rows=roster_rows,
             fa_players=free_agent_rows,
             snapshot_id=int(snapshot.get("snapshot_id") or 0),
-            limit=expanded_limit,
+            limit=None,
             allow_nonpositive_rate=True,
         )
         waiver_cards.sort(
@@ -633,7 +633,34 @@ def _waiver_action(
         if not matching:
             diagnostic["reason"] = "The added player has no proven bench-to-active lineup path."
             return None, None, diagnostic
-        best_lineup = max(matching, key=lambda item: _number(item.get("points_delta")) or 0.0)
+        verified_matching = [
+            recommendation
+            for recommendation in matching
+            if ((recommendation.get("replacement_card") or {}).get("movability") or {}).get("state") == "movable"
+            and ((recommendation.get("replacement_card") or {}).get("deadline") or {}).get("state") == "known"
+        ]
+        if not verified_matching:
+            rejected_card = (max(matching, key=lambda item: _number(item.get("points_delta")) or 0.0).get("replacement_card") or {})
+            movability = rejected_card.get("movability") or {}
+            lineup_deadline = rejected_card.get("deadline") or {}
+            if movability.get("state") != "movable":
+                reason = movability.get("reason") or "The post-add lineup bridge is not currently movable in Fantrax."
+                suffix = "movability"
+            else:
+                reason = lineup_deadline.get("reason") or "The post-add lineup bridge has no exact known deadline."
+                suffix = "deadline"
+            diagnostic["status"] = "post_add_lineup_unverified"
+            diagnostic["reason"] = reason
+            return None, {
+                "id": f"monitor:{action_id}:post-add-{suffix}",
+                "kind": "monitor",
+                "state": "needs_refresh",
+                "title": f"Recheck the lineup path for {add.get('name') or 'the added player'}",
+                "reason": reason,
+                "deadline": lineup_deadline if lineup_deadline else {"state": "unknown", "at": None, "reason": reason},
+                "expected_points": {"estimate": None, "basis": "impact withheld until the full post-add lineup path is verified"},
+            }, diagnostic
+        best_lineup = max(verified_matching, key=lambda item: _number(item.get("points_delta")) or 0.0)
         lineup_steps = (best_lineup.get("action") or {}).get("chain") or []
         optimized_snapshot = _apply_lineup_chain(post_snapshot, lineup_steps)
         if optimized_snapshot is None:

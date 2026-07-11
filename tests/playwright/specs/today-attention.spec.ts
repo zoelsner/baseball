@@ -397,6 +397,43 @@ test.describe('Today — Attention Queue', () => {
     await expect(panel.getByRole('button', { name: 'Open waiver board' })).toHaveCount(0);
   });
 
+  test('blocks waiver controls when the snapshot is stale', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Stale-plan safety is verified against the rebuilt local bundle.');
+    await mockSnapshot(page, baseSnapshot({
+      freshness: { state: 'stale', age_minutes: 48 },
+    }));
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(panel.getByText('Refresh required', { exact: true })).toBeVisible();
+    await expect(panel.getByText('This plan comes from a stale snapshot. Refresh before making any Fantrax change.', { exact: true })).toBeVisible();
+    await expect(panel.getByText('stale estimate', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Snapshot stale', { exact: true })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Refresh plan' })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Pressure-test with Skipper' })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Open waiver board' })).toHaveCount(0);
+  });
+
+  test('blocks Fantrax lineup handoff when the snapshot is old', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Old-plan safety is verified against the rebuilt local bundle.');
+    const old = baseSnapshot({ freshness: { state: 'old', age_minutes: 180 } });
+    old.win_this_week.actions[0].kind = 'lineup';
+    old.win_this_week.actions[0].title = 'Start Bench Bat over Current Starter';
+    await mockSnapshot(page, old);
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(panel.getByText('Refresh required', { exact: true })).toBeVisible();
+    await expect(panel.getByText('This plan comes from an old snapshot. Refresh before making any Fantrax change.', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Snapshot old', { exact: true })).toBeVisible();
+    await expect(panel.getByRole('link', { name: 'Open Fantrax lineup' })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Pressure-test with Skipper' })).toHaveCount(0);
+  });
+
   test('silently refetches when the primary action deadline arrives', async ({ page }) => {
     test.skip(!isLocalBundle, 'Deadline-triggered refetch is verified against the rebuilt local bundle.');
     const expiring = baseSnapshot();

@@ -130,7 +130,7 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertIn("live_fantrax_availability_and_transaction_preflight", primary["legality"]["blocked_by"])
         self.assertEqual(primary["dynasty_cost"]["level"], "low")
         add_step = next(step for step in primary["steps"] if step.get("action") == "add")
-        self.assertEqual(add_step["to_slot"], "BN")
+        self.assertEqual(add_step["to_slot"], "2B")
         self.assertTrue(any(step.get("player_id") == "fa" and step.get("to_slot") == "2B" for step in primary["steps"]))
 
         lineup = next(action for action in plan["actions"] if action["kind"] == "lineup")
@@ -198,6 +198,54 @@ class WinThisWeekTests(unittest.TestCase):
         )
         self.assertEqual(move_out_monitor["state"], "needs_refresh")
         self.assertIn("does not expose a Drop action", move_out_monitor["reason"])
+
+    def test_locked_post_add_lineup_bridge_is_not_actionable(self):
+        roster = [
+            roster_player("weak", "Locked Active Player", slot="2B", positions="2B", fppg=1.0, age=31),
+            roster_player("bench-drop", "Bench Drop", slot="BN", positions="2B", fppg=0.5, age=31),
+        ]
+        roster[0]["raw"]["scorer"]["disableLineupChange"] = True
+        roster[0]["transaction_eligibility"]["drop_available"] = False
+        roster[0]["transaction_eligibility"]["action_type_ids"] = ["4"]
+
+        plan = sandlot_win_week.build_plan(snapshot_row(roster=roster), now=NOW)
+
+        self.assertFalse(any(action["kind"] == "waiver" for action in plan["actions"]))
+        rejected = [
+            item for item in plan["diagnostics"]["considered"]
+            if item.get("kind") == "waiver" and item.get("status") == "post_add_lineup_unverified"
+        ]
+        self.assertTrue(rejected)
+        monitor = next(
+            item for item in plan["monitoring_actions"]
+            if ":post-add-movability" in item["id"]
+        )
+        self.assertEqual(monitor["state"], "needs_refresh")
+
+    def test_unknown_post_add_lineup_movability_and_deadline_are_not_actionable(self):
+        roster = [
+            roster_player("weak", "Active Player", slot="2B", positions="2B", fppg=1.0, age=31),
+            roster_player("bench-drop", "Bench Drop", slot="BN", positions="2B", fppg=0.5, age=31),
+        ]
+        roster[0]["transaction_eligibility"]["drop_available"] = False
+        roster[0]["transaction_eligibility"]["action_type_ids"] = ["4"]
+        roster[0]["future_games"][0].pop("gameDate")
+
+        add = free_agent()
+        add["raw"] = {"scorer": {"disableLineupChange": False}}
+        plan = sandlot_win_week.build_plan(snapshot_row(roster=roster, free_agents=[add]), now=NOW)
+
+        self.assertFalse(any(action["kind"] == "waiver" for action in plan["actions"]))
+        rejected = [
+            item for item in plan["diagnostics"]["considered"]
+            if item.get("kind") == "waiver" and item.get("status") == "post_add_lineup_unverified"
+        ]
+        self.assertTrue(rejected)
+        monitor = next(
+            item for item in plan["monitoring_actions"]
+            if ":post-add-movability" in item["id"]
+        )
+        self.assertEqual(monitor["deadline"]["state"], "unknown")
 
     def test_waiver_move_dominated_by_free_lineup_change_is_rejected(self):
         roster = [
@@ -281,7 +329,7 @@ class WinThisWeekTests(unittest.TestCase):
         ]
         candidates = [
             free_agent(pid=f"high-rate-{index}", name=f"High Rate {index}", fppg=6.0, games=1, positions="2B", age=31)
-            for index in range(10)
+            for index in range(35)
         ]
         candidates.append(
             free_agent(pid="weekly-volume", name="Weekly Volume", fppg=4.0, games=4, positions="2B", age=31)

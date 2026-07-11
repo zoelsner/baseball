@@ -164,7 +164,7 @@ def build_waiver_cards(
     roster_rows: list[dict[str, Any]],
     fa_players: list[dict[str, Any]],
     snapshot_id: int,
-    limit: int = CARD_LIMIT,
+    limit: int | None = CARD_LIMIT,
     allow_nonpositive_rate: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     weak_positions = _weak_positions(roster_rows)
@@ -199,6 +199,7 @@ def build_waiver_cards(
         )
     )
 
+    selection_limit = len(candidates) if limit is None else max(0, limit)
     selected: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
     used_adds: set[str] = set()
@@ -213,17 +214,17 @@ def build_waiver_cards(
         selected_ids.add(str(card["id"]))
         used_adds.add(add_id)
         used_moves.add(move_id)
-        if len(selected) >= limit:
+        if len(selected) >= selection_limit:
             break
 
-    if len(selected) < limit:
+    if len(selected) < selection_limit:
         for card in candidates:
             cid = str(card["id"])
             if cid in selected_ids:
                 continue
             selected.append(card)
             selected_ids.add(cid)
-            if len(selected) >= limit:
+            if len(selected) >= selection_limit:
                 break
 
     for i, card in enumerate(selected, start=1):
