@@ -49,6 +49,7 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
         free_agent_rows,
         _has_actionable_free_agent,
     )
+    lineup_change_policy_quality = _lineup_change_policy_quality(snapshot.get("league_rules"))
 
     complete = bool(matchup and matchup.get("complete"))
     projection_reasons = _projection_reasons(
@@ -98,15 +99,51 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
         "lineup_slots": lineup_slots_quality,
         "projection_slots": projection_slots_quality,
         "free_agent_pool": free_agent_pool_quality,
+        "lineup_change_policy": lineup_change_policy_quality,
         "projection_ready": not projection_reasons,
         "recommendations_ready": not recommendation_reasons,
         "lineup_recommendations_ready": not action_recommendation_reasons,
         "add_drop_recommendations_ready": not add_drop_recommendation_reasons,
+        # The exact solver is intentionally not present in this evidence-only
+        # slice. A future fixture-backed mapping and solver must set this true.
+        "schedule_optimizer_ready": False,
+        "schedule_optimizer_reasons": [lineup_change_policy_quality["reason"]],
         "projection_reasons": projection_reasons,
         "recommendation_reasons": recommendation_reasons,
         "lineup_recommendation_reasons": action_recommendation_reasons,
         "add_drop_recommendation_reasons": add_drop_recommendation_reasons,
         "reasons": reasons,
+    }
+
+
+def _lineup_change_policy_quality(league_rules: Any) -> dict[str, Any]:
+    rules = league_rules if isinstance(league_rules, dict) else {}
+    policy = (
+        rules.get("lineup_change_policy")
+        if isinstance(rules.get("lineup_change_policy"), dict)
+        else {}
+    )
+    candidates = policy.get("candidates") if isinstance(policy.get("candidates"), list) else []
+    candidate_hints = sorted({
+        str(candidate.get("hint"))
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("hint")
+    })
+    observed = policy.get("state") == "observed_unclassified" and bool(candidates)
+    reason = str(
+        policy.get("reason")
+        or "Fantrax lineup cadence and lock semantics are not present in the snapshot."
+    )
+    return {
+        "state": "observed_unclassified" if observed else "missing",
+        "trusted": False,
+        "cadence": None,
+        "lock_scope": None,
+        "change_limit": None,
+        "source": policy.get("source"),
+        "reason": reason,
+        "candidate_count": len(candidates),
+        "candidate_hints": candidate_hints,
     }
 
 

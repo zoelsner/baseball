@@ -171,6 +171,7 @@ def build_plan(
         "read_only": True,
         "writes_enabled": False,
         "handoffs": _fantrax_handoffs(snapshot),
+        "schedule_optimizer": _schedule_optimizer_status(quality),
         "matchup": _matchup_context(matchup, base_projection),
         "summary": _summary(matchup, base_projection, primary, no_action_reason),
         "primary_action_id": primary.get("id") if primary else None,
@@ -186,6 +187,31 @@ def build_plan(
                 isinstance(base_projection, dict)
                 and base_projection.get("probability_calibrated") is True
             ),
+        },
+    }
+
+
+def _schedule_optimizer_status(data_quality: dict[str, Any]) -> dict[str, Any]:
+    policy = (
+        data_quality.get("lineup_change_policy")
+        if isinstance(data_quality.get("lineup_change_policy"), dict)
+        else {}
+    )
+    observed = policy.get("state") == "observed_unclassified"
+    return {
+        "state": "policy_unclassified" if observed else "policy_missing",
+        "read_only": True,
+        "writes_enabled": False,
+        "reason": (
+            policy.get("reason") or "Fantrax lineup cadence and lock semantics are not trusted yet."
+        ),
+        "policy": {
+            "state": policy.get("state"),
+            "cadence": policy.get("cadence"),
+            "lock_scope": policy.get("lock_scope"),
+            "change_limit": policy.get("change_limit"),
+            "source": policy.get("source"),
+            "candidate_count": policy.get("candidate_count") or 0,
         },
     }
 
