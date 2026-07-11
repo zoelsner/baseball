@@ -15,7 +15,6 @@ import re
 import sys
 import types
 from datetime import date as date_cls, datetime, time as time_cls, timezone
-from time import monotonic
 from typing import Any
 
 import requests
@@ -28,7 +27,6 @@ except Exception:  # fantraxapi 0.2.x exposes raw calls through FantraxAPI._requ
 log = logging.getLogger(__name__)
 
 FXPA_URL = "https://www.fantrax.com/fxpa/req"
-LEAGUE_RULES_TIMEOUT_SECONDS = 15
 FANTRAX_DROP_ACTION_TYPE_ID = "3"
 FANTRAX_TRADE_ACTION_TYPE_ID = "4"
 
@@ -920,7 +918,13 @@ def apply_trusted_slot_overrides(
     return out
 
 
-def extract_roster(api: FantraxAPI, team_id: str, slot_overrides: dict[str, dict[str, Any]] | None = None) -> dict:
+def extract_roster(
+    api: FantraxAPI,
+    team_id: str,
+    slot_overrides: dict[str, dict[str, Any]] | None = None,
+    *,
+    capture_lineup_policy: bool = False,
+) -> dict:
     """Returns dict with `rows` (list of normalized players) plus roster
     capacity totals (active/reserve/IR)."""
     roster = _team_roster(api, team_id)
@@ -984,6 +988,12 @@ def extract_roster(api: FantraxAPI, team_id: str, slot_overrides: dict[str, dict
         "period_number": getattr(roster, "period_number", None),
         "period_date": str(getattr(roster, "period_date", "")) or None,
     }
+    if capture_lineup_policy and isinstance(roster, _RawRoster):
+        roster_data["_lineup_change_policy"] = {
+            **_lineup_change_policy_observation(roster._data, method="getTeamRosterInfo"),
+            "methods_checked": ["getTeamRosterInfo"],
+            "successful_methods": ["getTeamRosterInfo"],
+        }
     return apply_trusted_slot_overrides(roster_data, slot_overrides)
 
 
@@ -1313,109 +1323,6 @@ def extract_all_team_rosters(api: FantraxAPI, my_team_id: str) -> dict:
     return teams_out
 
 
-def extract_league_rules(session: requests.Session, league_id: str) -> dict | None:
-    """Probe read-only league-rule methods and retain sanitized policy evidence.
-
-    The first usable raw response is preserved for compatibility. Scoring and
-    lineup-policy summaries may come from richer later responses without
-    persisting those additional raw payloads.
-    """
-    candidates = [
-        "getLeagueRules",
-        "getLeagueInfo",
-        "getLeague",
-        "getLeagueSettings",
-        "getScoringSettings",
-        "getRules",
-    ]
-
-    url = f"{FXPA_URL}?leagueId={league_id}"
-    successful: list[tuple[str, dict[str, Any], list[dict] | None, dict[str, Any]]] = []
-    attempted_methods: list[str] = []
-    deadline = monotonic() + LEAGUE_RULES_TIMEOUT_SECONDS
-    for method in candidates:
-        remaining_seconds = deadline - monotonic()
-        if remaining_seconds <= 0:
-            break
-        attempted_methods.append(method)
-        try:
-            payload = {"msgs": [{"method": method, "data": {"leagueId": league_id}}]}
-            response = session.post(url, json=payload, timeout=min(3.0, remaining_seconds))
-            if response.status_code != 200:
-                continue
-            try:
-                data = response.json()
-            except ValueError:
-                continue
-            responses = data.get("responses") or []
-            first = responses[0] if responses else None
-            if not isinstance(first, dict):
-                continue
-            if first.get("error") or first.get("errorMsg") or first.get("pageError"):
-                continue
-            scoring_categories = _find_scoring_categories(first)
-            lineup_change_policy = _lineup_change_policy_observation(first, method=method)
-            successful.append((method, first, scoring_categories, lineup_change_policy))
-        except Exception as exc:
-            log.debug("League rules method %s failed: %s", method, type(exc).__name__)
-            continue
-    if not successful:
-        log.info("League rules unavailable: all candidate methods failed")
-        return None
-
-    # Fantrax sometimes returns a technically successful but shallow response
-    # for the first method. Do not let that mask policy evidence exposed by a
-    # later read-only endpoint. Keep only one raw response in the snapshot and
-    # expose method names/counts as sanitized acquisition diagnostics.
-    raw_result = successful[0]
-    policy_results = [
-        result for result in successful
-        if result[3].get("state") == "observed_unclassified"
-    ]
-    policy_result = max(policy_results, key=_lineup_policy_result_score) if policy_results else raw_result
-    scoring_result = next((result for result in successful if result[2]), None)
-    method, raw, _, _ = raw_result
-    policy_method, _, _, lineup_change_policy = policy_result
-    lineup_change_policy = {
-        **lineup_change_policy,
-        "methods_checked": attempted_methods,
-        "successful_methods": [result[0] for result in successful],
-    }
-    log.info(
-        "League rules fetched via %s successful methods; selected method=%s policy_state=%s",
-        len(successful),
-        policy_method,
-        lineup_change_policy.get("state"),
-    )
-    return {
-        "method": method,
-        "policy_method": policy_method,
-        "scoring_method": scoring_result[0] if scoring_result else None,
-        "scoring_categories": scoring_result[2] if scoring_result else None,
-        "lineup_change_policy": lineup_change_policy,
-        "raw": raw,
-    }
-
-
-def _lineup_policy_result_score(
-    result: tuple[str, dict[str, Any], list[dict] | None, dict[str, Any]],
-) -> tuple[int, int]:
-    """Prefer the response with the broadest sanitized policy evidence."""
-    candidates = result[3].get("candidates")
-    if not isinstance(candidates, list):
-        return (0, 0)
-    hints = {
-        candidate.get("hint")
-        for candidate in candidates
-        if isinstance(candidate, dict) and candidate.get("hint")
-    }
-    semantic_groups = sum((
-        bool(hints & {"daily", "weekly", "period"}),
-        bool(hints & {"player_game", "global_day"}),
-    ))
-    return semantic_groups, len(candidates)
-
-
 def _lineup_change_policy_observation(node: Any, *, method: str) -> dict[str, Any]:
     """Capture sanitized rule evidence without guessing cadence semantics.
 
@@ -1446,7 +1353,7 @@ def _lineup_change_policy_observation(node: Any, *, method: str) -> dict[str, An
         if not path or not _is_lineup_policy_path(path):
             return
         if value is None or isinstance(value, (str, int, float, bool)):
-            hint = _lineup_policy_value_hint(value)
+            hint = _lineup_policy_value_hint(value, path=path)
             if isinstance(value, str) and hint is None:
                 return
             safe_path = _safe_lineup_policy_path(path)
@@ -1483,7 +1390,9 @@ def _lineup_change_policy_observation(node: Any, *, method: str) -> dict[str, An
 
 def _is_lineup_policy_path(path: tuple[str, ...]) -> bool:
     leaf = re.sub(r"[^a-z0-9]", "", path[-1].casefold()) if path else ""
-    policy_tokens = ("change", "period", "lock", "deadline", "frequency")
+    if leaf in {"daily", "origdaily", "applytofutureperiods", "autosubmitlineupchanges"}:
+        return True
+    policy_tokens = ("change", "period", "lock", "deadline", "frequency", "system")
     if "lineup" in leaf and any(token in leaf for token in policy_tokens):
         return True
     return "roster" in leaf and any(token in leaf for token in policy_tokens)
@@ -1501,7 +1410,10 @@ def _safe_lineup_policy_path(path: tuple[str, ...]) -> str | None:
     return ".".join(safe)
 
 
-def _lineup_policy_value_hint(value: Any) -> str | None:
+def _lineup_policy_value_hint(value: Any, *, path: tuple[str, ...] = ()) -> str | None:
+    leaf = re.sub(r"[^a-z0-9]", "", path[-1].casefold()) if path else ""
+    if isinstance(value, bool) and leaf in {"daily", "origdaily"}:
+        return "daily" if value else "not_daily"
     if not isinstance(value, str):
         return None
     normalized = re.sub(r"[^a-z0-9]", "", value.casefold())
@@ -1515,31 +1427,10 @@ def _lineup_policy_value_hint(value: Any) -> str | None:
         return "global_day"
     if normalized in {"period", "scoringperiod"}:
         return "period"
-    return None
-
-
-def _find_scoring_categories(node: Any, depth: int = 0) -> list[dict] | None:
-    """Walk the response looking for a list of scoring-category dicts. They
-    typically have keys like name/code/value/points."""
-    if depth > 10:
-        return None
-    if isinstance(node, list):
-        if node and isinstance(node[0], dict):
-            keys = set(node[0].keys())
-            if ({"name"} & keys) and ({"value", "points", "fpts"} & keys):
-                return [
-                    {k: v for k, v in d.items() if k in ("name", "code", "shortName", "value", "points", "fpts")}
-                    for d in node
-                ]
-        for item in node:
-            found = _find_scoring_categories(item, depth + 1)
-            if found:
-                return found
-    elif isinstance(node, dict):
-        for k, v in node.items():
-            found = _find_scoring_categories(v, depth + 1)
-            if found:
-                return found
+    if normalized == "classic":
+        return "classic"
+    if normalized in {"easyclick", "easyclicks"}:
+        return "easy_click"
     return None
 
 
@@ -1681,6 +1572,20 @@ def _normalize_fa_player(entry: dict, stat_keys: list[str]) -> dict:
     }
 
 
+def _promote_roster_lineup_policy(snapshot: dict[str, Any]) -> None:
+    """Move private roster evidence into the canonical league-rules slot."""
+    roster = snapshot.get("roster")
+    if not isinstance(roster, dict):
+        return
+    policy = roster.pop("_lineup_change_policy", None)
+    if not isinstance(policy, dict):
+        return
+    snapshot["league_rules"] = {
+        "method": "getTeamRosterInfo",
+        "lineup_change_policy": policy,
+    }
+
+
 def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict:
     """Build the daily snapshot. Each section is independently wrapped."""
     api = FantraxAPI(league_id, session=session)
@@ -1709,8 +1614,7 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
         log.warning("team() failed: %s", e)
 
     sections = [
-        ("league_rules",     lambda: extract_league_rules(session, league_id)),
-        ("roster",           lambda: extract_roster(api, team_id)),
+        ("roster",           lambda: extract_roster(api, team_id, capture_lineup_policy=True)),
         ("all_team_rosters", lambda: extract_all_team_rosters(api, team_id)),
         ("standings",        lambda: extract_standings(api, team_id)),
         ("matchup",          lambda: extract_matchup(api, team_id)),
@@ -1725,5 +1629,7 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
         except Exception as e:
             log.exception("section %s failed", key)
             snapshot["errors"].append(f"{key}: {e}")
+
+    _promote_roster_lineup_policy(snapshot)
 
     return snapshot
