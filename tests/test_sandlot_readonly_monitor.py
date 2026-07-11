@@ -275,6 +275,58 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         codes = {item["code"] for item in report["failures"]}
         self.assertIn("win_this_week_cross_endpoint_drift", codes)
 
+    def test_win_this_week_no_action_requires_reasoned_alternatives(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan.update({
+                "state": "no_action",
+                "primary_action_id": None,
+                "actions": [],
+                "no_action": {"reason": "No legal move clears the value threshold."},
+            })
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_no_action_alternatives", codes)
+        self.assertIn("win_this_week_embedded_no_action_alternatives", codes)
+
+    def test_win_this_week_no_action_cannot_expose_aaron_judge_move_out(self):
+        payloads = healthy_payloads()
+        alternative = {
+            "id": "rejected-waiver:judge",
+            "kind": "waiver",
+            "title": "Rejected protected move",
+            "status": "rejected",
+            "reason": "This move is protected.",
+            "expected_points": {"estimate": None, "comparable": False},
+            "steps": [{"action": "move_out", "player_name": "Aaron Judge"}],
+        }
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan.update({
+                "state": "no_action",
+                "primary_action_id": None,
+                "actions": [],
+                "no_action": {
+                    "reason": "No legal move clears the value threshold.",
+                    "alternatives": [copy.deepcopy(alternative)],
+                },
+            })
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_protected_anchor", codes)
+        self.assertIn("win_this_week_embedded_protected_anchor", codes)
+
     def test_cross_endpoint_snapshot_and_write_boundaries_fail_closed(self):
         payloads = healthy_payloads()
         payloads["/api/attention"]["snapshot_id"] = 263

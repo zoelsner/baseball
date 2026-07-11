@@ -155,6 +155,12 @@ def build_plan(
                 or waiver_payload.get("message")
                 or "No legal action has a positive, provenance-backed remaining-week impact."
             )
+    no_action = None
+    if no_action_reason:
+        no_action = {
+            "reason": no_action_reason,
+            "alternatives": _no_action_alternatives(lineup_payload, considered),
+        }
 
     return {
         "model_version": MODEL_VERSION,
@@ -168,7 +174,7 @@ def build_plan(
         "primary_action_id": primary.get("id") if primary else None,
         "actions": actions,
         "monitoring_actions": monitoring,
-        "no_action": {"reason": no_action_reason} if no_action_reason else None,
+        "no_action": no_action,
         "diagnostics": {
             "considered": considered,
             "lineup_action_count": sum(1 for action in actions if action.get("kind") in {"lineup", "lineup_plan"}),
@@ -180,6 +186,84 @@ def build_plan(
             ),
         },
     }
+
+
+def _no_action_alternatives(
+    lineup_payload: dict[str, Any],
+    considered: list[dict[str, Any]],
+    *,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    """Expose concise rejected options without leaking planner diagnostics."""
+    alternatives: list[dict[str, Any]] = []
+    lineup_no_action = lineup_payload.get("no_action") if isinstance(lineup_payload.get("no_action"), dict) else {}
+    lineup_alternative = lineup_no_action.get("best_alternative")
+    if isinstance(lineup_alternative, dict):
+        alternatives.append(copy.deepcopy(lineup_alternative))
+    else:
+        rejected_delta = _number(lineup_no_action.get("best_rejected_delta"))
+        if rejected_delta is not None:
+            threshold = _number(lineup_no_action.get("threshold"))
+            alternatives.append({
+                "id": "rejected-lineup:best",
+                "kind": "lineup",
+                "title": "Best legal lineup change",
+                "steps": [],
+                "expected_points": {"estimate": round(rejected_delta, 1), "comparable": True},
+                "status": "below_threshold",
+                "reason": (
+                    f"The estimated {rejected_delta:+.1f}-point gain is below Sandlot's "
+                    f"{threshold:.1f}-point meaningful-gain threshold."
+                    if threshold is not None
+                    else str(lineup_no_action.get("reason") or "The move does not create meaningful positive value.")
+                ),
+            })
+
+    for diagnostic in considered:
+        if not isinstance(diagnostic, dict) or not diagnostic.get("reason"):
+            continue
+        if diagnostic.get("status") in {"movable", "provisionally_legal"}:
+            continue
+        alternatives.append({
+            "id": str(diagnostic.get("id") or "rejected-option"),
+            "kind": str(diagnostic.get("kind") or "unknown"),
+            "title": str(diagnostic.get("title") or "Considered alternative"),
+            "steps": copy.deepcopy(diagnostic.get("steps") or []),
+            "expected_points": copy.deepcopy(
+                diagnostic.get("expected_points")
+                if isinstance(diagnostic.get("expected_points"), dict)
+                else {"estimate": None, "comparable": False}
+            ),
+            "status": str(diagnostic.get("status") or "rejected"),
+            "reason": str(diagnostic.get("reason")),
+        })
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for alternative in alternatives:
+        key = str(alternative.get("id") or alternative.get("title") or "")
+        if key and key not in deduped:
+            deduped[key] = alternative
+    status_order = {
+        "below_threshold": 0,
+        "dominated": 1,
+        "nonpositive": 2,
+        "deadline_unknown": 3,
+        "move_out_locked": 4,
+        "unknown": 5,
+        "rejected": 6,
+    }
+    ranked = list(deduped.values())
+    def sort_key(alternative: dict[str, Any]) -> tuple[Any, ...]:
+        points = _number((alternative.get("expected_points") or {}).get("estimate"))
+        return (
+            points is None,
+            -(points if points is not None else 0.0),
+            status_order.get(str(alternative.get("status") or "rejected"), 7),
+            str(alternative.get("title") or ""),
+        )
+
+    ranked.sort(key=sort_key)
+    return ranked[: max(0, limit)]
 
 
 def _lineup_action(
@@ -197,11 +281,15 @@ def _lineup_action(
     proposal = card.get("proposal") if isinstance(card.get("proposal"), dict) else {}
     points = _number(recommendation.get("points_delta")) or 0.0
     action_id = str(proposal.get("id") or f"lineup:{move_out.get('id')}:{move_in.get('id')}")
+    title = f"Start {move_in.get('name') or 'the better option'} over {move_out.get('name') or 'the current starter'}"
     diagnostic = {
         "id": action_id,
         "kind": "lineup",
+        "title": title,
         "status": movability.get("state") or "unknown",
         "reason": movability.get("reason"),
+        "steps": (recommendation.get("action") or {}).get("chain") or [],
+        "expected_points": {"estimate": round(points, 1), "comparable": True},
     }
     if points <= 0:
         diagnostic["status"] = "nonpositive"
@@ -240,7 +328,7 @@ def _lineup_action(
         "id": action_id,
         "kind": "lineup",
         "state": "act_now",
-        "title": f"Start {move_in.get('name') or 'the better option'} over {move_out.get('name') or 'the current starter'}",
+        "title": title,
         "steps": (recommendation.get("action") or {}).get("chain") or [],
         "expected_points": {
             "estimate": round(points, 1),
@@ -438,7 +526,15 @@ def _waiver_action(
     add = card.get("add") if isinstance(card.get("add"), dict) else {}
     move_out = card.get("move_out") if isinstance(card.get("move_out"), dict) else {}
     action_id = str(card.get("id") or f"waiver:{add.get('id')}:{move_out.get('id')}")
-    diagnostic = {"id": action_id, "kind": "waiver", "status": "rejected", "reason": None}
+    title = f"Add {add.get('name') or 'the free agent'} and move out {move_out.get('name') or 'the roster player'}"
+    diagnostic = {
+        "id": action_id,
+        "kind": "waiver",
+        "title": title,
+        "status": "rejected",
+        "reason": None,
+        "expected_points": {"estimate": None, "comparable": False},
+    }
     add_row = _find_free_agent(snapshot, add.get("id"))
     move_row = _find_roster_player(snapshot, move_out.get("id"))
     if not add_row or not move_row:
@@ -550,6 +646,7 @@ def _waiver_action(
         diagnostic["reason"] = "Projected team points are unavailable for the waiver comparison."
         return None, None, diagnostic
     impact = round(optimized_points - base_points, 1)
+    diagnostic["expected_points"] = {"estimate": impact, "comparable": True}
     if impact <= 0:
         diagnostic["status"] = "nonpositive"
         diagnostic["reason"] = "The legal post-add roster does not improve remaining-week projected points."
@@ -569,7 +666,7 @@ def _waiver_action(
         "id": action_id,
         "kind": "waiver",
         "state": "review_now",
-        "title": f"Add {add.get('name') or 'the free agent'} and move out {move_out.get('name') or 'the roster player'}",
+        "title": title,
         "steps": [
             {
                 "action": "add",

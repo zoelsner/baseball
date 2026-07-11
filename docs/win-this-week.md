@@ -41,6 +41,20 @@ contribute zero until MLB publishes a player-specific opportunity; the payload
 reports their count and win probability remains uncalibrated. A failed schedule
 read still blocks projection.
 
+### No-action explanations
+
+When no option clears the legal and meaningful-value gates, the API does not
+discard the work it already performed. `no_action.alternatives` exposes up to
+three concise rejected options, ordered by comparable projected impact and
+closeness to actionability. Each item names the proposed move, preserves its
+exact lineup chain when available, and explains the failed threshold,
+provenance, deadline, movability, or post-add gate.
+
+Today renders these under **Best alternatives checked**. This distinguishes a
+real evidence-backed no-action result from missing recommendation data and lets
+the manager see whether the best rejected move was harmless noise, blocked by
+freshness, or dominated by a better no-transaction plan.
+
 ### Lineup actions
 
 Lineup actions reuse `sandlot_matchup`'s eligibility, remaining-game,
@@ -119,6 +133,8 @@ past deadline locally, replaces the action label with `Refresh required`, and
 hides the normal action handoffs until a new plan arrives. The production
 monitor also rejects expired action deadlines and any drift between the plan
 embedded in `/api/snapshot/latest` and `/api/win-this-week/latest`.
+For a `no_action` state, it additionally requires a reason plus the structured
+alternatives list, and validates any displayed point estimate as comparable.
 
 ## Safety Boundary
 

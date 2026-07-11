@@ -551,6 +551,7 @@ def rank_matchup_improvement_actions(
     }
     recommendations: list[dict[str, Any]] = []
     best_rejected_delta = (simulation.get("no_action") or {}).get("best_rejected_delta")
+    best_rejected_action: dict[str, Any] | None = None
 
     for action in simulation.get("actions") or []:
         points_delta = _number(action.get("points_delta")) or 0.0
@@ -564,6 +565,9 @@ def rank_matchup_improvement_actions(
         ):
             if best_rejected_delta is None or points_delta > best_rejected_delta:
                 best_rejected_delta = points_delta
+            previous_best = _number((best_rejected_action or {}).get("points_delta"))
+            if previous_best is None or points_delta > previous_best:
+                best_rejected_action = action
             continue
         confidence = _recommendation_confidence(
             points_delta,
@@ -625,6 +629,10 @@ def rank_matchup_improvement_actions(
         "no_action": {
             "reason": reason,
             "best_rejected_delta": round(best_rejected_delta, 1) if best_rejected_delta is not None else None,
+            "best_alternative": _rejected_lineup_alternative(
+                best_rejected_action,
+                threshold=min_points_delta,
+            ),
             "threshold": min_points_delta,
             "win_probability_threshold": min_win_probability_delta if probability_calibrated else None,
             "probability_calibrated": probability_calibrated,
@@ -632,6 +640,55 @@ def rank_matchup_improvement_actions(
     }
 
 
+def _rejected_lineup_alternative(
+    action: dict[str, Any] | None,
+    *,
+    threshold: float,
+) -> dict[str, Any] | None:
+    if not isinstance(action, dict):
+        return None
+    chain = action.get("chain") if isinstance(action.get("chain"), list) else []
+    move_in = next(
+        (
+            step for step in chain
+            if isinstance(step, dict)
+            and _is_bench_slot(step.get("from_slot"))
+            and not _is_bench_slot(step.get("to_slot"))
+        ),
+        None,
+    )
+    move_out = next(
+        (
+            step for step in chain
+            if isinstance(step, dict)
+            and not _is_bench_slot(step.get("from_slot"))
+            and _is_bench_slot(step.get("to_slot"))
+        ),
+        None,
+    )
+    points = round(_number(action.get("points_delta")) or 0.0, 1)
+    title = "Best legal lineup change"
+    if move_in and move_out:
+        title = (
+            f"Start {move_in.get('player_name') or move_in.get('player_id') or 'the bench option'} "
+            f"over {move_out.get('player_name') or move_out.get('player_id') or 'the current starter'}"
+        )
+    return {
+        "id": "rejected-lineup:" + ":".join(
+            str(step.get("player_id") or "unknown")
+            for step in chain
+            if isinstance(step, dict)
+        ),
+        "kind": "lineup",
+        "title": title,
+        "steps": chain,
+        "expected_points": {"estimate": points, "comparable": True},
+        "status": "below_threshold",
+        "reason": (
+            f"The estimated {points:+.1f}-point gain is below Sandlot's "
+            f"{threshold:.1f}-point meaningful-gain threshold."
+        ),
+    }
 def _clears_meaningful_threshold(
     points_delta: float,
     win_probability_delta: float,

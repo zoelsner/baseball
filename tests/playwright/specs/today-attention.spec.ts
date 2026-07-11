@@ -302,6 +302,42 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('No injury, lineup, output, or replacement issue needs action in the current snapshot.')).toBeVisible();
   });
 
+  test('explains why the best no-action alternatives were rejected', async ({ page }) => {
+    test.skip(!isLocalBundle, 'No-action alternatives are verified against the rebuilt local bundle.');
+    await mockSnapshot(page, baseSnapshot({
+      win_this_week: {
+        model_version: 'win_this_week_v1',
+        state: 'no_action',
+        read_only: true,
+        writes_enabled: false,
+        summary: { headline: 'No lineup move clears the meaningful-gain threshold from this snapshot.' },
+        actions: [],
+        monitoring_actions: [],
+        no_action: {
+          reason: 'No lineup move clears the meaningful-gain threshold from this snapshot.',
+          alternatives: [{
+            id: 'rejected-lineup:bench:starter',
+            kind: 'lineup',
+            title: 'Start Small Upgrade over Current Starter',
+            expected_points: { estimate: 0.4, comparable: true },
+            status: 'below_threshold',
+            reason: "The estimated +0.4-point gain is below Sandlot's 1.0-point meaningful-gain threshold.",
+          }],
+        },
+      },
+    }));
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(panel.getByText('No worthwhile move', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Best alternatives checked', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Start Small Upgrade over Current Starter', { exact: true })).toBeVisible();
+    await expect(panel.getByText('+0.4 pts', { exact: true })).toBeVisible();
+    await expect(panel.getByText(/below Sandlot's 1.0-point meaningful-gain threshold/)).toBeVisible();
+  });
+
   test('blocks an expired primary action until the plan is refreshed', async ({ page }) => {
     test.skip(!isLocalBundle, 'Deadline-expiry safety is verified against the rebuilt local bundle.');
     const expired = baseSnapshot();

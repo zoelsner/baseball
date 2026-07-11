@@ -1125,6 +1125,7 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
   if (!plan) return null;
   const actions = Array.isArray(plan.actions) ? plan.actions : [];
   const primary = actions[0] || null;
+  const alternatives = Array.isArray(plan.no_action?.alternatives) ? plan.no_action.alternatives : [];
   const deadlineExpired = v2WinWeekDeadlineExpired(primary?.deadline);
   const monitor = (plan.monitoring_actions || [])[0] || null;
   const points = v2Number(primary?.expected_points?.estimate);
@@ -1250,6 +1251,35 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
                 Open waiver board
               </button>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {!primary && alternatives.length ? (
+        <div style={{ marginTop:15, background:'rgba(255,255,255,0.78)', borderRadius:16, padding:'14px 15px', boxShadow:'0 0 0 1px rgba(0,0,0,0.055)' }}>
+          <div style={{ color:V2.muted, fontSize:10, lineHeight:1.3, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>
+            Best alternatives checked
+          </div>
+          <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:10 }}>
+            {alternatives.map((alternative, index) => {
+              const estimate = v2Number(alternative?.expected_points?.estimate);
+              const kind = alternative?.kind === 'waiver' ? 'Waiver' : alternative?.kind === 'lineup' ? 'Lineup' : 'Option';
+              return (
+                <div key={alternative.id || `alternative-${index}`} style={{ paddingTop:index ? 10 : 0, borderTop:index ? `1px solid ${V2.hairline2}` : 'none' }}>
+                  <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:10 }}>
+                    <div style={{ color:V2.ink, fontSize:13, lineHeight:1.35, fontWeight:850, textWrap:'pretty' }}>
+                      {alternative.title || 'Considered alternative'}
+                    </div>
+                    <div style={{ flexShrink:0, color:estimate === null ? V2.muted : V2.accent, fontFamily:V2.fontMono, fontSize:11.5, fontWeight:900, fontVariantNumeric:'tabular-nums' }}>
+                      {estimate === null ? kind : `${v2Signed(estimate, 1)} pts`}
+                    </div>
+                  </div>
+                  <div style={{ marginTop:4, color:V2.muted, fontSize:11.5, lineHeight:1.4, fontWeight:700, textWrap:'pretty' }}>
+                    {alternative.reason || 'This option did not clear Sandlot’s legal and value gates.'}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       ) : null}

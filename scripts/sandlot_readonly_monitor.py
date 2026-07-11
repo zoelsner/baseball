@@ -725,6 +725,42 @@ def _validate_win_this_week(
     expected_primary = actions[0].get("id") if actions and isinstance(actions[0], dict) else None
     if primary_id != expected_primary:
         fail(f"{prefix}_primary_mismatch", "Win This Week primary action did not match rank 1")
+    if plan.get("state") == "no_action":
+        no_action = plan.get("no_action") if isinstance(plan.get("no_action"), dict) else {}
+        if not str(no_action.get("reason") or "").strip():
+            fail(f"{prefix}_no_action_reason", "Win This Week no-action state did not explain why")
+        alternatives = no_action.get("alternatives")
+        if not isinstance(alternatives, list):
+            fail(
+                f"{prefix}_no_action_alternatives",
+                "Win This Week no-action state did not expose the alternatives it considered",
+            )
+            alternatives = []
+        for index, alternative in enumerate(alternatives):
+            if not isinstance(alternative, dict):
+                fail(f"{prefix}_no_action_alternative_invalid", f"No-action alternative {index + 1} was not an object")
+                continue
+            if not str(alternative.get("title") or "").strip() or not str(alternative.get("reason") or "").strip():
+                fail(
+                    f"{prefix}_no_action_alternative_invalid",
+                    f"No-action alternative {index + 1} lacked a title or rejection reason",
+                )
+            points_block = alternative.get("expected_points") if isinstance(alternative.get("expected_points"), dict) else {}
+            estimate = points_block.get("estimate")
+            if estimate is not None and (_number(estimate) is None or points_block.get("comparable") is not True):
+                fail(
+                    f"{prefix}_no_action_alternative_invalid",
+                    f"No-action alternative {index + 1} exposed a non-comparable impact",
+                )
+            for step in alternative.get("steps") or []:
+                if not isinstance(step, dict) or step.get("action") != "move_out":
+                    continue
+                move_out_name = " ".join(str(step.get("player_name") or "").split()).casefold()
+                if move_out_name in NEVER_DROP_PLAYER_NAMES:
+                    fail(
+                        f"{prefix}_protected_anchor",
+                        "Win This Week exposed an owner-protected anchor in a rejected move-out alternative",
+                    )
     return {
         "name": prefix,
         "state": plan.get("state"),
@@ -736,6 +772,8 @@ def _validate_win_this_week(
 
 def _win_plan_signature(plan: dict[str, Any]) -> tuple[Any, ...]:
     actions = plan.get("actions") if isinstance(plan.get("actions"), list) else []
+    no_action = plan.get("no_action") if isinstance(plan.get("no_action"), dict) else {}
+    alternatives = no_action.get("alternatives") if isinstance(no_action.get("alternatives"), list) else []
     return (
         plan.get("snapshot_id"),
         plan.get("state"),
@@ -760,6 +798,29 @@ def _win_plan_signature(plan: dict[str, Any]) -> tuple[Any, ...]:
             )
             for action in actions
             if isinstance(action, dict)
+        ),
+        no_action.get("reason"),
+        tuple(
+            (
+                alternative.get("id"),
+                alternative.get("kind"),
+                alternative.get("title"),
+                alternative.get("status"),
+                ((alternative.get("expected_points") or {}).get("estimate")),
+                alternative.get("reason"),
+                tuple(
+                    (
+                        step.get("action"),
+                        step.get("player_id"),
+                        step.get("from_slot"),
+                        step.get("to_slot"),
+                    )
+                    for step in alternative.get("steps") or []
+                    if isinstance(step, dict)
+                ),
+            )
+            for alternative in alternatives
+            if isinstance(alternative, dict)
         ),
     )
 

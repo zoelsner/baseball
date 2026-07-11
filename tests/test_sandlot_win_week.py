@@ -334,6 +334,26 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertEqual(plan["actions"], [])
         self.assertEqual(plan["no_action"]["reason"], "The matchup is complete.")
 
+    def test_no_action_surfaces_the_best_rejected_lineup_alternative(self):
+        roster = [
+            roster_player("weak", "Weak Starter", slot="2B", positions="2B", fppg=1.0),
+            roster_player("bench", "Small Upgrade", slot="BN", positions="2B", fppg=1.4),
+        ]
+
+        plan = sandlot_win_week.build_plan(
+            snapshot_row(roster=roster, free_agents=[]),
+            now=NOW,
+        )
+
+        self.assertEqual(plan["state"], "no_action")
+        self.assertEqual(plan["actions"], [])
+        alternative = plan["no_action"]["alternatives"][0]
+        self.assertEqual(alternative["title"], "Start Small Upgrade over Weak Starter")
+        self.assertEqual(alternative["expected_points"]["estimate"], 0.4)
+        self.assertEqual(alternative["status"], "below_threshold")
+        self.assertIn("1.0-point meaningful-gain threshold", alternative["reason"])
+        self.assertEqual([step["player_id"] for step in alternative["steps"]], ["bench", "weak"])
+
     def test_snapshot_api_payload_exposes_the_read_only_plan(self):
         payload = _snapshot_payload(snapshot_row())
 
