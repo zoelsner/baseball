@@ -129,6 +129,9 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
         steps: [
           { action: 'add', player_id: 'impact-streamer', player_name: 'Impact Streamer' },
           { action: 'move_out', player_id: 'corner', player_name: 'Cold Corner' },
+          { action: 'start', player_id: 'impact-streamer', player_name: 'Impact Streamer', to_slot: 'UT' },
+          { player_id: 'bridge-one', player_name: 'Bridge One', from_slot: 'UT', to_slot: 'OF' },
+          { player_id: 'bridge-two', player_name: 'Bridge Two', from_slot: 'OF', to_slot: 'BN' },
         ],
         expected_points: { estimate: 5.8, comparable: true },
         win_probability_delta: null,
@@ -197,6 +200,8 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('+5.8', { exact: true })).toBeVisible();
     await expect(page.getByText('Live preflight required', { exact: true })).toBeVisible();
     await expect(page.getByText('Read-only', { exact: true })).toBeVisible();
+    await expect(page.getByText('Complete order · 5 steps', { exact: true })).toBeVisible();
+    await expect(page.getByText('Bridge Two: OF → BN', { exact: true })).toBeVisible();
     await expect(page.getByText(/Projection note: Known-opportunity lower bound: 3 pitcher/)).toBeVisible();
     await expect(page.getByText('1 hot swap')).toBeVisible();
     await expect(page.getByText('Leading by 6.1 · 2d left; this swap adds +2.4 projected points to protect the edge.')).toBeVisible();

@@ -1183,7 +1183,10 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper }) {
 
           {(primary.steps || []).length ? (
             <div style={{ marginTop:12, display:'flex', flexDirection:'column', gap:6 }}>
-              {(primary.steps || []).slice(0, 4).map((step, index) => {
+              <div style={{ color:V2.muted, fontSize:10, lineHeight:1.3, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>
+                Complete order · {(primary.steps || []).length} step{(primary.steps || []).length === 1 ? '' : 's'}
+              </div>
+              {(primary.steps || []).map((step, index) => {
                 const text = step.action === 'add'
                   ? `Add ${step.player_name || step.player_id}${step.to_slot ? ` for ${step.to_slot}` : ''}`
                   : step.action === 'move_out'
@@ -1194,7 +1197,7 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper }) {
                 return (
                   <div key={`${primary.id}-step-${index}`} style={{ display:'flex', gap:9, alignItems:'baseline', color:V2.body, fontSize:12.5, lineHeight:1.35, fontWeight:750 }}>
                     <span style={{ color:V2.accent, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums', fontWeight:900 }}>{index + 1}</span>
-                    <span style={{ textWrap:'pretty' }}>{text}</span>
+                    <span style={{ minWidth:0, textWrap:'pretty' }}>{text}</span>
                   </div>
                 );
               })}

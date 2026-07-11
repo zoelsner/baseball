@@ -122,6 +122,7 @@ class WinThisWeekTests(unittest.TestCase):
         lineup = next(action for action in plan["actions"] if action["kind"] == "lineup")
         self.assertEqual(lineup["expected_points"]["estimate"], 3.0)
         self.assertEqual(lineup["dynasty_cost"]["level"], "none")
+        self.assertIn("Fantrax destination eligibility", lineup["legality"]["verified"])
         self.assertEqual(plan["diagnostics"]["probability_calibrated"], False)
         self.assertIsNone(primary["win_probability_delta"])
         self.assertTrue(any(item["state"] == "scheduled_check" for item in plan["monitoring_actions"]))
@@ -229,6 +230,7 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertEqual(bundle["title"], "Make 2 lineup changes")
         self.assertEqual(bundle["expected_points"]["estimate"], 5.0)
         self.assertEqual(len(bundle["segments"]), 2)
+        self.assertIn("Fantrax destination eligibility", bundle["legality"]["verified"])
         self.assertEqual({step["player_id"] for step in bundle["steps"]}, {
             "weak-2b", "bench-2b", "weak-ss", "bench-ss",
         })

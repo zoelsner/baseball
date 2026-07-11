@@ -257,7 +257,7 @@ def _lineup_action(
         },
         "legality": {
             "state": "snapshot_verified",
-            "verified": ["slot eligibility", "remaining-game provenance", "Fantrax movability flag", "MLB start timing"],
+            "verified": ["slot eligibility", "remaining-game provenance", "Fantrax destination eligibility", "MLB start timing"],
             "requires_live_preflight": True,
         },
         "writes_enabled": False,
@@ -310,7 +310,7 @@ def _lineup_bundle(
         },
         "legality": {
             "state": "snapshot_verified",
-            "verified": ["sequential slot eligibility", "remaining-game provenance", "Fantrax movability flags", "MLB start timing"],
+            "verified": ["sequential slot eligibility", "remaining-game provenance", "Fantrax destination eligibility", "MLB start timing"],
             "requires_live_preflight": True,
         },
         "writes_enabled": False,
