@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from datetime import date
 from typing import Any
 
 import sandlot_future_games
@@ -50,6 +51,7 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
         _has_actionable_free_agent,
     )
     lineup_change_policy_quality = _lineup_change_policy_quality(snapshot.get("league_rules"))
+    current_period_quality = _current_period_quality(roster, matchup)
 
     complete = bool(matchup and matchup.get("complete"))
     projection_reasons = _projection_reasons(
@@ -74,7 +76,10 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
         "lineup_slots": lineup_slots_quality,
     }
     recommendation_reasons = _recommendation_reasons(recommendation_sections)
-    action_recommendation_reasons = _action_recommendation_reasons(recommendation_sections)
+    action_recommendation_reasons = _action_recommendation_reasons({
+        **recommendation_sections,
+        "current_period": current_period_quality,
+    })
     add_drop_recommendation_reasons = _add_drop_recommendation_reasons(
         {**recommendation_sections, "free_agent_pool": free_agent_pool_quality}
     )
@@ -100,10 +105,15 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
         "projection_slots": projection_slots_quality,
         "free_agent_pool": free_agent_pool_quality,
         "lineup_change_policy": lineup_change_policy_quality,
+        "current_period": current_period_quality,
         "projection_ready": not projection_reasons,
         "recommendations_ready": not recommendation_reasons,
         "lineup_recommendations_ready": not action_recommendation_reasons,
         "add_drop_recommendations_ready": not add_drop_recommendation_reasons,
+        "current_period_actions_ready": current_period_quality["state"] == "ok",
+        "current_period_action_reasons": (
+            [] if current_period_quality["state"] == "ok" else [current_period_quality["reason"]]
+        ),
         # The exact solver is intentionally not present in this evidence-only
         # slice. A future fixture-backed mapping and solver must set this true.
         "schedule_optimizer_ready": False,
@@ -114,6 +124,127 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
         "add_drop_recommendation_reasons": add_drop_recommendation_reasons,
         "reasons": reasons,
     }
+
+
+def _current_period_quality(
+    roster: dict[str, Any],
+    matchup: dict[str, Any] | None,
+) -> dict[str, Any]:
+    editable_period = _period_number(roster.get("period_number"))
+    editable_start = _iso_date(roster.get("period_start") or roster.get("period_date"))
+    editable_end = _iso_date(roster.get("period_end"))
+    matchup_period = _period_number(
+        (matchup or {}).get("period_number")
+        or (matchup or {}).get("period_id")
+        or (matchup or {}).get("period")
+    )
+    matchup_start = _iso_date((matchup or {}).get("start"))
+    matchup_end = _iso_date((matchup or {}).get("end"))
+    source = roster.get("period_source")
+
+    common = {
+        "editable_period": editable_period,
+        "editable_start": editable_start,
+        "editable_end": editable_end,
+        "matchup_period": matchup_period,
+        "matchup_start": matchup_start,
+        "matchup_end": matchup_end,
+        "source": source,
+    }
+    if source != "fantrax.getTeamRosterInfo.displayedSelections":
+        return {
+            **common,
+            "state": "missing",
+            "reason": "Fantrax's canonical editable roster period is missing.",
+        }
+    if editable_start and matchup_start and editable_start != matchup_start:
+        return {
+            **common,
+            "state": "mismatch",
+            "reason": _period_mismatch_reason(common),
+        }
+    if editable_end and matchup_end and editable_end != matchup_end:
+        return {
+            **common,
+            "state": "mismatch",
+            "reason": _period_mismatch_reason(common),
+        }
+    if editable_start and editable_end and matchup_start and matchup_end:
+        dates_match = editable_start == matchup_start and editable_end == matchup_end
+        numbers_match = (
+            editable_period is None
+            or matchup_period is None
+            or editable_period == matchup_period
+        )
+        if dates_match and numbers_match:
+            return {
+                **common,
+                "state": "ok",
+                "reason": "Fantrax's editable roster period matches the projected matchup.",
+            }
+        return {
+            **common,
+            "state": "mismatch",
+            "reason": _period_mismatch_reason(common),
+        }
+    if editable_period is not None and matchup_period is not None:
+        if editable_period == matchup_period:
+            return {
+                **common,
+                "state": "ok",
+                "reason": "Fantrax's editable roster period number matches the projected matchup.",
+            }
+        return {
+            **common,
+            "state": "mismatch",
+            "reason": _period_mismatch_reason(common),
+        }
+    return {
+        **common,
+        "state": "missing",
+        "reason": "Fantrax's editable roster period cannot be matched to the projected matchup.",
+    }
+
+
+def _period_number(value: Any) -> int | str | None:
+    if value in (None, "") or str(value).strip().casefold() == "none":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        text = str(value).strip()
+        return text or None
+
+
+def _iso_date(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text or text.casefold() == "none":
+        return None
+    try:
+        return date.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def _period_mismatch_reason(period: dict[str, Any]) -> str:
+    editable = _period_label(
+        period.get("editable_period"),
+        period.get("editable_start"),
+        period.get("editable_end"),
+    )
+    matchup = _period_label(
+        period.get("matchup_period"),
+        period.get("matchup_start"),
+        period.get("matchup_end"),
+    )
+    return f"Fantrax is editing {editable}, which cannot affect projected {matchup}."
+
+
+def _period_label(number: Any, start: Any, end: Any) -> str:
+    label = f"Period {number}" if number is not None else "a roster period"
+    if start and end:
+        return f"{label} ({start} through {end})"
+    return label
 
 
 def _lineup_change_policy_quality(league_rules: Any) -> dict[str, Any]:
@@ -311,7 +442,17 @@ def _recommendation_reasons(sections: dict[str, dict[str, Any]]) -> list[str]:
 def _action_recommendation_reasons(sections: dict[str, dict[str, Any]]) -> list[str]:
     return _section_reasons(
         sections,
-        ["matchup", "my_roster", "all_team_rosters", "opponent_roster", "fppg", "future_games", "eligibility", "lineup_slots"],
+        [
+            "matchup",
+            "my_roster",
+            "all_team_rosters",
+            "opponent_roster",
+            "fppg",
+            "future_games",
+            "eligibility",
+            "lineup_slots",
+            "current_period",
+        ],
     )
 
 

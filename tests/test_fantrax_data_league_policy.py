@@ -1,5 +1,7 @@
 import unittest
+from datetime import datetime
 from unittest.mock import Mock, patch
+from zoneinfo import ZoneInfo
 
 import fantrax_data
 
@@ -110,8 +112,14 @@ class FantraxRosterPolicyAcquisitionTests(unittest.TestCase):
 
     def test_roster_capture_is_opt_in_and_promoted_without_private_duplicate(self):
         api = Mock()
+        eastern = ZoneInfo("America/New_York")
         raw = {
-            "displayedSelections": {"lineupChangeSystem": "CLASSIC"},
+            "displayedSelections": {
+                "lineupChangeSystem": "CLASSIC",
+                "displayedPeriod": 17,
+                "displayedStartDate": int(datetime(2026, 7, 13, tzinfo=eastern).timestamp() * 1000),
+                "displayedEndDate": int(datetime(2026, 7, 26, tzinfo=eastern).timestamp() * 1000),
+            },
             "miscData": {"statusTotals": []},
             "tables": [],
         }
@@ -126,6 +134,10 @@ class FantraxRosterPolicyAcquisitionTests(unittest.TestCase):
             )
 
         self.assertNotIn("_lineup_change_policy", normal)
+        self.assertEqual(captured["period_number"], 17)
+        self.assertEqual(captured["period_date"], "2026-07-13")
+        self.assertEqual(captured["period_start"], "2026-07-13")
+        self.assertEqual(captured["period_end"], "2026-07-26")
         snapshot = {"roster": captured, "league_rules": None}
         fantrax_data._promote_roster_lineup_policy(snapshot)
 
@@ -135,6 +147,22 @@ class FantraxRosterPolicyAcquisitionTests(unittest.TestCase):
             snapshot["league_rules"]["lineup_change_policy"]["successful_methods"],
             ["getTeamRosterInfo"],
         )
+
+    def test_legacy_period_fields_cannot_masquerade_as_displayed_selection(self):
+        raw = {
+            "periodNumber": 17,
+            "periodDate": "2026-07-13",
+            "displayedSelections": {"lineupChangeSystem": "CLASSIC"},
+            "miscData": {"statusTotals": []},
+            "tables": [],
+        }
+
+        roster = fantrax_data._RawRoster(Mock(), "team-1", raw)
+
+        self.assertIsNone(roster.period_number)
+        self.assertIsNone(roster.period_start)
+        self.assertIsNone(roster.period_end)
+        self.assertIsNone(roster.period_source)
 
 
 if __name__ == "__main__":

@@ -76,11 +76,18 @@ def snapshot_row(*, roster=None, free_agents=None):
                 "my_score": 40,
                 "opponent_score": 50,
                 "opponent_team_id": "opp",
+                "period_number": 5,
                 "start": "2026-05-11",
                 "end": "2026-05-17",
                 "complete": False,
             },
-            "roster": {"rows": my_rows},
+            "roster": {
+                "rows": my_rows,
+                "period_number": 5,
+                "period_start": "2026-05-11",
+                "period_end": "2026-05-17",
+                "period_source": "fantrax.getTeamRosterInfo.displayedSelections",
+            },
             "all_team_rosters": {
                 "opp": {
                     "rows": [
@@ -97,6 +104,47 @@ def snapshot_row(*, roster=None, free_agents=None):
 
 
 class WinThisWeekTests(unittest.TestCase):
+    def test_mismatched_editable_period_pauses_actions_before_planners_run(self):
+        row = snapshot_row()
+        row["data"]["roster"].update({
+            "period_number": 6,
+            "period_start": "2026-05-18",
+            "period_end": "2026-05-24",
+        })
+
+        with (
+            patch("sandlot_win_week.sandlot_matchup.rank_matchup_improvement_actions") as lineup_planner,
+            patch("sandlot_win_week.sandlot_waivers.payload_for_snapshot") as waiver_planner,
+        ):
+            plan = sandlot_win_week.build_plan(row, now=NOW)
+
+        lineup_planner.assert_not_called()
+        waiver_planner.assert_not_called()
+        self.assertEqual(plan["state"], "paused")
+        self.assertEqual(plan["actions"], [])
+        self.assertIsNone(plan["primary_action_id"])
+        self.assertEqual(plan["handoffs"], {})
+        self.assertEqual(plan["monitoring_actions"][0]["state"], "blocked")
+        self.assertIn("Period 6", plan["no_action"]["reason"])
+        self.assertIn("Period 5", plan["no_action"]["reason"])
+        self.assertEqual(plan["no_action"]["alternatives"], [])
+        self.assertIsNotNone(plan["matchup"]["projected_my"])
+
+    def test_missing_editable_period_needs_refresh_and_pauses_actions(self):
+        row = snapshot_row()
+        row["data"]["roster"].update({
+            "period_number": None,
+            "period_start": None,
+            "period_end": None,
+        })
+
+        plan = sandlot_win_week.build_plan(row, now=NOW)
+
+        self.assertEqual(plan["state"], "paused")
+        self.assertEqual(plan["actions"], [])
+        self.assertEqual(plan["monitoring_actions"][0]["state"], "needs_refresh")
+        self.assertEqual(plan["handoffs"], {})
+
     def test_ranks_proven_waiver_path_over_smaller_lineup_gain(self):
         plan = sandlot_win_week.build_plan(snapshot_row(), now=NOW)
 

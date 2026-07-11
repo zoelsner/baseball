@@ -680,6 +680,39 @@ def _validate_win_this_week(
     if not isinstance(actions, list):
         fail(f"{prefix}_actions_invalid", "Win This Week actions field was not a list")
         actions = []
+    current_period = plan.get("current_period") if isinstance(plan.get("current_period"), dict) else {}
+    handoffs = plan.get("handoffs") if isinstance(plan.get("handoffs"), dict) else {}
+    lineup_handoff = handoffs.get("lineup") if isinstance(handoffs.get("lineup"), dict) else {}
+    if current_period.get("state") != "ok" and (actions or lineup_handoff.get("url")):
+        fail(
+            f"{prefix}_period_alignment",
+            "Win This Week exposed actions or a lineup handoff without an aligned editable Fantrax period",
+        )
+    matchup_complete = matchup_context.get("complete") is True
+    if plan.get("state") == "complete" and not matchup_complete:
+        fail(
+            f"{prefix}_matchup_state",
+            "Win This Week claimed completion without a complete matchup context",
+        )
+    period_gate_applies = current_period.get("state") != "ok" and not matchup_complete
+    if period_gate_applies and plan.get("state") != "paused":
+        fail(
+            f"{prefix}_period_alignment",
+            "Win This Week did not pause without an aligned editable Fantrax period",
+        )
+    if period_gate_applies:
+        monitoring = plan.get("monitoring_actions") if isinstance(plan.get("monitoring_actions"), list) else []
+        expected_monitor_state = "blocked" if current_period.get("state") == "mismatch" else "needs_refresh"
+        if not any(
+            isinstance(item, dict)
+            and item.get("id") == "monitor:current-period-alignment"
+            and item.get("state") == expected_monitor_state
+            for item in monitoring
+        ):
+            fail(
+                f"{prefix}_period_alignment",
+                "Win This Week did not expose the required editable-period monitor",
+            )
     probability_calibrated = ((plan.get("diagnostics") or {}).get("probability_calibrated") is True)
     previous_points: float | None = None
     for index, action in enumerate(actions):
@@ -744,8 +777,6 @@ def _validate_win_this_week(
         isinstance(action, dict) and action.get("kind") in {"lineup", "lineup_plan"}
         for action in actions
     ):
-        handoffs = plan.get("handoffs") if isinstance(plan.get("handoffs"), dict) else {}
-        lineup_handoff = handoffs.get("lineup") if isinstance(handoffs.get("lineup"), dict) else {}
         url = str(lineup_handoff.get("url") or "")
         if (
             lineup_handoff.get("method") != "GET"

@@ -434,6 +434,53 @@ test.describe('Today — Attention Queue', () => {
     await expect(panel.getByRole('button', { name: 'Pressure-test with Skipper' })).toHaveCount(0);
   });
 
+  test('pauses matchup actions when Fantrax is editing a different period', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Editable-period safety is verified against the rebuilt local bundle.');
+    const mismatch = baseSnapshot();
+    mismatch.win_this_week = {
+      model_version: 'win_this_week_v1',
+      state: 'paused',
+      read_only: true,
+      writes_enabled: false,
+      current_period: {
+        state: 'mismatch',
+        actionable: false,
+        matchup: { number: 16, start: '2026-07-06', end: '2026-07-12' },
+        fantrax: { number: 17, start: '2026-07-13', end: '2026-07-26' },
+      },
+      summary: {
+        headline: 'Fantrax is editing Period 17 (Jul 13 through Jul 26), which cannot affect projected Period 16 (Jul 6 through Jul 12).',
+        outlook: 'The current remaining-week projection remains available for context.',
+      },
+      actions: [],
+      handoffs: {},
+      monitoring_actions: [{
+        id: 'monitor:period-alignment',
+        kind: 'monitor',
+        state: 'blocked',
+        title: 'Wait for the projected matchup to become editable',
+        reason: 'Fantrax and the matchup projection refer to different scoring periods.',
+      }],
+      no_action: {
+        reason: 'Fantrax is editing Period 17 (Jul 13 through Jul 26), which cannot affect projected Period 16 (Jul 6 through Jul 12).',
+        alternatives: [],
+      },
+    };
+    await mockSnapshot(page, mismatch);
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(panel.getByText('Plan paused', { exact: true })).toBeVisible();
+    await expect(panel.getByText('0 options', { exact: true })).toBeVisible();
+    await expect(panel.getByText(/Fantrax is editing Period 17 .* cannot affect projected Period 16/)).toBeVisible();
+    await expect(panel.getByText(/Monitor: Wait for the projected matchup to become editable/)).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Pressure-test with Skipper' })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Open waiver board' })).toHaveCount(0);
+    await expect(panel.getByRole('link', { name: 'Open Fantrax lineup' })).toHaveCount(0);
+  });
+
   test('silently refetches when the primary action deadline arrives', async ({ page }) => {
     test.skip(!isLocalBundle, 'Deadline-triggered refetch is verified against the rebuilt local bundle.');
     const expiring = baseSnapshot();

@@ -72,6 +72,21 @@ gains become one ordered multi-move plan instead of competing alternatives.
 Only movable actions with exact deadlines enter that bundle. Locked or
 uncertain actions become monitoring items instead.
 
+Before producing any current-matchup action, Sandlot also proves that the
+scoring period Fantrax currently allows the manager to edit is the same period
+being projected. The canonical `getTeamRosterInfo.displayedSelections` fields
+provide the editable period number and start/end dates. Epoch timestamps are
+normalized in the league's `America/New_York` calendar before comparison.
+
+An exact date-window or period-number conflict sets
+`data_quality.current_period.state` to `mismatch`; missing evidence sets it to
+`missing`. In either case, `current_period_actions_ready` is false and Win This
+Week returns a paused plan with no lineup or waiver actions and no Fantrax
+handoff. A mismatch emits a blocked monitor; missing evidence requests a
+refresh. The matchup projection and general Adds/dynasty board remain visible
+because they are still useful evidence, but they are not presented as moves
+that can change the current matchup.
+
 Current Fantrax roster payloads prove destination legality with
 `eligibleStatusIds` and `eligiblePosIds`; the older
 `scorer.disableLineupChange` flag is no longer present. Sandlot normalizes the
@@ -195,8 +210,8 @@ proven.
   missing schedule provenance, unknown deadlines, locked move-outs, completed
   matchups, and Aaron Judge protection;
 - the production monitor checks ranks, positive comparable impact, deadlines,
-  dynasty cost, legal-path state, calibrated-probability boundaries, protected
-  anchors, and read-only flags;
+  dynasty cost, legal-path state, editable-period alignment,
+  calibrated-probability boundaries, protected anchors, and read-only flags;
 - local mobile Playwright verifies loading, empty, stale, expired, error,
   success, Today hierarchy, and the Skipper handoff;
 - an authenticated, non-persisted live Fantrax run on 2026-07-11 verified the

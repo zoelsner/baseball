@@ -51,6 +51,16 @@ def healthy_payloads():
         "snapshot_id": snapshot_id,
         "read_only": True,
         "writes_enabled": False,
+        "matchup": {"complete": False},
+        "current_period": {
+            "state": "ok",
+            "editable_period": 16,
+            "editable_start": "2026-07-06",
+            "editable_end": "2026-07-12",
+            "matchup_period": 16,
+            "matchup_start": "2026-07-06",
+            "matchup_end": "2026-07-12",
+        },
         "handoffs": {
             "lineup": {
                 "label": "Open Fantrax lineup",
@@ -319,6 +329,109 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         codes = {item["code"] for item in report["failures"]}
         self.assertIn("win_this_week_lineup_handoff", codes)
         self.assertIn("win_this_week_embedded_lineup_handoff", codes)
+
+    def test_win_this_week_cannot_act_when_editable_period_is_mismatched(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["current_period"] = {
+                "state": "mismatch",
+                "editable_period": 17,
+                "editable_start": "2026-07-13",
+                "editable_end": "2026-07-26",
+                "matchup_period": 16,
+                "matchup_start": "2026-07-06",
+                "matchup_end": "2026-07-12",
+            }
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_period_alignment", codes)
+        self.assertIn("win_this_week_embedded_period_alignment", codes)
+
+    def test_win_this_week_missing_period_requires_pause_and_refresh_monitor(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan.update({
+                "state": "no_action",
+                "primary_action_id": None,
+                "current_period": {"state": "missing"},
+                "actions": [],
+                "handoffs": {},
+                "monitoring_actions": [],
+                "no_action": {
+                    "reason": "Fantrax's editable roster period cannot be matched.",
+                    "alternatives": [],
+                },
+            })
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_period_alignment", codes)
+        self.assertIn("win_this_week_embedded_period_alignment", codes)
+
+    def test_completed_win_this_week_does_not_require_period_refresh(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan.update({
+                "state": "complete",
+                "primary_action_id": None,
+                "current_period": {"state": "missing"},
+                "actions": [],
+                "handoffs": {},
+                "monitoring_actions": [],
+                "no_action": {
+                    "reason": "The matchup is complete.",
+                    "alternatives": [],
+                },
+            })
+            plan["matchup"]["complete"] = True
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        period_failures = {
+            item["code"] for item in report["failures"]
+            if item["code"].endswith("period_alignment")
+        }
+        self.assertEqual(period_failures, set())
+
+    def test_complete_state_cannot_bypass_missing_period_gate(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan.update({
+                "state": "complete",
+                "primary_action_id": None,
+                "current_period": {"state": "missing"},
+                "actions": [],
+                "handoffs": {},
+                "monitoring_actions": [],
+                "no_action": {
+                    "reason": "The matchup is complete.",
+                    "alternatives": [],
+                },
+            })
+            plan["matchup"]["complete"] = False
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_matchup_state", codes)
+        self.assertIn("win_this_week_period_alignment", codes)
 
     def test_win_this_week_no_action_requires_reasoned_alternatives(self):
         payloads = healthy_payloads()

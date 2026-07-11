@@ -32,10 +32,18 @@ def good_snapshot():
             "my_score": 10,
             "opponent_score": 8,
             "opponent_team_id": "opp",
+            "period_number": 4,
+            "start": "2026-05-14",
             "end": "2026-05-20",
             "complete": False,
         },
-        "roster": {"rows": [player("mine", slot="2B", positions="2B")]},
+        "roster": {
+            "rows": [player("mine", slot="2B", positions="2B")],
+            "period_number": 4,
+            "period_start": "2026-05-14",
+            "period_end": "2026-05-20",
+            "period_source": "fantrax.getTeamRosterInfo.displayedSelections",
+        },
         "all_team_rosters": {
             "opp": {"rows": [player("opp-player", slot="SS", positions="SS", fppg=1.5)]},
         },
@@ -52,6 +60,68 @@ class SnapshotDataQualityTests(unittest.TestCase):
         quality = sandlot_data_quality.snapshot_data_quality(good_snapshot())
 
         self.assertTrue(quality["projection_ready"])
+        self.assertEqual(quality["current_period"]["state"], "ok")
+        self.assertTrue(quality["current_period_actions_ready"])
+
+    def test_mismatched_editable_period_blocks_lineup_but_not_projection_or_adds(self):
+        snapshot = good_snapshot()
+        snapshot["roster"].update({
+            "period_number": 5,
+            "period_start": "2026-05-21",
+            "period_end": "2026-05-27",
+        })
+
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+        self.assertEqual(quality["current_period"]["state"], "mismatch")
+        self.assertFalse(quality["current_period_actions_ready"])
+        self.assertTrue(quality["projection_ready"])
+        self.assertTrue(quality["recommendations_ready"])
+        self.assertTrue(quality["add_drop_recommendations_ready"])
+        self.assertFalse(quality["lineup_recommendations_ready"])
+        self.assertIn("Period 5", quality["current_period_action_reasons"][0])
+        self.assertIn("Period 4", quality["current_period_action_reasons"][0])
+
+    def test_missing_editable_period_fails_current_actions_closed(self):
+        snapshot = good_snapshot()
+        snapshot["roster"].update({
+            "period_number": None,
+            "period_start": None,
+            "period_end": "None",
+        })
+
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+        self.assertEqual(quality["current_period"]["state"], "missing")
+        self.assertFalse(quality["current_period_actions_ready"])
+        self.assertTrue(quality["projection_ready"])
+
+    def test_legacy_period_fields_without_canonical_source_fail_closed(self):
+        snapshot = good_snapshot()
+        snapshot["roster"].pop("period_source")
+
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+        self.assertEqual(quality["current_period"]["state"], "missing")
+        self.assertFalse(quality["current_period_actions_ready"])
+
+    def test_partial_editable_period_date_conflicts_fail_closed(self):
+        for field, editable_value, missing_field in (
+            ("period_start", "2026-05-15", "period_end"),
+            ("period_end", "2026-05-19", "period_start"),
+        ):
+            with self.subTest(field=field):
+                snapshot = good_snapshot()
+                snapshot["roster"][field] = editable_value
+                snapshot["roster"][missing_field] = None
+
+                quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+                self.assertEqual(quality["current_period"]["state"], "mismatch")
+                self.assertFalse(quality["current_period_actions_ready"])
+        self.assertTrue(quality["recommendations_ready"])
+        self.assertTrue(quality["add_drop_recommendations_ready"])
+        self.assertFalse(quality["lineup_recommendations_ready"])
         self.assertTrue(quality["recommendations_ready"])
         self.assertTrue(quality["add_drop_recommendations_ready"])
         self.assertEqual(quality["future_games"]["covered_players"], 2)
