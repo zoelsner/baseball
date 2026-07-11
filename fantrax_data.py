@@ -15,6 +15,7 @@ import re
 import sys
 import types
 from datetime import date as date_cls, datetime, time as time_cls, timezone
+from time import monotonic
 from typing import Any
 
 import requests
@@ -1313,7 +1314,7 @@ def extract_all_team_rosters(api: FantraxAPI, my_team_id: str) -> dict:
 
 
 def extract_league_rules(session: requests.Session, league_id: str) -> dict | None:
-    """Batch read-only league-rule methods and retain sanitized policy evidence.
+    """Probe read-only league-rule methods and retain sanitized policy evidence.
 
     The first usable raw response is preserved for compatibility. Scoring and
     lineup-policy summaries may come from richer later responses without
@@ -1330,24 +1331,24 @@ def extract_league_rules(session: requests.Session, league_id: str) -> dict | No
 
     url = f"{FXPA_URL}?leagueId={league_id}"
     successful: list[tuple[str, dict[str, Any], list[dict] | None, dict[str, Any]]] = []
-    try:
-        payload = {
-            "msgs": [
-                {"method": method, "data": {"leagueId": league_id}}
-                for method in candidates
-            ]
-        }
-        response = session.post(url, json=payload, timeout=LEAGUE_RULES_TIMEOUT_SECONDS)
-        if response.status_code != 200:
-            log.info("League rules unavailable: batch request returned HTTP %s", response.status_code)
-            return None
+    attempted_methods: list[str] = []
+    deadline = monotonic() + LEAGUE_RULES_TIMEOUT_SECONDS
+    for method in candidates:
+        remaining_seconds = deadline - monotonic()
+        if remaining_seconds <= 0:
+            break
+        attempted_methods.append(method)
         try:
-            data = response.json()
-        except ValueError:
-            log.info("League rules unavailable: batch response was not JSON")
-            return None
-        responses = data.get("responses") or []
-        for method, first in zip(candidates, responses):
+            payload = {"msgs": [{"method": method, "data": {"leagueId": league_id}}]}
+            response = session.post(url, json=payload, timeout=min(3.0, remaining_seconds))
+            if response.status_code != 200:
+                continue
+            try:
+                data = response.json()
+            except ValueError:
+                continue
+            responses = data.get("responses") or []
+            first = responses[0] if responses else None
             if not isinstance(first, dict):
                 continue
             if first.get("error") or first.get("errorMsg") or first.get("pageError"):
@@ -1355,9 +1356,9 @@ def extract_league_rules(session: requests.Session, league_id: str) -> dict | No
             scoring_categories = _find_scoring_categories(first)
             lineup_change_policy = _lineup_change_policy_observation(first, method=method)
             successful.append((method, first, scoring_categories, lineup_change_policy))
-    except Exception as exc:
-        log.info("League rules unavailable: batch request failed: %s", type(exc).__name__)
-        return None
+        except Exception as exc:
+            log.debug("League rules method %s failed: %s", method, type(exc).__name__)
+            continue
     if not successful:
         log.info("League rules unavailable: all candidate methods failed")
         return None
@@ -1377,7 +1378,7 @@ def extract_league_rules(session: requests.Session, league_id: str) -> dict | No
     policy_method, _, _, lineup_change_policy = policy_result
     lineup_change_policy = {
         **lineup_change_policy,
-        "methods_checked": list(candidates),
+        "methods_checked": attempted_methods,
         "successful_methods": [result[0] for result in successful],
     }
     log.info(
