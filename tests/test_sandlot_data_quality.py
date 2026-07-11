@@ -238,7 +238,7 @@ class SnapshotDataQualityTests(unittest.TestCase):
         self.assertEqual(quality["projection_slots"]["total_players"], 2)
         self.assertTrue(quality["projection_ready"])
 
-    def test_missing_pitcher_probables_make_projection_partial(self):
+    def test_missing_pitcher_probables_are_an_explicit_lower_bound_not_a_global_block(self):
         snapshot = good_snapshot()
         pitcher = snapshot["roster"]["rows"][0]
         pitcher.update({
@@ -254,10 +254,30 @@ class SnapshotDataQualityTests(unittest.TestCase):
         quality = sandlot_data_quality.snapshot_data_quality(snapshot)
 
         self.assertEqual(quality["future_games"]["state"], "ok")
+        self.assertEqual(quality["projection_future_games"]["state"], "ok")
+        self.assertTrue(quality["projection_ready"])
+        self.assertTrue(quality["recommendations_ready"])
+        self.assertEqual(quality["projection_future_games"]["pitchers_without_probable_start"], 1)
+        self.assertEqual(quality["projection_future_games"]["projection_scope"], "known_opportunities_lower_bound")
+        self.assertEqual(quality["projection_reasons"], [])
+
+    def test_failed_pitcher_schedule_still_blocks_projection(self):
+        snapshot = good_snapshot()
+        pitcher = snapshot["roster"]["rows"][0]
+        pitcher.update({
+            "slot": "SP",
+            "positions": "SP",
+            "slot_source": "raw.lineupSlot",
+            "future_games": [],
+            "future_games_source": "mlb_schedule",
+            "future_games_status": "fetch_error",
+            "future_games_scope": "pitcher_probable_starts",
+        })
+
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
         self.assertEqual(quality["projection_future_games"]["state"], "partial")
         self.assertFalse(quality["projection_ready"])
-        self.assertTrue(quality["recommendations_ready"])
-        self.assertIn("Projection future-game coverage 1/2", quality["projection_reasons"])
 
     def test_short_reason_fails_closed_when_action_ready_flags_are_missing(self):
         legacy_quality = {

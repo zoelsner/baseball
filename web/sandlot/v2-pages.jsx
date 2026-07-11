@@ -1140,6 +1140,12 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper }) {
         {plan.summary?.headline || plan.no_action?.reason || 'Waiting for a matchup plan.'}
       </div>
 
+      {plan.summary?.projection_caveat ? (
+        <div style={{ marginTop:10, background:V2.warnSoft, color:V2.warn, borderRadius:12, padding:'9px 10px', fontSize:11.5, lineHeight:1.4, fontWeight:800, textWrap:'pretty' }}>
+          Projection note: {plan.summary.projection_caveat}
+        </div>
+      ) : null}
+
       {primary ? (
         <div style={{ marginTop:15, background:'rgba(255,255,255,0.78)', borderRadius:16, padding:'15px 15px 14px', boxShadow:'0 0 0 1px rgba(0,0,0,0.055)' }}>
           <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:14 }}>

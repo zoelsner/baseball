@@ -32,6 +32,13 @@ Win probability is included only after calibration is supported. Until then,
 the engine explicitly ranks by projected points and returns
 `win_probability_delta: null`.
 
+When MLB schedule acquisition succeeds but one or more pitchers have no posted
+probable start, Sandlot returns a labeled `known_opportunities_lower_bound`
+instead of suppressing every hitter and lineup recommendation. Those pitchers
+contribute zero until MLB publishes a player-specific opportunity; the payload
+reports their count and win probability remains uncalibrated. A failed schedule
+read still blocks projection.
+
 ### Lineup actions
 
 Lineup actions reuse `sandlot_matchup`'s eligibility, remaining-game,
@@ -41,12 +48,19 @@ gains become one ordered multi-move plan instead of competing alternatives.
 Only movable actions with exact deadlines enter that bundle. Locked or
 uncertain actions become monitoring items instead.
 
+Current Fantrax roster payloads prove destination legality with
+`eligibleStatusIds` and `eligiblePosIds`; the older
+`scorer.disableLineupChange` flag is no longer present. Sandlot normalizes the
+status and position IDs, checks every step against its exact destination, and
+still lets a started MLB game hard-lock the participant. A missing destination
+mapping stays unknown rather than being assumed movable.
+
 ### Waiver actions
 
 Waiver actions are not ranked from season FP/G subtraction alone. Sandlot:
 
 1. validates trusted FP/G, age, drop protection, free-agent schedule, and the
-   move-out player's movability;
+   move-out player's current Fantrax Drop action;
 2. constructs a hypothetical post-add roster;
 3. proves either a direct eligible replacement or a complete bench-to-active
    lineup chain;
@@ -76,6 +90,11 @@ ceiling is a pruning tool only; it is never exposed as the final action impact.
 Waiver legality remains `provisionally_legal` until a fresh Fantrax preflight
 confirms that the player is still available and transaction locks have not
 changed.
+
+Fantrax's current roster client maps action type `3` to Drop and type `4` to
+Trade. Sandlot preserves that action metadata from each raw roster row and
+requires an explicit type-`3` Drop action plus a not-yet-started MLB game before
+a move-out player is treated as available for current-week planning.
 
 ## Dynasty Safety
 

@@ -229,6 +229,12 @@ def _future_games_quality(
                 failed_examples.append(str(row.get("name") or row.get("id") or "unknown"))
     if status_counts:
         quality["status_counts"] = status_counts
+    if projection and status_counts.get("pitcher_probables_unavailable"):
+        quality["pitchers_without_probable_start"] = status_counts["pitcher_probables_unavailable"]
+        quality["projection_scope"] = "known_opportunities_lower_bound"
+        quality["assumption"] = (
+            "Pitchers without a posted probable start contribute zero until MLB publishes a player-specific opportunity."
+        )
     if failed_examples:
         quality["failed_examples"] = failed_examples
     if quality.get("state") == "ok" and game_count <= 0 and not _all_rows_schedule_backed(rows):
@@ -513,11 +519,9 @@ def _has_future_games(row: dict[str, Any]) -> bool:
 
 
 def _has_projection_future_games(row: dict[str, Any]) -> bool:
-    # A team schedule proves hitter opportunities, but it cannot prove a
-    # pitcher's start/appearance volume. Treat missing probables as partial
-    # projection coverage instead of silently projecting that pitcher at zero.
-    if _future_game_status(row) == "pitcher_probables_unavailable":
-        return False
+    # A successful schedule read with no player-specific probable is a known
+    # lower bound, not missing provenance. The projection explicitly reports
+    # these pitchers and counts them at zero until MLB publishes an opportunity.
     return _has_future_games(row)
 
 

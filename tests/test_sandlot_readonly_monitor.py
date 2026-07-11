@@ -230,6 +230,26 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         self.assertIn("win_this_week_embedded_write_boundary", codes)
         self.assertIn("win_this_week_embedded_protected_anchor", codes)
 
+    def test_win_this_week_lower_bound_requires_visible_caveat(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["matchup"] = {
+                "opportunity_completeness": "known_opportunities_lower_bound",
+                "pitchers_without_probable_start": 3,
+                "probability_calibrated": False,
+            }
+            plan["summary"] = {"projection_caveat": None}
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_opportunity_scope", codes)
+        self.assertIn("win_this_week_embedded_opportunity_scope", codes)
+
     def test_cross_endpoint_snapshot_and_write_boundaries_fail_closed(self):
         payloads = healthy_payloads()
         payloads["/api/attention"]["snapshot_id"] = 263

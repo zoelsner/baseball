@@ -493,6 +493,14 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
             value = _number(projection.get(field))
             if value is None or value < 0:
                 fail("matchup_game_volume", f"Matchup projection {field} was invalid")
+        opportunity_completeness = projection.get("opportunity_completeness")
+        if opportunity_completeness is not None:
+            if opportunity_completeness not in {"complete", "known_opportunities_lower_bound"}:
+                fail("matchup_opportunity_scope", "Matchup projection had an unknown opportunity-completeness state")
+            if opportunity_completeness == "known_opportunities_lower_bound":
+                missing_probables = _number(projection.get("pitchers_without_probable_start"))
+                if missing_probables is None or missing_probables <= 0:
+                    fail("matchup_opportunity_scope", "Lower-bound projection did not disclose omitted pitcher opportunities")
 
     block = matchup.get("recommendations")
     recommendations = block.get("recommendations") if isinstance(block, dict) else None
@@ -644,6 +652,11 @@ def _validate_win_this_week(
     _require_matching_snapshot_id(prefix, plan, snapshot_id, fail)
     if plan.get("read_only") is not True or plan.get("writes_enabled") is not False:
         fail(f"{prefix}_write_boundary", "Win This Week did not explicitly remain read-only")
+    matchup_context = plan.get("matchup") if isinstance(plan.get("matchup"), dict) else {}
+    if matchup_context.get("opportunity_completeness") == "known_opportunities_lower_bound":
+        summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
+        if not summary.get("projection_caveat") or matchup_context.get("probability_calibrated") is True:
+            fail(f"{prefix}_opportunity_scope", "Win This Week did not disclose its lower-bound pitcher assumption")
     actions = plan.get("actions")
     if not isinstance(actions, list):
         fail(f"{prefix}_actions_invalid", "Win This Week actions field was not a list")

@@ -51,6 +51,14 @@ def raw_lineup_change(value):
     return raw
 
 
+def destination_eligibility(*, statuses, positions):
+    return {
+        "source": "fantrax.raw.eligibleStatusIds+eligiblePosIds",
+        "eligible_statuses": statuses,
+        "eligible_positions": positions,
+    }
+
+
 class MatchupRecommendationTests(unittest.TestCase):
     def test_snapshot_payload_binds_contract_to_persisted_snapshot_id(self):
         data = snapshot([
@@ -418,6 +426,106 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(card["proposal"]["safety_checks"][3]["state"], "warning")
         self.assertIn("missing", card["movability"]["reason"])
         self.assertEqual(card["execution"]["state"], "blocked")
+
+    def test_current_fantrax_destination_fields_prove_direct_swap_without_legacy_flag(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player(
+                "weak2b",
+                slot="2B",
+                positions="2B",
+                fppg=1.0,
+                raw=raw_lineup_change("missing"),
+                lineup_eligibility=destination_eligibility(statuses=["ACTIVE", "RES"], positions=["2B", "UT"]),
+            ),
+            player(
+                "bench2b",
+                slot="BN",
+                positions="2B",
+                fppg=4.0,
+                raw=raw_lineup_change("missing"),
+                lineup_eligibility=destination_eligibility(statuses=["ACTIVE", "RES"], positions=["2B", "UT"]),
+            ),
+        ]))
+
+        card = result["recommendations"][0]["replacement_card"]
+
+        self.assertEqual(card["movability"]["state"], "movable")
+        self.assertEqual(card["movability"]["participants"]["move_in"]["target_slot"], "2B")
+        self.assertEqual(card["movability"]["participants"]["move_out"]["target_slot"], "BN")
+        self.assertEqual(
+            card["movability"]["participants"]["move_in"]["provider"]["destination"]["state"],
+            "eligible",
+        )
+        self.assertEqual(card["proposal"]["safety_checks"][3]["state"], "passed")
+
+    def test_current_fantrax_destination_fields_block_unlisted_target(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player(
+                "weak2b",
+                slot="2B",
+                positions="2B",
+                fppg=1.0,
+                raw=raw_lineup_change("missing"),
+                lineup_eligibility=destination_eligibility(statuses=["ACTIVE"], positions=["2B"]),
+            ),
+            player(
+                "bench2b",
+                slot="BN",
+                positions="2B",
+                fppg=4.0,
+                raw=raw_lineup_change("missing"),
+                lineup_eligibility=destination_eligibility(statuses=["ACTIVE", "RES"], positions=["2B"]),
+            ),
+        ]))
+
+        card = result["recommendations"][0]["replacement_card"]
+
+        self.assertEqual(card["movability"]["state"], "locked")
+        self.assertEqual(
+            card["movability"]["participants"]["move_out"]["provider"]["destination"]["state"],
+            "ineligible",
+        )
+        self.assertIn("does not allow", card["movability"]["reason"])
+        self.assertEqual(card["proposal"]["safety_checks"][3]["state"], "blocked")
+
+    def test_current_fantrax_drop_action_proves_roster_exit_before_game_start(self):
+        row = player(
+            "drop-candidate",
+            slot="BN",
+            positions="2B",
+            fppg=1.0,
+            transaction_eligibility={
+                "source": "fantrax.raw.actions.typeId",
+                "action_type_ids": ["3", "4"],
+                "drop_available": True,
+            },
+        )
+
+        availability = sandlot_matchup.player_roster_exit_availability(
+            row,
+            now=sandlot_matchup._parse_game_start("2026-05-14T12:00:00Z"),
+        )
+
+        self.assertEqual(availability["state"], "movable")
+        self.assertTrue(availability["provider"]["drop_available"])
+
+    def test_missing_fantrax_drop_action_blocks_roster_exit(self):
+        row = player(
+            "no-drop",
+            slot="BN",
+            positions="2B",
+            fppg=1.0,
+            transaction_eligibility={
+                "source": "fantrax.raw.actions.typeId",
+                "action_type_ids": ["4"],
+                "drop_available": False,
+            },
+        )
+
+        availability = sandlot_matchup.player_roster_exit_availability(row)
+
+        self.assertEqual(availability["state"], "locked")
+        self.assertIn("does not expose a Drop action", availability["reason"])
 
     def test_suppresses_moves_below_meaningful_threshold(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([

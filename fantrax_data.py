@@ -27,6 +27,8 @@ except Exception:  # fantraxapi 0.2.x exposes raw calls through FantraxAPI._requ
 log = logging.getLogger(__name__)
 
 FXPA_URL = "https://www.fantrax.com/fxpa/req"
+FANTRAX_DROP_ACTION_TYPE_ID = "3"
+FANTRAX_TRADE_ACTION_TYPE_ID = "4"
 
 
 def _raw_request(api: Any, method: str, **data: Any) -> Any:
@@ -769,6 +771,7 @@ def _normalize_roster_raw_row(
     api: Any,
     raw_row: dict[str, Any],
     assigned_slots: dict[str, tuple[str, str]],
+    status_lookup: dict[str, str] | None = None,
 ) -> dict[str, Any] | None:
     scorer = raw_row.get("scorer") if isinstance(raw_row.get("scorer"), dict) else {}
     player_id = _row_player_id(raw_row)
@@ -797,10 +800,73 @@ def _normalize_roster_raw_row(
         "age_source": age_source,
         "raw": _to_jsonable(raw_row),
     }
+    lineup_eligibility = _normalized_lineup_eligibility(api, raw_row, status_lookup or {})
+    if lineup_eligibility:
+        entry["lineup_eligibility"] = lineup_eligibility
+    transaction_eligibility = _normalized_transaction_eligibility(raw_row)
+    if transaction_eligibility:
+        entry["transaction_eligibility"] = transaction_eligibility
     future_games = _raw_future_games(raw_row)
     if future_games:
         entry["future_games"] = future_games
     return entry
+
+
+def _normalized_lineup_eligibility(
+    api: Any,
+    raw_row: dict[str, Any],
+    status_lookup: dict[str, str],
+) -> dict[str, Any] | None:
+    """Normalize Fantrax's current destination-level lineup legality proof."""
+    eligible_status_ids = _string_list(raw_row.get("eligibleStatusIds"))
+    eligible_position_ids = _string_list(raw_row.get("eligiblePosIds"))
+    if not eligible_status_ids and not eligible_position_ids:
+        return None
+
+    current_status_id = _string_or_none(raw_row.get("statusId"))
+    current_position_id = _string_or_none(raw_row.get("posId"))
+    return {
+        "source": "fantrax.raw.eligibleStatusIds+eligiblePosIds",
+        "current_status_id": current_status_id,
+        "current_status": status_lookup.get(current_status_id) if current_status_id else None,
+        "current_position_id": current_position_id,
+        "current_position": _position_label(api, current_position_id),
+        "eligible_status_ids": eligible_status_ids,
+        "eligible_statuses": [
+            status_lookup[status_id]
+            for status_id in eligible_status_ids
+            if status_id in status_lookup
+        ],
+        "eligible_position_ids": eligible_position_ids,
+        "eligible_positions": _position_labels(api, eligible_position_ids),
+    }
+
+
+def _normalized_transaction_eligibility(raw_row: dict[str, Any]) -> dict[str, Any] | None:
+    actions = raw_row.get("actions")
+    if not isinstance(actions, list):
+        return None
+    type_ids = [
+        str(action.get("typeId"))
+        for action in actions
+        if isinstance(action, dict) and action.get("typeId") not in (None, "")
+    ]
+    return {
+        "source": "fantrax.raw.actions.typeId",
+        "action_type_ids": type_ids,
+        "drop_available": FANTRAX_DROP_ACTION_TYPE_ID in type_ids,
+        "trade_available": FANTRAX_TRADE_ACTION_TYPE_ID in type_ids,
+    }
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if item not in (None, "")]
+
+
+def _string_or_none(value: Any) -> str | None:
+    return str(value) if value not in (None, "") else None
 
 
 def _trusted_slot_override(value: Any) -> tuple[str, str] | None:
@@ -857,6 +923,7 @@ def extract_roster(api: FantraxAPI, team_id: str, slot_overrides: dict[str, dict
     capacity totals (active/reserve/IR)."""
     roster = _team_roster(api, team_id)
     assigned_slots = _assigned_slot_overrides(roster, api)
+    status_lookup = _status_lookup(roster)
 
     rows = []
     raw_rows = _raw_roster_rows(roster)
@@ -864,7 +931,7 @@ def extract_roster(api: FantraxAPI, team_id: str, slot_overrides: dict[str, dict
     if raw_rows and (isinstance(roster, _RawRoster) or not object_rows):
         for raw_row in raw_rows:
             try:
-                entry = _normalize_roster_raw_row(api, raw_row, assigned_slots)
+                entry = _normalize_roster_raw_row(api, raw_row, assigned_slots, status_lookup)
                 if entry:
                     rows.append(entry)
             except Exception as e:
@@ -1375,6 +1442,16 @@ def _extract_stat_keys(data: dict) -> list[str]:
     """Pull the column header short-names so we can label `cells` values."""
     if not isinstance(data, dict):
         return []
+    table_header = data.get("tableHeader")
+    header_cells = table_header.get("cells") if isinstance(table_header, dict) else None
+    if isinstance(header_cells, list) and header_cells:
+        keys = [
+            item.get("shortName") or item.get("name") or item.get("key") or ""
+            for item in header_cells
+            if isinstance(item, dict)
+        ]
+        if keys and len(keys) == len(header_cells) and any(keys):
+            return keys
     # Try known locations
     for path in (("displayedLists", "statsHeader"), ("displayedLists", "categoryList"),
                  ("scoringCategoryTypes",)):

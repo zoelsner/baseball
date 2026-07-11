@@ -1,5 +1,6 @@
 import unittest
 
+import sandlot_data_quality
 import sandlot_matchup
 from sandlot_api import _snapshot_payload
 
@@ -9,6 +10,43 @@ def future_game(day, **extra):
 
 
 class MatchupProjectionTests(unittest.TestCase):
+    def test_pitchers_without_posted_probables_produce_labeled_lower_bound(self):
+        snapshot = {
+            "matchup": {
+                "my_score": 10,
+                "opponent_score": 12,
+                "opponent_team_id": "opp",
+                "end": "2026-05-20",
+                "complete": False,
+            },
+            "roster": {"rows": [
+                {
+                    "id": "mine-hitter", "slot": "2B", "positions": "2B", "fppg": 2.0,
+                    "future_games": [future_game(14)], "future_games_source": "mlb_schedule", "future_games_status": "ok",
+                },
+                {
+                    "id": "mine-sp", "slot": "SP", "positions": "SP", "fppg": 10.0,
+                    "future_games": [], "team_future_games": [future_game(14)],
+                    "future_games_source": "mlb_schedule", "future_games_status": "pitcher_probables_unavailable",
+                    "future_games_scope": "pitcher_probable_starts",
+                },
+            ]},
+            "all_team_rosters": {"opp": {"rows": [{
+                "id": "opp-hitter", "slot": "SS", "positions": "SS", "fppg": 1.0,
+                "future_games": [future_game(14)], "future_games_source": "mlb_schedule", "future_games_status": "ok",
+            }]}},
+        }
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+        projection = sandlot_matchup.compute_projection(snapshot, quality)
+
+        self.assertTrue(quality["projection_ready"])
+        self.assertEqual(projection["projected_my"], 12.0)
+        self.assertEqual(projection["projected_opp"], 13.0)
+        self.assertEqual(projection["opportunity_completeness"], "known_opportunities_lower_bound")
+        self.assertEqual(projection["pitchers_without_probable_start"], 1)
+        self.assertEqual(projection["drivers"]["pitchers_without_probable_start"], 1)
+
     def test_projects_active_rows_with_future_games_and_probability(self):
         snapshot = {
             "matchup": {

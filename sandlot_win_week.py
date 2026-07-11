@@ -472,7 +472,7 @@ def _waiver_action(
             "expected_points": {"estimate": None, "basis": "impact withheld until an exact action deadline is known"},
         }, diagnostic
 
-    move_out_movability = sandlot_matchup.player_movability(move_row, now=now)
+    move_out_movability = sandlot_matchup.player_roster_exit_availability(move_row, now=now)
     if move_out_movability.get("state") != "movable":
         diagnostic["status"] = "move_out_locked"
         diagnostic["reason"] = move_out_movability.get("reason") or "Move-out player availability is not proven."
@@ -829,6 +829,8 @@ def _matchup_context(matchup: dict[str, Any], projection: dict[str, Any] | None)
         "projected_margin": _projected_margin(projection),
         "win_probability": (projection or {}).get("win_probability") if (projection or {}).get("probability_calibrated") is True else None,
         "probability_calibrated": (projection or {}).get("probability_calibrated") is True,
+        "opportunity_completeness": (projection or {}).get("opportunity_completeness"),
+        "pitchers_without_probable_start": (projection or {}).get("pitchers_without_probable_start") or 0,
         "period_end": matchup.get("end"),
         "complete": bool(matchup.get("complete")),
     }
@@ -861,6 +863,11 @@ def _summary(
         "win_probability_excluded_reason": None
         if (projection or {}).get("probability_calibrated") is True
         else "Win probability is not calibrated; actions are ranked by projected remaining-week points.",
+        "projection_caveat": (
+            f"Known-opportunity lower bound: {(projection or {}).get('pitchers_without_probable_start')} pitcher(s) have no posted probable start and contribute zero until that changes."
+            if (projection or {}).get("opportunity_completeness") == "known_opportunities_lower_bound"
+            else None
+        ),
     }
 
 

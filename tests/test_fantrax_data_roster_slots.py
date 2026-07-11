@@ -556,6 +556,50 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertEqual(player["age"], 22)
         self.assertEqual(player["age_source"], "raw.scorer.playerAge")
 
+    def test_free_agent_table_header_labels_live_age_and_fpg_cells(self):
+        payload = {
+            "tableHeader": {
+                "cells": [
+                    {"shortName": "Rk", "key": "rankOv"},
+                    {"shortName": "Sta", "key": "status"},
+                    {"shortName": "Age", "key": "age"},
+                    {"shortName": "FPts", "key": "fpts"},
+                    {"shortName": "FP/G", "key": "fptsPerGame"},
+                    {"shortName": "Ros"},
+                    {"shortName": "+/-"},
+                ],
+            },
+            "scoringCategoryTypes": [
+                {"value": "Tracked", "key": "5"},
+                {"value": "Standard", "key": "1"},
+            ],
+        }
+        entry = {
+            "scorer": {
+                "scorerId": "fa-live",
+                "name": "Live Shape Free Agent",
+                "posShortNames": "2B",
+                "teamShortName": "BOS",
+            },
+            "cells": [
+                {"content": "125"},
+                {"content": "FA"},
+                {"content": "29"},
+                {"content": "140.0"},
+                {"content": "4.5"},
+                {"content": "12%"},
+                {"content": "+3%"},
+            ],
+        }
+
+        stat_keys = fantrax_data._extract_stat_keys(payload)
+        player = fantrax_data._normalize_fa_player(entry, stat_keys)
+
+        self.assertEqual(stat_keys, ["Rk", "Sta", "Age", "FPts", "FP/G", "Ros", "+/-"])
+        self.assertEqual(player["stats"]["FP/G"], "4.5")
+        self.assertEqual(player["age"], 29)
+        self.assertEqual(player["age_source"], "stats.Age")
+
     def test_raw_roster_cell_age_requires_valid_stat_schema_fingerprint(self):
         cases = (
             ("missing-fpts", "", "2.5", "23"),
@@ -646,6 +690,28 @@ class FantraxRosterSlotTests(unittest.TestCase):
         self.assertIsNone(row.time)
         self.assertEqual(row.fppg, 3.5)
         self.assertEqual(row.fantasy_points_per_game, 3.5)
+
+    def test_raw_roster_normalizes_current_destination_eligibility(self):
+        row = raw_roster_row("eligible", name="Eligible Player", pos="003", status="2")
+        row["eligibleStatusIds"] = ["1", "2", "3"]
+        row["eligiblePosIds"] = ["003", "014", "004", "005"]
+        row["actions"] = [{"typeId": "3", "teamId": "me"}, {"typeId": "4"}]
+        api = RawFirstApi({"me": raw_roster(row)})
+        api.positions = FakeRowApi.positions
+
+        data = fantrax_data.extract_roster(api, "me")
+
+        eligibility = data["rows"][0]["lineup_eligibility"]
+        self.assertEqual(eligibility["current_status_id"], "2")
+        self.assertEqual(eligibility["current_status"], "RES")
+        self.assertEqual(eligibility["current_position"], "2B")
+        self.assertEqual(eligibility["eligible_statuses"], ["ACTIVE", "RES", "IR"])
+        self.assertEqual(eligibility["eligible_positions"], ["2B", "UT", "3B", "SS"])
+        self.assertEqual(eligibility["source"], "fantrax.raw.eligibleStatusIds+eligiblePosIds")
+        transaction = data["rows"][0]["transaction_eligibility"]
+        self.assertEqual(transaction["action_type_ids"], ["3", "4"])
+        self.assertTrue(transaction["drop_available"])
+        self.assertTrue(transaction["trade_available"])
 
     def test_current_roster_row_patch_uses_live_stat_table_columns(self):
         row = RosterRow(FakeRowApi(), {

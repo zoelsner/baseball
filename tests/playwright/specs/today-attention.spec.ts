@@ -118,6 +118,7 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
       summary: {
         headline: 'Up 6.1; the best current path adds about 5.8 projected points to protect the lead.',
         win_probability_excluded_reason: 'Win probability is not calibrated; actions are ranked by projected remaining-week points.',
+        projection_caveat: 'Known-opportunity lower bound: 3 pitcher(s) have no posted probable start and contribute zero until that changes.',
       },
       actions: [{
         id: 'waiver:test:add:drop',
@@ -196,6 +197,7 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('+5.8', { exact: true })).toBeVisible();
     await expect(page.getByText('Live preflight required', { exact: true })).toBeVisible();
     await expect(page.getByText('Read-only', { exact: true })).toBeVisible();
+    await expect(page.getByText(/Projection note: Known-opportunity lower bound: 3 pitcher/)).toBeVisible();
     await expect(page.getByText('1 hot swap')).toBeVisible();
     await expect(page.getByText('Leading by 6.1 · 2d left; this swap adds +2.4 projected points to protect the edge.')).toBeVisible();
     await expect(page.getByText('1 urgent · 1 check · 1 review')).toBeVisible();

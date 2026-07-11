@@ -34,6 +34,12 @@ def roster_player(pid, name, *, slot, positions, fppg, games=1, age=29):
         "future_games_status": "ok",
         "future_games_scope": "team_games",
         "raw": {"scorer": {"disableLineupChange": False}},
+        "transaction_eligibility": {
+            "source": "fantrax.raw.actions.typeId",
+            "action_type_ids": ["3", "4"],
+            "drop_available": True,
+            "trade_available": True,
+        },
     }
 
 
@@ -165,7 +171,8 @@ class WinThisWeekTests(unittest.TestCase):
         roster = [
             roster_player("locked", "Locked Starter", slot="2B", positions="2B", fppg=1.0, age=31),
         ]
-        roster[0]["raw"]["scorer"]["disableLineupChange"] = True
+        roster[0]["transaction_eligibility"]["drop_available"] = False
+        roster[0]["transaction_eligibility"]["action_type_ids"] = ["4"]
 
         plan = sandlot_win_week.build_plan(snapshot_row(roster=roster), now=NOW)
 
@@ -175,7 +182,7 @@ class WinThisWeekTests(unittest.TestCase):
             if item["id"].endswith(":move-out")
         )
         self.assertEqual(move_out_monitor["state"], "needs_refresh")
-        self.assertIn("unavailable for lineup changes", move_out_monitor["reason"])
+        self.assertIn("does not expose a Drop action", move_out_monitor["reason"])
 
     def test_waiver_move_dominated_by_free_lineup_change_is_rejected(self):
         roster = [
@@ -273,6 +280,30 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertEqual(primary["kind"], "waiver")
         self.assertIn("Weekly Volume", primary["title"])
         self.assertEqual(primary["expected_points"]["estimate"], 15.0)
+
+    def test_plan_surfaces_pitcher_lower_bound_caveat(self):
+        row = snapshot_row(free_agents=[])
+        row["data"]["roster"]["rows"].append({
+            "id": "no-probable",
+            "name": "No Posted Probable",
+            "team": "NYY",
+            "slot": "SP",
+            "slot_source": "raw.lineupSlot",
+            "positions": "SP",
+            "all_positions": ["SP"],
+            "fppg": 10.0,
+            "future_games": [],
+            "team_future_games": [game(14)],
+            "future_games_source": "mlb_schedule",
+            "future_games_status": "pitcher_probables_unavailable",
+            "future_games_scope": "pitcher_probable_starts",
+        })
+
+        plan = sandlot_win_week.build_plan(row, now=NOW)
+
+        self.assertEqual(plan["matchup"]["opportunity_completeness"], "known_opportunities_lower_bound")
+        self.assertEqual(plan["matchup"]["pitchers_without_probable_start"], 1)
+        self.assertIn("1 pitcher(s)", plan["summary"]["projection_caveat"])
 
     def test_aaron_judge_never_appears_as_a_waiver_move_out(self):
         roster = [
