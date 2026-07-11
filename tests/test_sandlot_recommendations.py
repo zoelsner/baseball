@@ -522,6 +522,20 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(result["recommendations"], [])
         self.assertIn("No active-and-bench roster combination", result["no_action"]["reason"])
 
+    def test_protected_active_player_scores_but_remains_out_of_lineup_moves(self):
+        data = snapshot([
+            player("protected", slot="OF", positions="OF", fppg=10.0, protected=True),
+            player("normal", slot="2B", positions="2B", fppg=2.0),
+            player("bench", slot="BN", positions="OF", fppg=20.0),
+        ])
+
+        projection = sandlot_matchup.compute_projection(data)
+        result = sandlot_matchup.rank_matchup_improvement_actions(data)
+
+        self.assertEqual(projection["projected_my"], 12.0)
+        self.assertEqual(result["recommendations"], [])
+        self.assertIn("meaningful-gain threshold", result["no_action"]["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()
