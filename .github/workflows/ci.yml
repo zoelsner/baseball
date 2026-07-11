@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  # Run for stacked PRs too. Restricting the base to main leaves child PRs
+  # without Python or frontend validation until their parent merges.
+  pull_request: {}
 
 jobs:
   python-import-smoke:

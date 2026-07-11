@@ -1,8 +1,9 @@
 name: Playwright
 
 on:
-  pull_request:
-    branches: [main]
+  # Stacked PRs need the same deterministic branch checks as direct-to-main
+  # PRs; these jobs do not use write-capable production credentials.
+  pull_request: {}
   push:
     branches: [main]
   workflow_dispatch:
@@ -150,6 +151,7 @@ jobs:
           npx playwright test
           specs/smoke.spec.ts
           specs/today-attention.spec.ts
+          specs/adds.spec.ts
           specs/player-sheet.spec.ts
           specs/trade.spec.ts
           specs/skipper-web-fallback.spec.ts

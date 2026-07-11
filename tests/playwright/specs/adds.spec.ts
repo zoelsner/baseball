@@ -3,6 +3,11 @@ import { waitForAppMount, gotoTab } from '../fixtures/sandlot';
 
 test.describe('Adds (waiver swaps) page', () => {
   test('renders waiver cards with the API-reported add player names', async ({ page }) => {
+    test.skip(
+      process.env.SANDLOT_EXPECT_SLOT_GATE === '1',
+      'This is a deployed API smoke; the branch-built local bundle has no API server.',
+    );
+
     const swapsPromise = page.waitForResponse(
       r => r.url().includes('/api/waiver-swaps/latest') && r.ok(),
       { timeout: 15_000 },
@@ -33,11 +38,6 @@ test.describe('Adds (waiver swaps) page', () => {
   });
 
   test('continues a waiver card in Skipper as an unsent draft', async ({ page }) => {
-    test.skip(
-      process.env.GITHUB_EVENT_NAME === 'pull_request',
-      'PR E2E targets production Railway, not the branch bundle; this runs locally and after merge on main.',
-    );
-
     const topCard = {
       id: 'swap-test',
       rank: 1,
