@@ -290,6 +290,9 @@ class MatchupRecommendationTests(unittest.TestCase):
         card = result["recommendations"][0]["replacement_card"]
 
         self.assertEqual(card["movability"]["state"], "movable")
+        self.assertEqual(card["deadline"]["state"], "known")
+        self.assertEqual(card["deadline"]["at"], "2026-05-14T23:05:00+00:00")
+        self.assertEqual(card["proposal"]["contract"]["movability"]["deadline"], card["deadline"])
         self.assertEqual(card["proposal"]["safety_checks"][3]["state"], "passed")
         self.assertEqual(card["proposal"]["safety_checks"][-1]["key"], "executor_ready")
         self.assertEqual(card["proposal"]["safety_checks"][-1]["state"], "blocked")
@@ -299,6 +302,33 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(card["proposal"]["contract"]["blocked_by"], ["executor_ready"])
         self.assertFalse(card["proposal"]["contract"]["requires_multi_step"])
         self.assertEqual(len(card["proposal"]["contract"]["slot_moves"]), 2)
+
+    def test_lineup_deadline_uses_earliest_participant_game_start(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player(
+                "weak2b",
+                slot="2B",
+                positions="2B",
+                fppg=1.0,
+                raw=raw_lineup_change(False),
+                future_games=[future_game(14, gameDate="2026-05-14T21:10:00Z")],
+            ),
+            player(
+                "bench2b",
+                slot="BN",
+                positions="2B",
+                fppg=4.0,
+                raw=raw_lineup_change(False),
+                future_games=[future_game(14, gameDate="2026-05-14T23:05:00Z")],
+            ),
+        ], movability_now="2026-05-14T12:00:00Z"))
+
+        deadline = result["recommendations"][0]["replacement_card"]["deadline"]
+
+        self.assertEqual(deadline["state"], "known")
+        self.assertEqual(deadline["at"], "2026-05-14T21:10:00+00:00")
+        self.assertEqual(deadline["participant_role"], "move_out")
+        self.assertEqual(deadline["participant_id"], "weak2b")
 
     def test_contract_hash_covers_freshness_and_post_write_policies(self):
         base = snapshot([

@@ -834,6 +834,7 @@ def _lineup_replacement_card(
         "move_in": move_in,
         "move_out": move_out,
         "movability": movability,
+        "deadline": movability.get("deadline"),
         "projected_benefit": {
             "points": round(points_delta, 1),
             "win_probability_delta": round(win_delta, 4) if probability_calibrated else None,
@@ -977,6 +978,7 @@ def _lineup_movability(
             "reason": f"Lineup movability is blocked for {names}: {detail}",
             "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
             "participants": participants,
+            "deadline": {"state": "unavailable", "at": None, "reason": detail},
         }
     if unknown:
         names = _name_list(item.get("name") for item in unknown)
@@ -987,13 +989,43 @@ def _lineup_movability(
             "reason": f"Lineup movability is uncertain for {names}: {detail}",
             "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
             "participants": participants,
+            "deadline": {"state": "unknown", "at": None, "reason": detail},
         }
+    deadline = _earliest_lineup_deadline(participants)
     return {
         "state": "movable",
         "label": "Movable",
         "reason": "Fantrax raw data and MLB game-start timing do not mark any slot-move participant unavailable.",
         "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
         "participants": participants,
+        "deadline": deadline,
+    }
+
+
+def _earliest_lineup_deadline(participants: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    candidates: list[tuple[datetime, str, dict[str, Any]]] = []
+    for role, participant in participants.items():
+        schedule = participant.get("schedule") if isinstance(participant.get("schedule"), dict) else {}
+        locks_at = _parse_game_start(schedule.get("locks_at"))
+        if locks_at is None:
+            continue
+        candidates.append((locks_at, role, participant))
+    if not candidates:
+        return {
+            "state": "none_scheduled",
+            "at": None,
+            "source": "mlb_schedule.gameDate",
+            "reason": "No scheduled participant game start supplies an exact lineup deadline.",
+        }
+    locks_at, role, participant = min(candidates, key=lambda item: item[0])
+    return {
+        "state": "known",
+        "at": locks_at.isoformat(),
+        "source": "earliest_participant_mlb_game_start",
+        "participant_role": role,
+        "participant_id": participant.get("id"),
+        "participant_name": participant.get("name"),
+        "reason": f"Complete the lineup change before {participant.get('name') or 'the first participant'} starts.",
     }
 
 
@@ -1088,6 +1120,7 @@ def _lineup_swap_contract(
             "state": movability_state,
             "source": (movability or {}).get("source"),
             "reason": (movability or {}).get("reason"),
+            "deadline": (movability or {}).get("deadline"),
         },
         "blocked_by": blocked_by,
         "freshness_policy": {
@@ -1184,6 +1217,7 @@ def _schedule_movability(row: dict[str, Any], now: datetime) -> dict[str, Any]:
         }
 
     unknown_games: list[dict[str, Any]] = []
+    upcoming_games: list[tuple[datetime, dict[str, Any]]] = []
     for game in games:
         if not isinstance(game, dict):
             continue
@@ -1197,6 +1231,7 @@ def _schedule_movability(row: dict[str, Any], now: datetime) -> dict[str, Any]:
                     "game": game,
                     "started_at": starts_at.isoformat(),
                 }
+            upcoming_games.append((starts_at, game))
             continue
 
         game_date = _parse_date(game.get("date") or game.get("officialDate") or game.get("gameDate"))
@@ -1219,6 +1254,15 @@ def _schedule_movability(row: dict[str, Any], now: datetime) -> dict[str, Any]:
             "source": "mlb_schedule.gameDate",
             "reason": f"MLB schedule is missing a start time for {_game_label(unknown_games[0])}.",
             "game": unknown_games[0],
+        }
+    if upcoming_games:
+        locks_at, next_game = min(upcoming_games, key=lambda item: item[0])
+        return {
+            "state": "movable",
+            "source": "mlb_schedule.gameDate",
+            "reason": f"{row.get('name') or row.get('id') or 'Player'} must be moved before {_game_label(next_game)} starts.",
+            "game": next_game,
+            "locks_at": locks_at.isoformat(),
         }
     return {
         "state": "movable",
