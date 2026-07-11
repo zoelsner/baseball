@@ -35,9 +35,11 @@ the engine explicitly ranks by projected points and returns
 ### Lineup actions
 
 Lineup actions reuse `sandlot_matchup`'s eligibility, remaining-game,
-multi-slot-chain, movability, and game-start checks. Only a movable action with
-an exact deadline can enter the ranked plan. Locked or uncertain actions become
-monitoring items instead.
+multi-slot-chain, movability, and game-start checks. Sandlot applies the best
+legal chain to a copy of the roster, re-projects it, and repeats so independent
+gains become one ordered multi-move plan instead of competing alternatives.
+Only movable actions with exact deadlines enter that bundle. Locked or
+uncertain actions become monitoring items instead.
 
 ### Waiver actions
 
@@ -50,6 +52,11 @@ Waiver actions are not ranked from season FP/G subtraction alone. Sandlot:
    lineup chain;
 4. recomputes the post-add matchup projection; and
 5. ranks the action only when that projection improves remaining-week points.
+
+The post-add plan must also beat the best currently legal lineup-only plan.
+Sandlot suppresses a waiver transaction that improves on doing nothing but is
+dominated by a free bench-to-active move, because the transaction and dynasty
+cost would be unnecessary.
 
 This allows a lower-FP/G streamer with more remaining games to outrank a better
 season-rate player when the weekly math supports it. The normal waiver board

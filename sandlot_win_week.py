@@ -79,6 +79,23 @@ def build_plan(
         if monitor:
             monitoring.append(monitor)
 
+    lineup_bundle = _lineup_bundle(
+        snapshot=snapshot,
+        base_projection=base_projection,
+        now=now,
+    )
+    if lineup_bundle:
+        rankable.append(lineup_bundle)
+
+    best_lineup_points = max(
+        (
+            _number((action.get("expected_points") or {}).get("estimate")) or 0.0
+            for action in rankable
+            if action.get("kind") in {"lineup", "lineup_plan"}
+        ),
+        default=0.0,
+    )
+
     if base_projection is not None:
         for card in waiver_cards:
             action, monitor, diagnostic = _waiver_action(
@@ -86,6 +103,7 @@ def build_plan(
                 base_projection=base_projection,
                 card=card,
                 now=now,
+                best_lineup_points=best_lineup_points,
             )
             if diagnostic:
                 considered.append(diagnostic)
@@ -144,7 +162,7 @@ def build_plan(
         "no_action": {"reason": no_action_reason} if no_action_reason else None,
         "diagnostics": {
             "considered": considered,
-            "lineup_action_count": sum(1 for action in actions if action.get("kind") == "lineup"),
+            "lineup_action_count": sum(1 for action in actions if action.get("kind") in {"lineup", "lineup_plan"}),
             "waiver_action_count": sum(1 for action in actions if action.get("kind") == "waiver"),
             "waiver_message": waiver_payload.get("message"),
             "probability_calibrated": bool(
@@ -239,12 +257,141 @@ def _lineup_action(
     return action, None, diagnostic
 
 
+def _lineup_bundle(
+    *,
+    snapshot: dict[str, Any],
+    base_projection: dict[str, Any] | None,
+    now: datetime,
+    max_moves: int = 3,
+) -> dict[str, Any] | None:
+    """Sequentially apply and re-simulate independent legal lineup gains."""
+    base_points = _number((base_projection or {}).get("projected_my"))
+    if base_points is None:
+        return None
+    working = copy.deepcopy(snapshot)
+    working["movability_now"] = now.isoformat()
+    segments: list[dict[str, Any]] = []
+    steps: list[dict[str, Any]] = []
+    deadline: dict[str, Any] | None = None
+    confidence_values: list[str] = []
+    projected_points = base_points
+
+    for _index in range(max(0, max_moves)):
+        quality = sandlot_data_quality.snapshot_data_quality(working)
+        recommendations = sandlot_matchup.rank_matchup_improvement_actions(working, quality, limit=8)
+        chosen = next(
+            (
+                recommendation
+                for recommendation in recommendations.get("recommendations") or []
+                if ((recommendation.get("replacement_card") or {}).get("movability") or {}).get("state") == "movable"
+                and ((recommendation.get("replacement_card") or {}).get("deadline") or {}).get("state") == "known"
+            ),
+            None,
+        )
+        if not chosen:
+            break
+        chain = (chosen.get("action") or {}).get("chain") or []
+        next_snapshot = _apply_lineup_chain(working, chain)
+        if next_snapshot is None:
+            break
+        next_quality = sandlot_data_quality.snapshot_data_quality(next_snapshot)
+        next_projection = sandlot_matchup.compute_projection(next_snapshot, next_quality)
+        next_points = _number((next_projection or {}).get("projected_my"))
+        if next_points is None or next_points <= projected_points + 0.05:
+            break
+        card = chosen.get("replacement_card") if isinstance(chosen.get("replacement_card"), dict) else {}
+        proposal = card.get("proposal") if isinstance(card.get("proposal"), dict) else {}
+        segments.append({
+            "proposal_id": proposal.get("id"),
+            "points_delta": round(next_points - projected_points, 1),
+        })
+        steps.extend(copy.deepcopy(chain))
+        candidate_deadline = card.get("deadline") if isinstance(card.get("deadline"), dict) else {}
+        deadline = candidate_deadline if deadline is None else _earlier_deadline(deadline, candidate_deadline)
+        confidence_values.append(str(chosen.get("confidence") or "unknown").lower())
+        working = next_snapshot
+        projected_points = next_points
+
+    if len(segments) < 2 or deadline is None:
+        return None
+    total_gain = round(projected_points - base_points, 1)
+    if total_gain <= 0:
+        return None
+    proposal_ids = [str(segment.get("proposal_id") or "unknown") for segment in segments]
+    return {
+        "id": "lineup-plan:" + ":".join(proposal_ids),
+        "kind": "lineup_plan",
+        "state": "act_now",
+        "title": f"Make {len(segments)} lineup changes",
+        "steps": steps,
+        "segments": segments,
+        "expected_points": {
+            "estimate": total_gain,
+            "basis": "sequential legal lineup simulation with the roster re-projected after every slot chain",
+            "comparable": True,
+        },
+        "win_probability_delta": None,
+        "probability_calibrated": False,
+        "deadline": deadline,
+        "confidence": _lowest_confidence(confidence_values),
+        "dynasty_cost": {
+            "level": "none",
+            "reason": "Lineup-only plan; no player leaves the roster.",
+        },
+        "legality": {
+            "state": "snapshot_verified",
+            "verified": ["sequential slot eligibility", "remaining-game provenance", "Fantrax movability flags", "MLB start timing"],
+            "requires_live_preflight": True,
+        },
+        "writes_enabled": False,
+        "source": {"type": "sequential_matchup_plan", "proposal_ids": proposal_ids},
+    }
+
+
+def _apply_lineup_chain(
+    snapshot: dict[str, Any],
+    chain: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    moves = {
+        str(step.get("player_id") or ""): str(step.get("to_slot") or "").strip().upper()
+        for step in chain
+        if isinstance(step, dict) and step.get("player_id") and step.get("to_slot")
+    }
+    if not moves:
+        return None
+    updated = copy.deepcopy(snapshot)
+    roster = updated.get("roster") if isinstance(updated.get("roster"), dict) else {}
+    rows = roster.get("rows") if isinstance(roster.get("rows"), list) else []
+    seen: set[str] = set()
+    new_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            new_rows.append(row)
+            continue
+        player_id = str(row.get("id") or row.get("player_id") or "")
+        if player_id in moves:
+            new_rows.append({**row, "slot": moves[player_id]})
+            seen.add(player_id)
+        else:
+            new_rows.append(row)
+    if seen != set(moves):
+        return None
+    updated["roster"] = {**roster, "rows": new_rows}
+    return updated
+
+
+def _lowest_confidence(values: list[str]) -> str:
+    order = {"high": 0, "medium": 1, "low": 2, "unknown": 3}
+    return max(values or ["unknown"], key=lambda value: order.get(value, 3))
+
+
 def _waiver_action(
     *,
     snapshot: dict[str, Any],
     base_projection: dict[str, Any],
     card: dict[str, Any],
     now: datetime,
+    best_lineup_points: float,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any]]:
     add = card.get("add") if isinstance(card.get("add"), dict) else {}
     move_out = card.get("move_out") if isinstance(card.get("move_out"), dict) else {}
@@ -338,6 +485,13 @@ def _waiver_action(
         diagnostic["status"] = "nonpositive"
         diagnostic["reason"] = "The legal post-add roster does not improve remaining-week projected points."
         return None, None, diagnostic
+    incremental_over_lineup = round(impact - max(0.0, best_lineup_points), 1)
+    if incremental_over_lineup <= 0:
+        diagnostic["status"] = "dominated"
+        diagnostic["reason"] = (
+            "The waiver path does not beat the best legal lineup-only plan, so the transaction and dynasty cost are unnecessary."
+        )
+        return None, None, diagnostic
 
     dynasty_cost = _dynasty_cost(move_row, card)
     diagnostic["status"] = "provisionally_legal"
@@ -365,6 +519,7 @@ def _waiver_action(
         ],
         "expected_points": {
             "estimate": impact,
+            "incremental_over_best_lineup": incremental_over_lineup,
             "basis": "original projection versus a provenance-checked hypothetical post-add roster and legal lineup path",
             "comparable": True,
         },
@@ -533,7 +688,7 @@ def _position_values(row: dict[str, Any]) -> list[str]:
 def _action_sort_key(action: dict[str, Any]) -> tuple[Any, ...]:
     points = _number((action.get("expected_points") or {}).get("estimate")) or 0.0
     dynasty_level = str((action.get("dynasty_cost") or {}).get("level") or "unknown")
-    kind_priority = 0 if action.get("kind") == "lineup" else 1
+    kind_priority = 0 if action.get("kind") in {"lineup", "lineup_plan"} else 1
     return (-points, DYNASTY_COST_ORDER.get(dynasty_level, 4), kind_priority, str(action.get("id") or ""))
 
 

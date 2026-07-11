@@ -81,7 +81,10 @@ def snapshot_row(*, roster=None, free_agents=None):
                     ],
                 },
             },
-            "free_agents": {"method": "getPlayerStats", "players": free_agents or [free_agent()]},
+            "free_agents": {
+                "method": "getPlayerStats",
+                "players": [free_agent()] if free_agents is None else free_agents,
+            },
         },
     }
 
@@ -100,6 +103,7 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertEqual(primary["kind"], "waiver")
         self.assertEqual(primary["state"], "review_now")
         self.assertEqual(primary["expected_points"]["estimate"], 9.0)
+        self.assertEqual(primary["expected_points"]["incremental_over_best_lineup"], 6.0)
         self.assertTrue(primary["expected_points"]["comparable"])
         self.assertEqual(primary["deadline"]["at"], "2026-05-14T22:05:00+00:00")
         self.assertEqual(primary["legality"]["state"], "provisionally_legal")
@@ -172,6 +176,55 @@ class WinThisWeekTests(unittest.TestCase):
         )
         self.assertEqual(move_out_monitor["state"], "needs_refresh")
         self.assertIn("unavailable for lineup changes", move_out_monitor["reason"])
+
+    def test_waiver_move_dominated_by_free_lineup_change_is_rejected(self):
+        roster = [
+            roster_player("weak", "Weak Starter", slot="2B", positions="2B", fppg=1.0, games=1, age=31),
+            roster_player("better-bench", "Better Bench Option", slot="BN", positions="2B", fppg=5.0, games=2, age=31),
+        ]
+        inferior_add = free_agent(
+            pid="inferior-add",
+            name="Inferior Transaction",
+            fppg=4.0,
+            games=2,
+            positions="2B",
+            age=31,
+        )
+
+        plan = sandlot_win_week.build_plan(
+            snapshot_row(roster=roster, free_agents=[inferior_add]),
+            now=NOW,
+        )
+
+        self.assertTrue(any(action["kind"] == "lineup" for action in plan["actions"]))
+        self.assertFalse(any(action["kind"] == "waiver" for action in plan["actions"]))
+        dominated = [
+            item for item in plan["diagnostics"]["considered"]
+            if item.get("kind") == "waiver" and item.get("status") == "dominated"
+        ]
+        self.assertTrue(dominated)
+
+    def test_combines_multiple_legal_lineup_changes_into_one_plan(self):
+        roster = [
+            roster_player("weak-2b", "Weak Second Baseman", slot="2B", positions="2B", fppg=1.0),
+            roster_player("bench-2b", "Bench Second Baseman", slot="BN", positions="2B", fppg=4.0),
+            roster_player("weak-ss", "Weak Shortstop", slot="SS", positions="SS", fppg=1.0),
+            roster_player("bench-ss", "Bench Shortstop", slot="BN", positions="SS", fppg=3.0),
+        ]
+
+        plan = sandlot_win_week.build_plan(
+            snapshot_row(roster=roster, free_agents=[]),
+            now=NOW,
+        )
+
+        bundle = next(action for action in plan["actions"] if action["kind"] == "lineup_plan")
+        self.assertEqual(bundle["rank"], 1)
+        self.assertEqual(bundle["title"], "Make 2 lineup changes")
+        self.assertEqual(bundle["expected_points"]["estimate"], 5.0)
+        self.assertEqual(len(bundle["segments"]), 2)
+        self.assertEqual({step["player_id"] for step in bundle["steps"]}, {
+            "weak-2b", "bench-2b", "weak-ss", "bench-ss",
+        })
 
     def test_aaron_judge_never_appears_as_a_waiver_move_out(self):
         roster = [
