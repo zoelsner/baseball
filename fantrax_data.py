@@ -27,6 +27,7 @@ except Exception:  # fantraxapi 0.2.x exposes raw calls through FantraxAPI._requ
 log = logging.getLogger(__name__)
 
 FXPA_URL = "https://www.fantrax.com/fxpa/req"
+LEAGUE_RULES_TIMEOUT_SECONDS = 15
 FANTRAX_DROP_ACTION_TYPE_ID = "3"
 FANTRAX_TRADE_ACTION_TYPE_ID = "4"
 
@@ -1312,9 +1313,12 @@ def extract_all_team_rosters(api: FantraxAPI, my_team_id: str) -> dict:
 
 
 def extract_league_rules(session: requests.Session, league_id: str) -> dict | None:
-    """Try several fxpa/req method names to fetch league scoring + roster
-    rules. Returns whatever the first working endpoint gives us, raw, plus
-    any obvious scoring categories pulled out for convenience."""
+    """Batch read-only league-rule methods and retain sanitized policy evidence.
+
+    The first usable raw response is preserved for compatibility. Scoring and
+    lineup-policy summaries may come from richer later responses without
+    persisting those additional raw payloads.
+    """
     candidates = [
         "getLeagueRules",
         "getLeagueInfo",
@@ -1325,36 +1329,90 @@ def extract_league_rules(session: requests.Session, league_id: str) -> dict | No
     ]
 
     url = f"{FXPA_URL}?leagueId={league_id}"
-    for method in candidates:
+    successful: list[tuple[str, dict[str, Any], list[dict] | None, dict[str, Any]]] = []
+    try:
+        payload = {
+            "msgs": [
+                {"method": method, "data": {"leagueId": league_id}}
+                for method in candidates
+            ]
+        }
+        response = session.post(url, json=payload, timeout=LEAGUE_RULES_TIMEOUT_SECONDS)
+        if response.status_code != 200:
+            log.info("League rules unavailable: batch request returned HTTP %s", response.status_code)
+            return None
         try:
-            payload = {"msgs": [{"method": method, "data": {"leagueId": league_id}}]}
-            r = session.post(url, json=payload, timeout=30)
-            if r.status_code != 200:
+            data = response.json()
+        except ValueError:
+            log.info("League rules unavailable: batch response was not JSON")
+            return None
+        responses = data.get("responses") or []
+        for method, first in zip(candidates, responses):
+            if not isinstance(first, dict):
                 continue
-            try:
-                data = r.json()
-            except ValueError:
-                continue
-            responses = data.get("responses") or []
-            if not responses:
-                continue
-            first = responses[0] or {}
             if first.get("error") or first.get("errorMsg") or first.get("pageError"):
                 continue
             scoring_categories = _find_scoring_categories(first)
             lineup_change_policy = _lineup_change_policy_observation(first, method=method)
-            log.info("League rules fetched via method=%s", method)
-            return {
-                "method": method,
-                "scoring_categories": scoring_categories,
-                "lineup_change_policy": lineup_change_policy,
-                "raw": first,
-            }
-        except Exception as e:
-            log.debug("League rules method %s raised: %s", method, e)
-            continue
-    log.info("League rules unavailable: all candidate methods failed")
-    return None
+            successful.append((method, first, scoring_categories, lineup_change_policy))
+    except Exception as exc:
+        log.info("League rules unavailable: batch request failed: %s", type(exc).__name__)
+        return None
+    if not successful:
+        log.info("League rules unavailable: all candidate methods failed")
+        return None
+
+    # Fantrax sometimes returns a technically successful but shallow response
+    # for the first method. Do not let that mask policy evidence exposed by a
+    # later read-only endpoint. Keep only one raw response in the snapshot and
+    # expose method names/counts as sanitized acquisition diagnostics.
+    raw_result = successful[0]
+    policy_results = [
+        result for result in successful
+        if result[3].get("state") == "observed_unclassified"
+    ]
+    policy_result = max(policy_results, key=_lineup_policy_result_score) if policy_results else raw_result
+    scoring_result = next((result for result in successful if result[2]), None)
+    method, raw, _, _ = raw_result
+    policy_method, _, _, lineup_change_policy = policy_result
+    lineup_change_policy = {
+        **lineup_change_policy,
+        "methods_checked": list(candidates),
+        "successful_methods": [result[0] for result in successful],
+    }
+    log.info(
+        "League rules fetched via %s successful methods; selected method=%s policy_state=%s",
+        len(successful),
+        policy_method,
+        lineup_change_policy.get("state"),
+    )
+    return {
+        "method": method,
+        "policy_method": policy_method,
+        "scoring_method": scoring_result[0] if scoring_result else None,
+        "scoring_categories": scoring_result[2] if scoring_result else None,
+        "lineup_change_policy": lineup_change_policy,
+        "raw": raw,
+    }
+
+
+def _lineup_policy_result_score(
+    result: tuple[str, dict[str, Any], list[dict] | None, dict[str, Any]],
+) -> tuple[int, int]:
+    """Prefer the response with the broadest sanitized policy evidence."""
+    candidates = result[3].get("candidates")
+    if not isinstance(candidates, list):
+        return (0, 0)
+    hints = {
+        candidate.get("hint")
+        for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("hint")
+    }
+    semantic_groups = sum((
+        bool(hints & {"daily", "weekly", "period"}),
+        bool(hints & {"player_game", "global_day"}),
+    ))
+    return semantic_groups, len(candidates)
 
 
 def _lineup_change_policy_observation(node: Any, *, method: str) -> dict[str, Any]:

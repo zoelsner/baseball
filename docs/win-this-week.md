@@ -156,7 +156,11 @@ League-rule refreshes now retain a bounded, schema-sanitized diagnostic of
 possible policy fields. Raw values, arbitrary descendant fields, URLs, emails,
 notes, and tokens are not exposed through the snapshot API. The public payload
 reports only an unclassified evidence count plus semantic hints such as
-`weekly` or `player_game`.
+`weekly` or `player_game`. The collector checks every supported read-only
+Fantrax league-rule method instead of accepting the first shallow success, and
+publishes only the fixed method names that were checked and returned usable
+responses. It keeps one selected raw response in the private snapshot rather
+than duplicating every endpoint payload.
 
 Until an exact live Fantrax path is fixture-backed and the solver ships,
 `data_quality.schedule_optimizer_ready` remains `false` and
