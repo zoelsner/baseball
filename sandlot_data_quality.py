@@ -144,6 +144,16 @@ def _lineup_change_policy_quality(league_rules: Any) -> dict[str, Any]:
         "reason": reason,
         "candidate_count": len(candidates),
         "candidate_hints": candidate_hints,
+        "methods_checked": [
+            str(method)
+            for method in policy.get("methods_checked", [])
+            if isinstance(method, str)
+        ][:12],
+        "successful_methods": [
+            str(method)
+            for method in policy.get("successful_methods", [])
+            if isinstance(method, str)
+        ][:12],
     }
 
 

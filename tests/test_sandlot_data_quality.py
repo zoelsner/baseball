@@ -409,6 +409,8 @@ class SnapshotDataQualityTests(unittest.TestCase):
                 "source": "fantrax.getLeagueRules.raw",
                 "reason": "Exact mapping is not trusted yet.",
                 "candidates": [{"path": "settings.lineupPeriod", "value_type": "str", "hint": "weekly"}],
+                "methods_checked": ["getLeagueRules", "getLeagueInfo"],
+                "successful_methods": ["getLeagueInfo"],
             },
         }
 
@@ -420,6 +422,8 @@ class SnapshotDataQualityTests(unittest.TestCase):
         self.assertEqual(policy["candidate_hints"], ["weekly"])
         self.assertNotIn("candidates", policy)
         self.assertNotIn("lineup_change_policy", payload)
+        self.assertEqual(policy["methods_checked"], ["getLeagueRules", "getLeagueInfo"])
+        self.assertEqual(policy["successful_methods"], ["getLeagueInfo"])
         self.assertFalse(payload["data_quality"]["schedule_optimizer_ready"])
 
     def test_waiver_payload_pauses_cards_when_recommendation_data_incomplete(self):
