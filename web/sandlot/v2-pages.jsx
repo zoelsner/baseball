@@ -86,6 +86,7 @@ function v2EmptyModel() {
     takenAt: null,
     playerIndex: [],
     matchup: null,
+    winThisWeek: null,
     dataQuality: null,
   };
 }
@@ -220,6 +221,7 @@ function v2NormalizeSnapshot(payload) {
     takenAt: payload?.taken_at || null,
     playerIndex: payload?.player_index || [],
     matchup: payload?.matchup || null,
+    winThisWeek: payload?.win_this_week || null,
     dataQuality: payload?.data_quality || null,
   };
 }
@@ -552,6 +554,19 @@ function V2App({ initial }) {
       document.removeEventListener('visibilitychange', refreshStoredSnapshot);
     };
   }, [loadSnapshot, tickSyncAge]);
+
+  const primaryActionDeadline = model?.winThisWeek?.actions?.[0]?.deadline?.at || null;
+  React.useEffect(() => {
+    if (!primaryActionDeadline) return undefined;
+    const deadlineMs = new Date(primaryActionDeadline).getTime();
+    if (!Number.isFinite(deadlineMs)) return undefined;
+    const refreshInMs = Math.max(0, deadlineMs - Date.now() + 1000);
+    const timer = window.setTimeout(
+      () => loadSnapshot({ silent:true }),
+      Math.min(refreshInMs, 2_147_483_647),
+    );
+    return () => window.clearTimeout(timer);
+  }, [loadSnapshot, primaryActionDeadline]);
 
   React.useLayoutEffect(() => {
     if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
@@ -1069,6 +1084,242 @@ function v2AttentionQueue(health, matchupRecommendations, options={}) {
   return items.sort((a,b)=>b.priority-a.priority).slice(0, 6);
 }
 
+function v2WinWeekDeadline(deadline) {
+  if (!deadline || deadline.state !== 'known' || !deadline.at) return 'Deadline needs a fresh check';
+  const parsed = new Date(deadline.at);
+  if (Number.isNaN(parsed.getTime())) return 'Deadline needs a fresh check';
+  if (parsed.getTime() <= Date.now()) return 'Deadline passed · refresh required';
+  return `Before ${parsed.toLocaleTimeString([], { weekday:'short', hour:'numeric', minute:'2-digit' })}`;
+}
+
+function v2WinWeekDeadlineExpired(deadline) {
+  if (!deadline || deadline.state !== 'known' || !deadline.at) return false;
+  const parsed = new Date(deadline.at);
+  return !Number.isNaN(parsed.getTime()) && parsed.getTime() <= Date.now();
+}
+
+function v2WinWeekPrompt(action, plan) {
+  const points = v2Number(action?.expected_points?.estimate);
+  const deadline = v2WinWeekDeadline(action?.deadline);
+  const steps = (action?.steps || []).map((step, index) => {
+    if (step.action === 'add') return `${index + 1}. Add ${step.player_name || step.player_id}${step.to_slot ? ` for ${step.to_slot}` : ''}.`;
+    if (step.action === 'move_out') return `${index + 1}. Move out ${step.player_name || step.player_id}.`;
+    if (step.action === 'start') return `${index + 1}. Start ${step.player_name || step.player_id} in ${step.to_slot || 'the open slot'}.`;
+    return `${index + 1}. Move ${step.player_name || step.player_id} from ${step.from_slot || '?'} to ${step.to_slot || '?'}.`;
+  });
+  return [
+    'Pressure-test Sandlot’s top Win This Week action before I touch Fantrax.',
+    '',
+    `Plan: ${action?.title || 'Unknown action'}.`,
+    `Expected remaining-week impact: ${v2Signed(points, 1)} points. ${deadline}.`,
+    plan?.summary?.outlook || null,
+    `Confidence: ${action?.confidence || 'unknown'}. Dynasty cost: ${action?.dynasty_cost?.level || 'unknown'}.`,
+    action?.dynasty_cost?.reason ? `Dynasty note: ${action.dynasty_cost.reason}` : null,
+    ...steps,
+    '',
+    plan?.summary?.win_probability_excluded_reason || null,
+    'Verify current Fantrax availability, transaction or lineup locks, MLB lineup status, and the exact deadline. Do not invent a win-probability change if it is not calibrated.',
+  ].filter(Boolean).join('\n');
+}
+
+function V2WinThisWeekPanel({ plan, sync={}, onNav, onAskSkipper, onRefresh }) {
+  if (!plan) return null;
+  const actions = Array.isArray(plan.actions) ? plan.actions : [];
+  const primary = actions[0] || null;
+  const alternatives = Array.isArray(plan.no_action?.alternatives) ? plan.no_action.alternatives : [];
+  const lineupHandoff = plan.handoffs?.lineup?.read_only === true && plan.handoffs?.lineup?.method === 'GET'
+    ? plan.handoffs.lineup
+    : null;
+  const deadlineExpired = v2WinWeekDeadlineExpired(primary?.deadline);
+  const staleSnapshot = ['stale', 'old', 'failed', 'loading', 'refreshing', 'missing'].includes(sync.state);
+  const refreshRequired = deadlineExpired || staleSnapshot;
+  const snapshotStateLabel = sync.state === 'refreshing' ? 'refreshing' : sync.state || 'unknown';
+  const snapshotArticle = snapshotStateLabel === 'old' ? 'an' : 'a';
+  const monitor = (plan.monitoring_actions || [])[0] || null;
+  const points = v2Number(primary?.expected_points?.estimate);
+  const kindLabel = primary?.kind === 'waiver' ? 'Waiver move' : 'Lineup move';
+  const stateLabel = refreshRequired ? 'Refresh required' : primary?.state === 'review_now' ? 'Review now' : 'Best move now';
+  const dynastyLevel = primary?.dynasty_cost?.level || 'unknown';
+  const tone = refreshRequired
+    ? { fg:V2.warn, bg:V2.warnSoft }
+    : plan.state === 'ready'
+    ? { fg:V2.accent, bg:V2.accentSoft }
+    : plan.state === 'paused'
+      ? { fg:V2.warn, bg:V2.warnSoft }
+      : { fg:V2.ok, bg:V2.okSoft };
+
+  return (
+    <section aria-label="Win This Week" style={{
+      background:`linear-gradient(145deg, ${V2.surface} 0%, #fff7ed 100%)`,
+      borderRadius:26,
+      padding:18,
+      boxShadow:'0 0 0 1px rgba(0,0,0,0.06), 0 1px 2px -1px rgba(0,0,0,0.08), 0 8px 24px rgba(76,38,16,0.07)',
+      overflow:'hidden',
+    }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+        <div>
+          <V2Eyebrow color={tone.fg}>Win This Week</V2Eyebrow>
+          <div style={{ marginTop:7, color:V2.ink, fontSize:25, lineHeight:1.03, fontWeight:850, fontFamily:V2.fontDisplay, textWrap:'balance' }}>
+            {primary ? stateLabel : plan.state === 'paused' ? 'Plan paused' : 'No worthwhile move'}
+          </div>
+        </div>
+        <span style={{ flexShrink:0, background:tone.bg, color:tone.fg, borderRadius:999, padding:'6px 10px', fontSize:11, fontWeight:900 }}>
+          {actions.length} option{actions.length === 1 ? '' : 's'}
+        </span>
+      </div>
+
+      <div style={{ marginTop:9, color:V2.body, fontSize:13.5, lineHeight:1.45, fontWeight:750, textWrap:'pretty' }}>
+        {deadlineExpired
+          ? 'The stored primary action has passed its deadline. Refresh before making any Fantrax change.'
+          : staleSnapshot
+            ? `This plan comes from ${snapshotArticle} ${snapshotStateLabel} snapshot. Refresh before making any Fantrax change.`
+          : plan.summary?.headline || plan.no_action?.reason || 'Waiting for a matchup plan.'}
+      </div>
+
+      {!refreshRequired && plan.summary?.outlook ? (
+        <div style={{ marginTop:7, color:V2.ink, fontSize:12.5, lineHeight:1.4, fontWeight:850, textWrap:'pretty' }}>
+          {plan.summary.outlook}
+        </div>
+      ) : null}
+
+      {plan.summary?.projection_caveat ? (
+        <div style={{ marginTop:10, background:V2.warnSoft, color:V2.warn, borderRadius:12, padding:'9px 10px', fontSize:11.5, lineHeight:1.4, fontWeight:800, textWrap:'pretty' }}>
+          Projection note: {plan.summary.projection_caveat}
+        </div>
+      ) : null}
+
+      {primary ? (
+        <div style={{ marginTop:15, background:'rgba(255,255,255,0.78)', borderRadius:16, padding:'15px 15px 14px', boxShadow:'0 0 0 1px rgba(0,0,0,0.055)' }}>
+          <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:14 }}>
+            <div style={{ minWidth:0 }}>
+              <div style={{ display:'flex', alignItems:'center', flexWrap:'wrap', gap:7 }}>
+                <span style={{ color:V2.accent, fontSize:10.5, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>{kindLabel}</span>
+                <span style={{ color:V2.muted, fontSize:10.5, fontWeight:850 }}>· {primary.confidence || 'unknown'} confidence</span>
+              </div>
+              <div style={{ marginTop:7, color:V2.ink, fontSize:20, lineHeight:1.1, fontWeight:850, fontFamily:V2.fontDisplay, textWrap:'balance' }}>
+                {primary.title}
+              </div>
+              <div style={{ marginTop:7, color:V2.accent, fontSize:12.5, lineHeight:1.35, fontWeight:900, fontVariantNumeric:'tabular-nums' }}>
+                {v2WinWeekDeadline(primary.deadline)}
+              </div>
+            </div>
+            <div style={{ flexShrink:0, textAlign:'right' }}>
+              <div style={{ color:V2.accent, fontSize:29, lineHeight:0.95, fontWeight:900, fontFamily:V2.fontDisplay, fontVariantNumeric:'tabular-nums' }}>
+                {v2Signed(points, 1)}
+              </div>
+              <div style={{ marginTop:5, color:V2.muted, fontSize:10, fontWeight:900, letterSpacing:'0.06em', textTransform:'uppercase' }}>{deadlineExpired ? 'expired estimate' : staleSnapshot ? 'stale estimate' : 'proj. points'}</div>
+            </div>
+          </div>
+
+          <div style={{ marginTop:12, display:'flex', flexWrap:'wrap', gap:7 }}>
+            <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'5px 8px', fontSize:10.5, fontWeight:850 }}>
+              {dynastyLevel === 'none' ? 'No dynasty cost' : `${dynastyLevel} dynasty cost`}
+            </span>
+            <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'5px 8px', fontSize:10.5, fontWeight:850 }}>
+              {deadlineExpired ? 'Deadline passed' : staleSnapshot ? `Snapshot ${snapshotStateLabel}` : primary.legality?.state === 'snapshot_verified' ? 'Snapshot legal' : 'Live preflight required'}
+            </span>
+            <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'5px 8px', fontSize:10.5, fontWeight:850 }}>
+              Read-only
+            </span>
+          </div>
+
+          {(primary.steps || []).length ? (
+            <div style={{ marginTop:12, display:'flex', flexDirection:'column', gap:6 }}>
+              <div style={{ color:V2.muted, fontSize:10, lineHeight:1.3, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>
+                Complete order · {(primary.steps || []).length} step{(primary.steps || []).length === 1 ? '' : 's'}
+              </div>
+              {(primary.steps || []).map((step, index) => {
+                const text = step.action === 'add'
+                  ? `Add ${step.player_name || step.player_id}${step.to_slot ? ` for ${step.to_slot}` : ''}`
+                  : step.action === 'move_out'
+                    ? `Move out ${step.player_name || step.player_id}`
+                    : step.action === 'start'
+                      ? `Start ${step.player_name || step.player_id} in ${step.to_slot || 'the open slot'}`
+                    : `${step.player_name || step.player_id}: ${step.from_slot || '?'} → ${step.to_slot || '?'}`;
+                return (
+                  <div key={`${primary.id}-step-${index}`} style={{ display:'flex', gap:9, alignItems:'baseline', color:V2.body, fontSize:12.5, lineHeight:1.35, fontWeight:750 }}>
+                    <span style={{ color:V2.accent, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums', fontWeight:900 }}>{index + 1}</span>
+                    <span style={{ minWidth:0, textWrap:'pretty' }}>{text}</span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+
+          {primary.dynasty_cost?.reason ? (
+            <div style={{ marginTop:11, color:V2.muted, fontSize:11.5, lineHeight:1.4, fontWeight:700, textWrap:'pretty' }}>
+              Dynasty: {primary.dynasty_cost.reason}
+            </div>
+          ) : null}
+
+          <div style={{
+            marginTop:14,
+            display:'grid',
+            gridTemplateColumns:refreshRequired || (!lineupHandoff && primary.kind !== 'waiver') ? '1fr' : '1fr 1fr',
+            gap:9,
+          }}>
+            {refreshRequired ? (
+              <button onClick={onRefresh} disabled={sync.state === 'refreshing'} style={{ minHeight:44, background:V2.warn, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:sync.state === 'refreshing' ? 'not-allowed' : 'pointer', opacity:sync.state === 'refreshing' ? 0.7 : 1, fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
+                {sync.state === 'refreshing' ? 'Refreshing…' : 'Refresh plan'}
+              </button>
+            ) : (
+              <button onClick={()=>onAskSkipper(v2WinWeekPrompt(primary, plan))} style={{ minHeight:44, background:V2.ink, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
+                Pressure-test with Skipper
+              </button>
+            )}
+            {!refreshRequired && primary.kind === 'waiver' ? (
+              <button onClick={()=>onNav('fa')} style={{ minHeight:44, background:V2.surface, color:V2.body, border:`1px solid ${V2.hairline}`, borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
+                Open waiver board
+              </button>
+            ) : null}
+            {!refreshRequired && primary.kind !== 'waiver' && lineupHandoff ? (
+              <a href={lineupHandoff.url} target="_blank" rel="noopener noreferrer" style={{ minHeight:44, background:V2.surface, color:V2.body, border:`1px solid ${V2.hairline}`, borderRadius:999, padding:'11px 14px', display:'flex', alignItems:'center', justifyContent:'center', textDecoration:'none', fontSize:12.5, fontWeight:850 }}>
+                {lineupHandoff.label || 'Open Fantrax lineup'}
+              </a>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {!primary && alternatives.length ? (
+        <div style={{ marginTop:15, background:'rgba(255,255,255,0.78)', borderRadius:16, padding:'14px 15px', boxShadow:'0 0 0 1px rgba(0,0,0,0.055)' }}>
+          <div style={{ color:V2.muted, fontSize:10, lineHeight:1.3, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>
+            Best alternatives checked
+          </div>
+          <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:10 }}>
+            {alternatives.map((alternative, index) => {
+              const estimate = v2Number(alternative?.expected_points?.estimate);
+              const kind = alternative?.kind === 'waiver' ? 'Waiver' : alternative?.kind === 'lineup' ? 'Lineup' : 'Option';
+              return (
+                <div key={alternative.id || `alternative-${index}`} style={{ paddingTop:index ? 10 : 0, borderTop:index ? `1px solid ${V2.hairline2}` : 'none' }}>
+                  <div style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:10 }}>
+                    <div style={{ color:V2.ink, fontSize:13, lineHeight:1.35, fontWeight:850, textWrap:'pretty' }}>
+                      {alternative.title || 'Considered alternative'}
+                    </div>
+                    <div style={{ flexShrink:0, color:estimate === null ? V2.muted : V2.accent, fontFamily:V2.fontMono, fontSize:11.5, fontWeight:900, fontVariantNumeric:'tabular-nums' }}>
+                      {estimate === null ? kind : `${v2Signed(estimate, 1)} pts`}
+                    </div>
+                  </div>
+                  <div style={{ marginTop:4, color:V2.muted, fontSize:11.5, lineHeight:1.4, fontWeight:700, textWrap:'pretty' }}>
+                    {alternative.reason || 'This option did not clear Sandlot’s legal and value gates.'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {monitor ? (
+        <div style={{ marginTop:12, display:'flex', alignItems:'flex-start', gap:9, color:V2.muted, fontSize:11.5, lineHeight:1.4, fontWeight:750 }}>
+          <span aria-hidden="true" style={{ marginTop:4, width:7, height:7, borderRadius:'50%', flexShrink:0, background:V2.warn }}/>
+          <span style={{ textWrap:'pretty' }}><strong style={{ color:V2.body }}>Monitor:</strong> {monitor.title}. {monitor.reason}</span>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
   const health = v2RosterHealth(model);
   const dataQuality = model.dataQuality || null;
@@ -1130,6 +1381,14 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
         sync={sync}
         staleCopy={staleCopy}
         rosterCount={health.roster.length}
+      />
+
+      <V2WinThisWeekPanel
+        plan={model.winThisWeek}
+        sync={sync}
+        onNav={onNav}
+        onAskSkipper={onAskSkipper}
+        onRefresh={onRefresh}
       />
 
       <V2HotSwapsPanel

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { waitForAppMount } from '../fixtures/sandlot';
+import { gotoTab, waitForAppMount } from '../fixtures/sandlot';
 
 function baseSnapshot(overrides: Record<string, any> = {}) {
   return {
@@ -108,6 +108,61 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
         }],
       },
     },
+    win_this_week: {
+      model_version: 'win_this_week_v1',
+      state: 'ready',
+      snapshot_id: 'snapshot-attention-test',
+      read_only: true,
+      writes_enabled: false,
+      handoffs: {
+        lineup: {
+          label: 'Open Fantrax lineup',
+          url: 'https://www.fantrax.com/fantasy/league/league-test/team/roster;teamId=team-test',
+          method: 'GET',
+          read_only: true,
+          writes_enabled: false,
+        },
+      },
+      primary_action_id: 'waiver:test:add:drop',
+      summary: {
+        headline: 'Up 6.1; the best current path adds about 5.8 projected points to protect the lead.',
+        outlook: 'After this move, the remaining-week estimate puts you 9.8 points ahead.',
+        projected_margin_before_action: 4.0,
+        projected_margin_after_action: 9.8,
+        win_probability_excluded_reason: 'Win probability is not calibrated; actions are ranked by projected remaining-week points.',
+        projection_caveat: 'Known-opportunity lower bound: 3 pitcher(s) have no posted probable start and contribute zero until that changes.',
+      },
+      actions: [{
+        id: 'waiver:test:add:drop',
+        rank: 1,
+        kind: 'waiver',
+        state: 'review_now',
+        title: 'Add Impact Streamer and move out Cold Corner',
+        steps: [
+          { action: 'add', player_id: 'impact-streamer', player_name: 'Impact Streamer' },
+          { action: 'move_out', player_id: 'corner', player_name: 'Cold Corner' },
+          { action: 'start', player_id: 'impact-streamer', player_name: 'Impact Streamer', to_slot: 'UT' },
+          { player_id: 'bridge-one', player_name: 'Bridge One', from_slot: 'UT', to_slot: 'OF' },
+          { player_id: 'bridge-two', player_name: 'Bridge Two', from_slot: 'OF', to_slot: 'BN' },
+        ],
+        expected_points: { estimate: 5.8, comparable: true },
+        win_probability_delta: null,
+        probability_calibrated: false,
+        deadline: { state: 'known', at: '2099-06-07T22:40:00Z' },
+        confidence: 'medium',
+        dynasty_cost: { level: 'low', reason: 'No major dynasty concern from age alone.' },
+        legality: { state: 'provisionally_legal', requires_live_preflight: true },
+        writes_enabled: false,
+      }],
+      monitoring_actions: [{
+        id: 'monitor:waiver:test:add:drop',
+        kind: 'monitor',
+        state: 'scheduled_check',
+        title: 'Recheck Fantrax and MLB status before the action deadline',
+        reason: 'Availability, lineup confirmation, and Fantrax locks can change after the snapshot.',
+      }],
+      diagnostics: { probability_calibrated: false },
+    },
     data_quality: {
       projection_ready: true,
       recommendations_ready: true,
@@ -151,6 +206,16 @@ test.describe('Today — Attention Queue', () => {
 
     await expect(page.getByText('Matchup · Leading')).toBeVisible();
     await expect(page.getByText('snapshot 12m old')).toBeVisible();
+    await expect(page.getByText('Win This Week', { exact: true })).toBeVisible();
+    await expect(page.getByText('Review now', { exact: true })).toBeVisible();
+    await expect(page.getByText('Add Impact Streamer and move out Cold Corner', { exact: true })).toBeVisible();
+    await expect(page.getByText('After this move, the remaining-week estimate puts you 9.8 points ahead.', { exact: true })).toBeVisible();
+    await expect(page.getByText('+5.8', { exact: true })).toBeVisible();
+    await expect(page.getByText('Live preflight required', { exact: true })).toBeVisible();
+    await expect(page.getByText('Read-only', { exact: true })).toBeVisible();
+    await expect(page.getByText('Complete order · 5 steps', { exact: true })).toBeVisible();
+    await expect(page.getByText('Bridge Two: OF → BN', { exact: true })).toBeVisible();
+    await expect(page.getByText(/Projection note: Known-opportunity lower bound: 3 pitcher/)).toBeVisible();
     await expect(page.getByText('1 hot swap')).toBeVisible();
     await expect(page.getByText('Leading by 6.1 · 2d left; this swap adds +2.4 projected points to protect the edge.')).toBeVisible();
     await expect(page.getByText('1 urgent · 1 check · 1 review')).toBeVisible();
@@ -163,6 +228,7 @@ test.describe('Today — Attention Queue', () => {
       return box!.y;
     };
     const matchupTop = await yOf(page.getByText('Matchup · Leading'));
+    const winThisWeekTop = await yOf(page.getByText('Win This Week', { exact: true }));
     const hotSwapsTop = await yOf(page.getByText('1 hot swap'));
     const judge = await yOf(page.getByRole('button', { name: /Aaron Judge/ }));
     const webb = await yOf(page.getByRole('button', { name: /Logan Webb/ }));
@@ -170,6 +236,8 @@ test.describe('Today — Attention Queue', () => {
     const replacement = await yOf(page.getByText('Bench Bat for Cold Corner'));
 
     expect(matchupTop).toBeLessThan(hotSwapsTop);
+    expect(matchupTop).toBeLessThan(winThisWeekTop);
+    expect(winThisWeekTop).toBeLessThan(hotSwapsTop);
     expect(replacement).toBeLessThan(judge);
     expect(webb).toBeGreaterThan(judge);
     expect(cold).toBeGreaterThan(webb);
@@ -195,6 +263,18 @@ test.describe('Today — Attention Queue', () => {
     await expect(queueSection.getByRole('button', { name: /Propose swap blocked/i })).toBeDisabled();
     await expect(queueSection.getByRole('button', { name: /Ask Skipper/i })).toBeVisible();
     await expect(queueSection.getByRole('button', { name: /Deep research/i })).toBeVisible();
+
+    const winPanel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(winPanel.getByRole('button', { name: 'Pressure-test with Skipper' })).toBeVisible();
+    await expect(winPanel.getByRole('button', { name: 'Open waiver board' })).toBeVisible();
+    await winPanel.getByRole('button', { name: 'Pressure-test with Skipper' }).click();
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/top Win This Week action/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Expected remaining-week impact: \+5.8 points/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/remaining-week estimate puts you 9.8 points ahead/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Add Impact Streamer/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Move out Cold Corner/);
+
+    await gotoTab(page, 'Today');
 
     await queueSection.getByRole('button', { name: /Ask Skipper/i }).click();
     await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Pressure-test this lineup-only hot swap/);
@@ -234,6 +314,160 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('No lineup-only move clears the meaningful-gain threshold right now.')).toBeVisible();
     await expect(page.getByText('No current issues')).toBeVisible();
     await expect(page.getByText('No injury, lineup, output, or replacement issue needs action in the current snapshot.')).toBeVisible();
+  });
+
+  test('explains why the best no-action alternatives were rejected', async ({ page }) => {
+    test.skip(!isLocalBundle, 'No-action alternatives are verified against the rebuilt local bundle.');
+    await mockSnapshot(page, baseSnapshot({
+      win_this_week: {
+        model_version: 'win_this_week_v1',
+        state: 'no_action',
+        read_only: true,
+        writes_enabled: false,
+        summary: {
+          headline: 'No lineup move clears the meaningful-gain threshold from this snapshot.',
+          outlook: 'The current remaining-week estimate leaves you 12.0 points behind.',
+          projected_margin_before_action: -12.0,
+          projected_margin_after_action: null,
+        },
+        actions: [],
+        monitoring_actions: [],
+        no_action: {
+          reason: 'No lineup move clears the meaningful-gain threshold from this snapshot.',
+          alternatives: [{
+            id: 'rejected-lineup:bench:starter',
+            kind: 'lineup',
+            title: 'Start Small Upgrade over Current Starter',
+            expected_points: { estimate: 0.4, comparable: true },
+            status: 'below_threshold',
+            reason: "The estimated +0.4-point gain is below Sandlot's 1.0-point meaningful-gain threshold.",
+          }],
+        },
+      },
+    }));
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(panel.getByText('No worthwhile move', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Best alternatives checked', { exact: true })).toBeVisible();
+    await expect(panel.getByText('The current remaining-week estimate leaves you 12.0 points behind.', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Start Small Upgrade over Current Starter', { exact: true })).toBeVisible();
+    await expect(panel.getByText('+0.4 pts', { exact: true })).toBeVisible();
+    await expect(panel.getByText(/below Sandlot's 1.0-point meaningful-gain threshold/)).toBeVisible();
+  });
+
+  test('opens lineup plans on the verified read-only Fantrax roster route', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Fantrax lineup handoff is verified against the rebuilt local bundle.');
+    const snapshot = baseSnapshot();
+    snapshot.win_this_week.actions[0].kind = 'lineup';
+    snapshot.win_this_week.actions[0].state = 'act_now';
+    snapshot.win_this_week.actions[0].title = 'Start Bench Bat over Current Starter';
+    await mockSnapshot(page, snapshot);
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    const handoff = panel.getByRole('link', { name: 'Open Fantrax lineup' });
+    await expect(handoff).toHaveAttribute(
+      'href',
+      'https://www.fantrax.com/fantasy/league/league-test/team/roster;teamId=team-test',
+    );
+    await expect(handoff).toHaveAttribute('target', '_blank');
+    await expect(panel.getByRole('button', { name: 'Open waiver board' })).toHaveCount(0);
+  });
+
+  test('blocks an expired primary action until the plan is refreshed', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Deadline-expiry safety is verified against the rebuilt local bundle.');
+    const expired = baseSnapshot();
+    expired.win_this_week.actions[0].deadline = { state: 'known', at: '2020-01-01T00:00:00Z' };
+    await mockSnapshot(page, expired);
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(panel.getByText('Refresh required', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Deadline passed · refresh required', { exact: true })).toBeVisible();
+    await expect(panel.getByText('expired estimate', { exact: true })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Refresh plan' })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Pressure-test with Skipper' })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Open waiver board' })).toHaveCount(0);
+  });
+
+  test('blocks waiver controls when the snapshot is stale', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Stale-plan safety is verified against the rebuilt local bundle.');
+    await mockSnapshot(page, baseSnapshot({
+      freshness: { state: 'stale', age_minutes: 48 },
+    }));
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(panel.getByText('Refresh required', { exact: true })).toBeVisible();
+    await expect(panel.getByText('This plan comes from a stale snapshot. Refresh before making any Fantrax change.', { exact: true })).toBeVisible();
+    await expect(panel.getByText('stale estimate', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Snapshot stale', { exact: true })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Refresh plan' })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Pressure-test with Skipper' })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Open waiver board' })).toHaveCount(0);
+  });
+
+  test('blocks Fantrax lineup handoff when the snapshot is old', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Old-plan safety is verified against the rebuilt local bundle.');
+    const old = baseSnapshot({ freshness: { state: 'old', age_minutes: 180 } });
+    old.win_this_week.actions[0].kind = 'lineup';
+    old.win_this_week.actions[0].title = 'Start Bench Bat over Current Starter';
+    await mockSnapshot(page, old);
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(panel.getByText('Refresh required', { exact: true })).toBeVisible();
+    await expect(panel.getByText('This plan comes from an old snapshot. Refresh before making any Fantrax change.', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Snapshot old', { exact: true })).toBeVisible();
+    await expect(panel.getByRole('link', { name: 'Open Fantrax lineup' })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Pressure-test with Skipper' })).toHaveCount(0);
+  });
+
+  test('silently refetches when the primary action deadline arrives', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Deadline-triggered refetch is verified against the rebuilt local bundle.');
+    const expiring = baseSnapshot();
+    expiring.win_this_week.actions[0].deadline = {
+      state: 'known',
+      at: new Date(Date.now() + 500).toISOString(),
+    };
+    const refreshed = baseSnapshot({
+      win_this_week: {
+        model_version: 'win_this_week_v1',
+        state: 'no_action',
+        read_only: true,
+        writes_enabled: false,
+        summary: { headline: 'No legal move remains after the deadline.' },
+        actions: [],
+        monitoring_actions: [],
+        no_action: { reason: 'No legal move remains after the deadline.' },
+      },
+    });
+    let requests = 0;
+    await page.route('**/api/snapshot/latest', async route => {
+      requests += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(requests === 1 ? expiring : refreshed),
+      });
+    });
+
+    await page.goto('/');
+    await waitForAppMount(page);
+    await expect(page.getByText('Add Impact Streamer and move out Cold Corner', { exact: true })).toBeVisible();
+    await expect(page.getByText('No worthwhile move', { exact: true })).toBeVisible();
+    expect(requests).toBeGreaterThanOrEqual(2);
   });
 
   test('pauses swap guidance when lineup slot provenance is untrusted', async ({ page }) => {

@@ -35,6 +35,7 @@ jobs:
           import sandlot_scoring
           import sandlot_autopsy
           import sandlot_lineup
+          import sandlot_win_week
           import player_service
           import mlb_stats
           print('all imports OK')

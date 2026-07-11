@@ -138,7 +138,14 @@ def compute_projection(
 
     mu_my, var_my, my_games = _team_projection(my_rows, my_score, period_end, period_start)
     mu_opp, var_opp, opp_games = _team_projection(opp_rows, opp_score, period_end, period_start)
-    if my_games + opp_games <= 0:
+    unmodeled_pitchers = _unmodeled_pitcher_count(my_rows) + _unmodeled_pitcher_count(opp_rows)
+    opportunity_completeness = "known_opportunities_lower_bound" if unmodeled_pitchers else "complete"
+    known_zero_schedule = bool(
+        isinstance(data_quality, dict)
+        and isinstance(data_quality.get("projection_future_games"), dict)
+        and data_quality["projection_future_games"].get("zero_remaining_games") is True
+    )
+    if my_games + opp_games <= 0 and not (unmodeled_pitchers or known_zero_schedule):
         return None
 
     projected_my = round(mu_my, 1)
@@ -152,6 +159,8 @@ def compute_projection(
         "projected_opp": projected_opp,
         "my_remaining_games": my_games,
         "opp_remaining_games": opp_games,
+        "opportunity_completeness": opportunity_completeness,
+        "pitchers_without_probable_start": unmodeled_pitchers,
         "win_probability": win_probability,
         "drivers": _drivers(
             my_score=my_score,
@@ -165,6 +174,21 @@ def compute_projection(
         ),
         "complete": False,
     }
+
+
+def player_can_play_slot(row: dict[str, Any], slot: str) -> bool:
+    """Public eligibility check for deterministic hypothetical roster planning."""
+    return _can_play_slot(row, slot)
+
+
+def player_movability(row: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    """Public read-only movability evidence for lineup and transaction planning."""
+    return _player_movability(row, now=now)
+
+
+def player_roster_exit_availability(row: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    """Return current-week drop availability from Fantrax action metadata and MLB timing."""
+    return _player_roster_exit_availability(row, now=now)
 
 
 def projection_log_payload(
@@ -527,6 +551,7 @@ def rank_matchup_improvement_actions(
     }
     recommendations: list[dict[str, Any]] = []
     best_rejected_delta = (simulation.get("no_action") or {}).get("best_rejected_delta")
+    best_rejected_action: dict[str, Any] | None = None
 
     for action in simulation.get("actions") or []:
         points_delta = _number(action.get("points_delta")) or 0.0
@@ -540,6 +565,9 @@ def rank_matchup_improvement_actions(
         ):
             if best_rejected_delta is None or points_delta > best_rejected_delta:
                 best_rejected_delta = points_delta
+            previous_best = _number((best_rejected_action or {}).get("points_delta"))
+            if previous_best is None or points_delta > previous_best:
+                best_rejected_action = action
             continue
         confidence = _recommendation_confidence(
             points_delta,
@@ -601,6 +629,10 @@ def rank_matchup_improvement_actions(
         "no_action": {
             "reason": reason,
             "best_rejected_delta": round(best_rejected_delta, 1) if best_rejected_delta is not None else None,
+            "best_alternative": _rejected_lineup_alternative(
+                best_rejected_action,
+                threshold=min_points_delta,
+            ),
             "threshold": min_points_delta,
             "win_probability_threshold": min_win_probability_delta if probability_calibrated else None,
             "probability_calibrated": probability_calibrated,
@@ -608,6 +640,55 @@ def rank_matchup_improvement_actions(
     }
 
 
+def _rejected_lineup_alternative(
+    action: dict[str, Any] | None,
+    *,
+    threshold: float,
+) -> dict[str, Any] | None:
+    if not isinstance(action, dict):
+        return None
+    chain = action.get("chain") if isinstance(action.get("chain"), list) else []
+    move_in = next(
+        (
+            step for step in chain
+            if isinstance(step, dict)
+            and _is_bench_slot(step.get("from_slot"))
+            and not _is_bench_slot(step.get("to_slot"))
+        ),
+        None,
+    )
+    move_out = next(
+        (
+            step for step in chain
+            if isinstance(step, dict)
+            and not _is_bench_slot(step.get("from_slot"))
+            and _is_bench_slot(step.get("to_slot"))
+        ),
+        None,
+    )
+    points = round(_number(action.get("points_delta")) or 0.0, 1)
+    title = "Best legal lineup change"
+    if move_in and move_out:
+        title = (
+            f"Start {move_in.get('player_name') or move_in.get('player_id') or 'the bench option'} "
+            f"over {move_out.get('player_name') or move_out.get('player_id') or 'the current starter'}"
+        )
+    return {
+        "id": "rejected-lineup:" + ":".join(
+            str(step.get("player_id") or "unknown")
+            for step in chain
+            if isinstance(step, dict)
+        ),
+        "kind": "lineup",
+        "title": title,
+        "steps": chain,
+        "expected_points": {"estimate": points, "comparable": True},
+        "status": "below_threshold",
+        "reason": (
+            f"The estimated {points:+.1f}-point gain is below Sandlot's "
+            f"{threshold:.1f}-point meaningful-gain threshold."
+        ),
+    }
 def _clears_meaningful_threshold(
     points_delta: float,
     win_probability_delta: float,
@@ -807,6 +888,7 @@ def _lineup_replacement_card(
         move_in_row,
         move_out_row,
         additional_rows=additional_rows,
+        chain=chain,
         now=_movability_now(snapshot),
     )
     move_in = _player_card_summary(move_in_row, promoted, period_end, period_start)
@@ -834,6 +916,7 @@ def _lineup_replacement_card(
         "move_in": move_in,
         "move_out": move_out,
         "movability": movability,
+        "deadline": movability.get("deadline"),
         "projected_benefit": {
             "points": round(points_delta, 1),
             "win_probability_delta": round(win_delta, 4) if probability_calibrated else None,
@@ -957,15 +1040,28 @@ def _lineup_movability(
     move_out_row: dict[str, Any],
     *,
     additional_rows: list[dict[str, Any]] | None = None,
+    chain: list[dict[str, Any]] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     participants = {
-        "move_in": _player_movability(move_in_row, now=now),
-        "move_out": _player_movability(move_out_row, now=now),
+        "move_in": _player_movability(
+            move_in_row,
+            target_slot=_chain_target_slot(chain, move_in_row),
+            now=now,
+        ),
+        "move_out": _player_movability(
+            move_out_row,
+            target_slot=_chain_target_slot(chain, move_out_row),
+            now=now,
+        ),
     }
     for index, row in enumerate(additional_rows or [], start=1):
-        participants[f"bridge_{index}"] = _player_movability(row, now=now)
+        participants[f"bridge_{index}"] = _player_movability(
+            row,
+            target_slot=_chain_target_slot(chain, row),
+            now=now,
+        )
     locked = [item for item in participants.values() if item["state"] == "locked"]
     unknown = [item for item in participants.values() if item["state"] == "unknown"]
     if locked:
@@ -975,8 +1071,9 @@ def _lineup_movability(
             "state": "locked",
             "label": "Locked",
             "reason": f"Lineup movability is blocked for {names}: {detail}",
-            "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
+            "source": "fantrax.destination_eligibility+mlb_schedule.gameDate",
             "participants": participants,
+            "deadline": {"state": "unavailable", "at": None, "reason": detail},
         }
     if unknown:
         names = _name_list(item.get("name") for item in unknown)
@@ -985,55 +1082,160 @@ def _lineup_movability(
             "state": "unknown",
             "label": "Movability unknown",
             "reason": f"Lineup movability is uncertain for {names}: {detail}",
-            "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
+            "source": "fantrax.destination_eligibility+mlb_schedule.gameDate",
             "participants": participants,
+            "deadline": {"state": "unknown", "at": None, "reason": detail},
         }
+    deadline = _earliest_lineup_deadline(participants)
     return {
         "state": "movable",
         "label": "Movable",
-        "reason": "Fantrax raw data and MLB game-start timing do not mark any slot-move participant unavailable.",
-        "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
+        "reason": "Fantrax explicitly allows every proposed destination and MLB timing shows no participant game has started.",
+        "source": "fantrax.destination_eligibility+mlb_schedule.gameDate",
         "participants": participants,
+        "deadline": deadline,
     }
 
 
-def _player_movability(row: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+def _earliest_lineup_deadline(participants: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    candidates: list[tuple[datetime, str, dict[str, Any]]] = []
+    for role, participant in participants.items():
+        schedule = participant.get("schedule") if isinstance(participant.get("schedule"), dict) else {}
+        locks_at = _parse_game_start(schedule.get("locks_at"))
+        if locks_at is None:
+            continue
+        candidates.append((locks_at, role, participant))
+    if not candidates:
+        return {
+            "state": "none_scheduled",
+            "at": None,
+            "source": "mlb_schedule.gameDate",
+            "reason": "No scheduled participant game start supplies an exact lineup deadline.",
+        }
+    locks_at, role, participant = min(candidates, key=lambda item: item[0])
+    return {
+        "state": "known",
+        "at": locks_at.isoformat(),
+        "source": "earliest_participant_mlb_game_start",
+        "participant_role": role,
+        "participant_id": participant.get("id"),
+        "participant_name": participant.get("name"),
+        "reason": f"Complete the lineup change before {participant.get('name') or 'the first participant'} starts.",
+    }
+
+
+def _player_movability(
+    row: dict[str, Any],
+    *,
+    target_slot: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     name = str(row.get("name") or row.get("id") or "unknown player")
     now = now or datetime.now(timezone.utc)
     provider_value = _raw_disable_lineup_change(row)
+    destination = _destination_eligibility(row, target_slot)
     schedule = _schedule_movability(row, now)
     if provider_value is True:
         state = "locked"
         label = "Locked"
         reason = f"{name} is marked unavailable for lineup changes by Fantrax."
+    elif destination["state"] == "ineligible":
+        state = "locked"
+        label = "Locked"
+        reason = destination["reason"]
     elif schedule["state"] == "locked":
         state = "locked"
         label = "Locked"
         reason = schedule["reason"]
-    elif provider_value is False and schedule["state"] == "movable":
+    elif (provider_value is False or destination["state"] == "eligible") and schedule["state"] == "movable":
         state = "movable"
         label = "Movable"
-        reason = f"{name} is not marked unavailable by Fantrax and has no started MLB game in this snapshot."
+        reason = (
+            f"Fantrax explicitly allows {name} to move to {target_slot}, and no MLB game has started."
+            if destination["state"] == "eligible"
+            else f"{name} is not marked unavailable by Fantrax and has no started MLB game in this snapshot."
+        )
     else:
         state = "unknown"
         label = "Movability unknown"
-        if provider_value is None:
-            reason = f"{name} is missing a boolean Fantrax lineup-change flag."
+        if destination["state"] == "unknown" and provider_value is None:
+            reason = destination["reason"]
         else:
             reason = schedule["reason"]
+    provider_source = (
+        "fantrax.raw.scorer.disableLineupChange"
+        if provider_value is not None
+        else destination.get("source") or "fantrax.destination_eligibility"
+    )
     return {
         "id": _player_id(row),
         "name": name,
         "state": state,
         "label": label,
         "reason": reason,
-        "source": "fantrax.raw.scorer.disableLineupChange+mlb_schedule.gameDate",
+        "target_slot": target_slot,
+        "source": f"{provider_source}+mlb_schedule.gameDate",
         "provider": {
-            "source": "fantrax.raw.scorer.disableLineupChange",
+            "source": provider_source,
             "raw_value": provider_value,
+            "destination": destination,
         },
         "schedule": schedule,
         "raw_value": provider_value,
+    }
+
+
+def _chain_target_slot(chain: list[dict[str, Any]] | None, row: dict[str, Any]) -> str | None:
+    player_id = _player_id(row)
+    for step in chain or []:
+        if isinstance(step, dict) and str(step.get("player_id") or "") == player_id:
+            target = str(step.get("to_slot") or "").strip().upper()
+            return target or None
+    return None
+
+
+def _destination_eligibility(row: dict[str, Any], target_slot: str | None) -> dict[str, Any]:
+    eligibility = row.get("lineup_eligibility") if isinstance(row.get("lineup_eligibility"), dict) else {}
+    source = str(eligibility.get("source") or "fantrax.raw.eligibleStatusIds+eligiblePosIds")
+    target = str(target_slot or "").strip().upper()
+    if not target:
+        return {
+            "state": "unknown",
+            "source": source,
+            "target_slot": None,
+            "reason": f"{row.get('name') or row.get('id') or 'Player'} has no proposed destination slot to verify.",
+        }
+    if not eligibility:
+        return {
+            "state": "unknown",
+            "source": source,
+            "target_slot": target,
+            "reason": f"{row.get('name') or row.get('id') or 'Player'} is missing Fantrax destination eligibility for {target}.",
+        }
+
+    eligible_statuses = {str(value).strip().upper() for value in eligibility.get("eligible_statuses") or []}
+    eligible_positions = {str(value).strip().upper() for value in eligibility.get("eligible_positions") or []}
+    if _is_bench_slot(target):
+        allowed = bool(eligible_statuses & BENCH_SLOTS)
+        requirement = "reserve status"
+    else:
+        active_allowed = "ACTIVE" in eligible_statuses
+        allowed = active_allowed and target in eligible_positions
+        requirement = f"active status and {target} position"
+
+    state = "eligible" if allowed else "ineligible"
+    reason = (
+        f"Fantrax destination eligibility explicitly allows {row.get('name') or row.get('id') or 'the player'} to move to {target}."
+        if allowed
+        else f"Fantrax destination eligibility does not allow {row.get('name') or row.get('id') or 'the player'} to move to {target} ({requirement} required)."
+    )
+    return {
+        "state": state,
+        "source": source,
+        "target_slot": target,
+        "eligible_statuses": sorted(eligible_statuses),
+        "eligible_positions": sorted(eligible_positions),
+        "reason": reason,
     }
 
 
@@ -1042,6 +1244,48 @@ def _raw_disable_lineup_change(row: dict[str, Any]) -> bool | None:
     scorer = raw.get("scorer") if isinstance(raw.get("scorer"), dict) else {}
     value = scorer.get("disableLineupChange")
     return value if isinstance(value, bool) else None
+
+
+def _player_roster_exit_availability(
+    row: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    name = str(row.get("name") or row.get("id") or "unknown player")
+    now = now or datetime.now(timezone.utc)
+    transaction = row.get("transaction_eligibility") if isinstance(row.get("transaction_eligibility"), dict) else {}
+    drop_available = transaction.get("drop_available") if isinstance(transaction.get("drop_available"), bool) else None
+    schedule = _schedule_movability(row, now)
+    if drop_available is False:
+        state = "locked"
+        reason = f"Fantrax does not expose a Drop action for {name} in this roster snapshot."
+    elif schedule["state"] == "locked":
+        state = "locked"
+        reason = schedule["reason"]
+    elif drop_available is True and schedule["state"] == "movable":
+        state = "movable"
+        reason = f"Fantrax exposes a Drop action for {name}, and no MLB game has started."
+    else:
+        state = "unknown"
+        reason = (
+            f"{name} is missing explicit Fantrax Drop-action metadata."
+            if drop_available is None
+            else schedule["reason"]
+        )
+    return {
+        "id": _player_id(row),
+        "name": name,
+        "state": state,
+        "label": "Movable" if state == "movable" else ("Locked" if state == "locked" else "Availability unknown"),
+        "reason": reason,
+        "source": "fantrax.raw.actions.typeId=3+mlb_schedule.gameDate",
+        "provider": {
+            "source": str(transaction.get("source") or "fantrax.raw.actions.typeId"),
+            "drop_available": drop_available,
+            "action_type_ids": transaction.get("action_type_ids") or [],
+        },
+        "schedule": schedule,
+    }
 
 
 def _lineup_swap_contract(
@@ -1088,6 +1332,7 @@ def _lineup_swap_contract(
             "state": movability_state,
             "source": (movability or {}).get("source"),
             "reason": (movability or {}).get("reason"),
+            "deadline": (movability or {}).get("deadline"),
         },
         "blocked_by": blocked_by,
         "freshness_policy": {
@@ -1184,6 +1429,7 @@ def _schedule_movability(row: dict[str, Any], now: datetime) -> dict[str, Any]:
         }
 
     unknown_games: list[dict[str, Any]] = []
+    upcoming_games: list[tuple[datetime, dict[str, Any]]] = []
     for game in games:
         if not isinstance(game, dict):
             continue
@@ -1197,6 +1443,7 @@ def _schedule_movability(row: dict[str, Any], now: datetime) -> dict[str, Any]:
                     "game": game,
                     "started_at": starts_at.isoformat(),
                 }
+            upcoming_games.append((starts_at, game))
             continue
 
         game_date = _parse_date(game.get("date") or game.get("officialDate") or game.get("gameDate"))
@@ -1219,6 +1466,15 @@ def _schedule_movability(row: dict[str, Any], now: datetime) -> dict[str, Any]:
             "source": "mlb_schedule.gameDate",
             "reason": f"MLB schedule is missing a start time for {_game_label(unknown_games[0])}.",
             "game": unknown_games[0],
+        }
+    if upcoming_games:
+        locks_at, next_game = min(upcoming_games, key=lambda item: item[0])
+        return {
+            "state": "movable",
+            "source": "mlb_schedule.gameDate",
+            "reason": f"{row.get('name') or row.get('id') or 'Player'} must be moved before {_game_label(next_game)} starts.",
+            "game": next_game,
+            "locks_at": locks_at.isoformat(),
         }
     return {
         "state": "movable",
@@ -1813,6 +2069,14 @@ def _drivers(
         "game_volume_edge": game_volume_edge,
         "risk_level": risk_level,
         "opportunity_scope": "hitters plus pitcher-specific starts/appearances",
+        "opportunity_completeness": (
+            "known_opportunities_lower_bound"
+            if ((data_quality or {}).get("projection_future_games") or {}).get("pitchers_without_probable_start")
+            else "complete"
+        ),
+        "pitchers_without_probable_start": (
+            ((data_quality or {}).get("projection_future_games") or {}).get("pitchers_without_probable_start") or 0
+        ),
         "summary": _driver_summary(current_margin, projected_margin, rest_of_period_delta, game_volume_edge),
     }
 
@@ -1945,6 +2209,15 @@ def _row_fppg_value(row: dict[str, Any]) -> float | None:
 
 def _active_rows_have_valid_fppg(rows: list[dict[str, Any]]) -> bool:
     return all(_row_fppg_value(row) is not None for row in _active_rows(rows))
+
+
+def _unmodeled_pitcher_count(rows: list[dict[str, Any]]) -> int:
+    return sum(
+        1
+        for row in _active_rows(rows)
+        if _is_pitcher_row(row)
+        and str(row.get("future_games_status") or "") == "pitcher_probables_unavailable"
+    )
 
 
 def _is_unavailable(row: dict[str, Any]) -> bool:

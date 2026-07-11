@@ -26,6 +26,7 @@ import sandlot_matchup
 import sandlot_skipper
 import sandlot_trades
 import sandlot_waivers
+import sandlot_win_week
 
 log = logging.getLogger(__name__)
 
@@ -143,6 +144,18 @@ def latest_hot_swaps() -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=503, detail="No successful Fantrax snapshot has been stored yet")
     return jsonable_encoder(_hot_swap_payload(row))
+
+
+@app.get("/api/win-this-week/latest")
+def latest_win_this_week() -> dict[str, Any]:
+    """Read-only ranked plan for maximizing the current matchup."""
+    try:
+        row = sandlot_db.latest_successful_snapshot()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="No successful Fantrax snapshot has been stored yet")
+    return jsonable_encoder(_matchup_decisions(row)["win_this_week"])
 
 
 @app.post("/api/refresh")
@@ -541,20 +554,37 @@ def _persisted_snapshot_data(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
+def _matchup_decisions(row: dict[str, Any]) -> dict[str, Any]:
+    """Derive every current-matchup surface from one shared decision context."""
     data = row.get("data") or {}
     snapshot_data = _persisted_snapshot_data(row)
-    roster_meta = data.get("roster") or {}
-    standings = data.get("standings") or {}
     data_quality = sandlot_data_quality.snapshot_data_quality(data)
     matchup_block = data.get("matchup")
     matchup = None
+    lineup_recommendations = None
     if isinstance(matchup_block, dict) and matchup_block:
+        lineup_recommendations = sandlot_matchup.rank_matchup_improvement_actions(snapshot_data, data_quality)
         matchup = {
             **matchup_block,
             "projection": sandlot_matchup.compute_projection(snapshot_data, data_quality),
-            "recommendations": sandlot_matchup.rank_matchup_improvement_actions(snapshot_data, data_quality),
+            "recommendations": lineup_recommendations,
         }
+    return {
+        "data_quality": data_quality,
+        "matchup": matchup,
+        "win_this_week": sandlot_win_week.build_plan(
+            row,
+            data_quality=data_quality,
+            lineup_recommendations=lineup_recommendations,
+        ),
+    }
+
+
+def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
+    data = row.get("data") or {}
+    roster_meta = data.get("roster") or {}
+    standings = data.get("standings") or {}
+    decisions = _matchup_decisions(row)
     taken_at = row.get("taken_at")
     return {
         "snapshot_id": row.get("id"),
@@ -569,8 +599,9 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
         "roster_meta": {k: v for k, v in roster_meta.items() if k != "rows"},
         "standings": standings.get("records") or [],
         "my_standing": standings.get("my_record"),
-        "matchup": matchup,
-        "data_quality": data_quality,
+        "matchup": decisions["matchup"],
+        "win_this_week": decisions["win_this_week"],
+        "data_quality": decisions["data_quality"],
         "player_index": _player_index(data),
         "errors": row.get("errors") or data.get("errors") or [],
     }

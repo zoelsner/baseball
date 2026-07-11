@@ -45,7 +45,45 @@ def healthy_payloads():
         "lineup_slots": {"state": "ok"},
         "add_drop_recommendations_ready": True,
     }
-    return {
+    win_plan = {
+        "model_version": "win_this_week_v1",
+        "state": "ready",
+        "snapshot_id": snapshot_id,
+        "read_only": True,
+        "writes_enabled": False,
+        "handoffs": {
+            "lineup": {
+                "label": "Open Fantrax lineup",
+                "url": "https://www.fantrax.com/fantasy/league/league/team/roster;teamId=me",
+                "method": "GET",
+                "read_only": True,
+                "writes_enabled": False,
+            },
+        },
+        "primary_action_id": "lineup:test",
+        "actions": [{
+            "id": "lineup:test",
+            "rank": 1,
+            "kind": "lineup",
+            "state": "act_now",
+            "steps": [],
+            "expected_points": {"estimate": 2.0, "comparable": True},
+            "win_probability_delta": None,
+            "deadline": {"state": "known", "at": "2026-07-10T23:05:00+00:00"},
+            "dynasty_cost": {"level": "none"},
+            "legality": {"state": "snapshot_verified"},
+            "writes_enabled": False,
+        }],
+        "summary": {
+            "headline": "Best move adds 2.0 projected points.",
+            "outlook": "After this move, the remaining-week estimate puts you 6.0 points ahead.",
+            "projected_margin_before_action": 4.0,
+            "projected_margin_after_action": 6.0,
+        },
+        "monitoring_actions": [],
+        "diagnostics": {"probability_calibrated": False},
+    }
+    payloads = {
         "/api/health": {
             "ok": True,
             "database": "ok",
@@ -119,6 +157,7 @@ def healthy_payloads():
                     }],
                 },
             },
+            "win_this_week": copy.deepcopy(win_plan),
             "errors": [],
             "data_quality": quality,
         },
@@ -158,7 +197,9 @@ def healthy_payloads():
             }],
             "data_quality": quality,
         },
+        "/api/win-this-week/latest": copy.deepcopy(win_plan),
     }
+    return payloads
 
 
 class ReadOnlyMonitorTests(unittest.TestCase):
@@ -181,6 +222,155 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         codes = {item["code"] for item in report["failures"]}
         self.assertIn("snapshot_too_old", codes)
         self.assertIn("snapshot_not_fresh_enough", codes)
+
+    def test_win_this_week_cannot_enable_writes_or_move_out_aaron_judge(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["writes_enabled"] = True
+            plan["actions"][0]["steps"] = [{
+                "action": "move_out",
+                "player_id": "judge",
+                "player_name": "Aaron Judge",
+            }]
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_write_boundary", codes)
+        self.assertIn("win_this_week_protected_anchor", codes)
+        self.assertIn("win_this_week_embedded_write_boundary", codes)
+        self.assertIn("win_this_week_embedded_protected_anchor", codes)
+
+    def test_win_this_week_lower_bound_requires_visible_caveat(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["matchup"] = {
+                "opportunity_completeness": "known_opportunities_lower_bound",
+                "pitchers_without_probable_start": 3,
+                "probability_calibrated": False,
+            }
+            plan["summary"] = {"projection_caveat": None}
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_opportunity_scope", codes)
+        self.assertIn("win_this_week_embedded_opportunity_scope", codes)
+
+    def test_win_this_week_rejects_expired_action_deadlines(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["actions"][0]["deadline"]["at"] = "2026-07-10T15:59:59Z"
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_deadline_expired", codes)
+        self.assertIn("win_this_week_embedded_deadline_expired", codes)
+
+    def test_win_this_week_requires_cross_endpoint_action_parity(self):
+        payloads = healthy_payloads()
+        payloads["/api/win-this-week/latest"]["actions"][0]["expected_points"]["estimate"] = 3.0
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_cross_endpoint_drift", codes)
+
+    def test_win_this_week_rejects_incorrect_post_action_outlook_math(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["summary"]["projected_margin_after_action"] = 9.0
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_outlook_math", codes)
+        self.assertIn("win_this_week_embedded_outlook_math", codes)
+
+    def test_win_this_week_lineup_handoff_must_remain_read_only_fantrax_get(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["handoffs"]["lineup"].update({"method": "POST", "writes_enabled": True})
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_lineup_handoff", codes)
+        self.assertIn("win_this_week_embedded_lineup_handoff", codes)
+
+    def test_win_this_week_no_action_requires_reasoned_alternatives(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan.update({
+                "state": "no_action",
+                "primary_action_id": None,
+                "actions": [],
+                "no_action": {"reason": "No legal move clears the value threshold."},
+            })
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_no_action_alternatives", codes)
+        self.assertIn("win_this_week_embedded_no_action_alternatives", codes)
+
+    def test_win_this_week_no_action_cannot_expose_aaron_judge_move_out(self):
+        payloads = healthy_payloads()
+        alternative = {
+            "id": "rejected-waiver:judge",
+            "kind": "waiver",
+            "title": "Rejected protected move",
+            "status": "rejected",
+            "reason": "This move is protected.",
+            "expected_points": {"estimate": None, "comparable": False},
+            "steps": [{"action": "move_out", "player_name": "Aaron Judge"}],
+        }
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan.update({
+                "state": "no_action",
+                "primary_action_id": None,
+                "actions": [],
+                "no_action": {
+                    "reason": "No legal move clears the value threshold.",
+                    "alternatives": [copy.deepcopy(alternative)],
+                },
+            })
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_protected_anchor", codes)
+        self.assertIn("win_this_week_embedded_protected_anchor", codes)
 
     def test_cross_endpoint_snapshot_and_write_boundaries_fail_closed(self):
         payloads = healthy_payloads()

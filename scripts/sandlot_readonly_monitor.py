@@ -27,6 +27,7 @@ ENDPOINTS = (
     "/api/attention",
     "/api/hot-swaps/latest",
     "/api/waiver-swaps/latest",
+    "/api/win-this-week/latest",
 )
 NEVER_DROP_PLAYER_NAMES = {"aaron judge"}
 
@@ -166,6 +167,21 @@ def evaluate_payloads(
         matchup_check = _validate_matchup_surface(snapshot, snapshot_id, fail)
         matchup_check["ok"] = not any(item["code"].startswith("matchup_") for item in failures)
         checks.append(matchup_check)
+        embedded_plan = snapshot.get("win_this_week")
+        if isinstance(embedded_plan, dict):
+            before_failures = len(failures)
+            embedded_check = _validate_win_this_week(
+                embedded_plan,
+                snapshot_id,
+                fail,
+                prefix="win_this_week_embedded",
+                now=now,
+            )
+            embedded_check["name"] = "win_this_week_embedded"
+            embedded_check["ok"] = len(failures) == before_failures
+            checks.append(embedded_check)
+        else:
+            fail("win_this_week_embedded_missing", "Snapshot did not include the Win This Week plan")
     elif "/api/snapshot/latest" not in (transport_errors or {}):
         fail("snapshot_missing", "Latest snapshot payload was missing")
 
@@ -205,6 +221,27 @@ def evaluate_payloads(
         })
     elif "/api/hot-swaps/latest" not in (transport_errors or {}):
         fail("hot_swaps_missing", "Hot-swaps payload was missing")
+
+    win_this_week = payloads.get("/api/win-this-week/latest")
+    if isinstance(win_this_week, dict):
+        before_failures = len(failures)
+        win_check = _validate_win_this_week(
+            win_this_week,
+            snapshot_id,
+            fail,
+            prefix="win_this_week",
+            now=now,
+        )
+        win_check["ok"] = len(failures) == before_failures
+        checks.append(win_check)
+        embedded_plan = snapshot.get("win_this_week") if isinstance(snapshot, dict) else None
+        if isinstance(embedded_plan, dict) and _win_plan_signature(embedded_plan) != _win_plan_signature(win_this_week):
+            fail(
+                "win_this_week_cross_endpoint_drift",
+                "Embedded and dedicated Win This Week plans did not expose the same ranked action contract",
+            )
+    elif "/api/win-this-week/latest" not in (transport_errors or {}):
+        fail("win_this_week_missing", "Win This Week payload was missing")
 
     waivers = payloads.get("/api/waiver-swaps/latest")
     if isinstance(waivers, dict):
@@ -474,6 +511,14 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
             value = _number(projection.get(field))
             if value is None or value < 0:
                 fail("matchup_game_volume", f"Matchup projection {field} was invalid")
+        opportunity_completeness = projection.get("opportunity_completeness")
+        if opportunity_completeness is not None:
+            if opportunity_completeness not in {"complete", "known_opportunities_lower_bound"}:
+                fail("matchup_opportunity_scope", "Matchup projection had an unknown opportunity-completeness state")
+            if opportunity_completeness == "known_opportunities_lower_bound":
+                missing_probables = _number(projection.get("pitchers_without_probable_start"))
+                if missing_probables is None or missing_probables <= 0:
+                    fail("matchup_opportunity_scope", "Lower-bound projection did not disclose omitted pitcher opportunities")
 
     block = matchup.get("recommendations")
     recommendations = block.get("recommendations") if isinstance(block, dict) else None
@@ -615,6 +660,215 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
     }
 
 
+def _validate_win_this_week(
+    plan: dict[str, Any],
+    snapshot_id: str | None,
+    fail,
+    *,
+    prefix: str,
+    now: datetime,
+) -> dict[str, Any]:
+    _require_matching_snapshot_id(prefix, plan, snapshot_id, fail)
+    if plan.get("read_only") is not True or plan.get("writes_enabled") is not False:
+        fail(f"{prefix}_write_boundary", "Win This Week did not explicitly remain read-only")
+    matchup_context = plan.get("matchup") if isinstance(plan.get("matchup"), dict) else {}
+    if matchup_context.get("opportunity_completeness") == "known_opportunities_lower_bound":
+        summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
+        if not summary.get("projection_caveat") or matchup_context.get("probability_calibrated") is True:
+            fail(f"{prefix}_opportunity_scope", "Win This Week did not disclose its lower-bound pitcher assumption")
+    actions = plan.get("actions")
+    if not isinstance(actions, list):
+        fail(f"{prefix}_actions_invalid", "Win This Week actions field was not a list")
+        actions = []
+    probability_calibrated = ((plan.get("diagnostics") or {}).get("probability_calibrated") is True)
+    previous_points: float | None = None
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
+            fail(f"{prefix}_action_invalid", f"Win This Week action {index + 1} was not an object")
+            continue
+        if action.get("rank") != index + 1:
+            fail(f"{prefix}_rank_order", "Win This Week ranks were not contiguous")
+        points_block = action.get("expected_points") if isinstance(action.get("expected_points"), dict) else {}
+        points = _number(points_block.get("estimate"))
+        if points is None or points <= 0 or points_block.get("comparable") is not True:
+            fail(f"{prefix}_impact_invalid", f"Win This Week action {index + 1} lacked comparable positive impact")
+        if previous_points is not None and points is not None and points > previous_points + 0.05:
+            fail(f"{prefix}_rank_order", "Win This Week actions were not ordered by expected points")
+        if points is not None:
+            previous_points = points
+        deadline = action.get("deadline") if isinstance(action.get("deadline"), dict) else {}
+        if deadline.get("state") != "known" or not deadline.get("at"):
+            fail(f"{prefix}_deadline_missing", f"Win This Week action {index + 1} lacked an exact deadline")
+        else:
+            deadline_at = _parse_datetime(deadline.get("at"))
+            if deadline_at is None:
+                fail(f"{prefix}_deadline_invalid", f"Win This Week action {index + 1} had an invalid deadline")
+            elif deadline_at <= now:
+                fail(f"{prefix}_deadline_expired", f"Win This Week action {index + 1} remained actionable after its deadline")
+        dynasty = action.get("dynasty_cost") if isinstance(action.get("dynasty_cost"), dict) else {}
+        if dynasty.get("level") not in {"none", "low", "medium", "high", "unknown"}:
+            fail(f"{prefix}_dynasty_cost_missing", f"Win This Week action {index + 1} lacked dynasty cost")
+        legality = action.get("legality") if isinstance(action.get("legality"), dict) else {}
+        if legality.get("state") not in {"snapshot_verified", "provisionally_legal"}:
+            fail(f"{prefix}_legality_missing", f"Win This Week action {index + 1} lacked a legal-path state")
+        if action.get("writes_enabled") is not False:
+            fail(f"{prefix}_write_boundary", f"Win This Week action {index + 1} did not keep writes disabled")
+        if not probability_calibrated and action.get("win_probability_delta") is not None:
+            fail(f"{prefix}_probability_claim", "Win This Week exposed an uncalibrated probability delta")
+        for step in action.get("steps") or []:
+            if not isinstance(step, dict) or step.get("action") != "move_out":
+                continue
+            move_out_name = " ".join(str(step.get("player_name") or "").split()).casefold()
+            if move_out_name in NEVER_DROP_PLAYER_NAMES:
+                fail(f"{prefix}_protected_anchor", "Win This Week attempted to move out an owner-protected anchor")
+    primary_id = plan.get("primary_action_id")
+    expected_primary = actions[0].get("id") if actions and isinstance(actions[0], dict) else None
+    if primary_id != expected_primary:
+        fail(f"{prefix}_primary_mismatch", "Win This Week primary action did not match rank 1")
+    if actions and isinstance(actions[0], dict):
+        summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
+        before = _number(summary.get("projected_margin_before_action"))
+        after = _number(summary.get("projected_margin_after_action"))
+        primary_points = _number(((actions[0].get("expected_points") or {}).get("estimate")))
+        if before is not None and primary_points is not None:
+            if after is None or abs(after - round(before + primary_points, 1)) > 0.05:
+                fail(
+                    f"{prefix}_outlook_math",
+                    "Win This Week post-action projected margin did not equal the base margin plus primary impact",
+                )
+            if not str(summary.get("outlook") or "").strip():
+                fail(f"{prefix}_outlook_missing", "Win This Week did not explain the post-action matchup outlook")
+        elif after is not None:
+            fail(f"{prefix}_outlook_math", "Win This Week exposed a post-action margin without comparable inputs")
+    if any(
+        isinstance(action, dict) and action.get("kind") in {"lineup", "lineup_plan"}
+        for action in actions
+    ):
+        handoffs = plan.get("handoffs") if isinstance(plan.get("handoffs"), dict) else {}
+        lineup_handoff = handoffs.get("lineup") if isinstance(handoffs.get("lineup"), dict) else {}
+        url = str(lineup_handoff.get("url") or "")
+        if (
+            lineup_handoff.get("method") != "GET"
+            or lineup_handoff.get("read_only") is not True
+            or lineup_handoff.get("writes_enabled") is not False
+            or not url.startswith("https://www.fantrax.com/fantasy/league/")
+            or "/team/roster;teamId=" not in url
+        ):
+            fail(
+                f"{prefix}_lineup_handoff",
+                "Win This Week lineup action lacked a verified read-only Fantrax roster handoff",
+            )
+    if plan.get("state") == "no_action":
+        no_action = plan.get("no_action") if isinstance(plan.get("no_action"), dict) else {}
+        if not str(no_action.get("reason") or "").strip():
+            fail(f"{prefix}_no_action_reason", "Win This Week no-action state did not explain why")
+        alternatives = no_action.get("alternatives")
+        if not isinstance(alternatives, list):
+            fail(
+                f"{prefix}_no_action_alternatives",
+                "Win This Week no-action state did not expose the alternatives it considered",
+            )
+            alternatives = []
+        for index, alternative in enumerate(alternatives):
+            if not isinstance(alternative, dict):
+                fail(f"{prefix}_no_action_alternative_invalid", f"No-action alternative {index + 1} was not an object")
+                continue
+            if not str(alternative.get("title") or "").strip() or not str(alternative.get("reason") or "").strip():
+                fail(
+                    f"{prefix}_no_action_alternative_invalid",
+                    f"No-action alternative {index + 1} lacked a title or rejection reason",
+                )
+            points_block = alternative.get("expected_points") if isinstance(alternative.get("expected_points"), dict) else {}
+            estimate = points_block.get("estimate")
+            if estimate is not None and (_number(estimate) is None or points_block.get("comparable") is not True):
+                fail(
+                    f"{prefix}_no_action_alternative_invalid",
+                    f"No-action alternative {index + 1} exposed a non-comparable impact",
+                )
+            for step in alternative.get("steps") or []:
+                if not isinstance(step, dict) or step.get("action") != "move_out":
+                    continue
+                move_out_name = " ".join(str(step.get("player_name") or "").split()).casefold()
+                if move_out_name in NEVER_DROP_PLAYER_NAMES:
+                    fail(
+                        f"{prefix}_protected_anchor",
+                        "Win This Week exposed an owner-protected anchor in a rejected move-out alternative",
+                    )
+    return {
+        "name": prefix,
+        "state": plan.get("state"),
+        "action_count": len(actions),
+        "monitoring_count": len(plan.get("monitoring_actions")) if isinstance(plan.get("monitoring_actions"), list) else None,
+        "writes_enabled": plan.get("writes_enabled"),
+    }
+
+
+def _win_plan_signature(plan: dict[str, Any]) -> tuple[Any, ...]:
+    actions = plan.get("actions") if isinstance(plan.get("actions"), list) else []
+    summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
+    handoffs = plan.get("handoffs") if isinstance(plan.get("handoffs"), dict) else {}
+    lineup_handoff = handoffs.get("lineup") if isinstance(handoffs.get("lineup"), dict) else {}
+    no_action = plan.get("no_action") if isinstance(plan.get("no_action"), dict) else {}
+    alternatives = no_action.get("alternatives") if isinstance(no_action.get("alternatives"), list) else []
+    return (
+        plan.get("snapshot_id"),
+        plan.get("state"),
+        plan.get("primary_action_id"),
+        summary.get("headline"),
+        summary.get("outlook"),
+        summary.get("projected_margin_before_action"),
+        summary.get("projected_margin_after_action"),
+        lineup_handoff.get("url"),
+        lineup_handoff.get("method"),
+        lineup_handoff.get("read_only"),
+        lineup_handoff.get("writes_enabled"),
+        tuple(
+            (
+                action.get("id"),
+                action.get("rank"),
+                action.get("kind"),
+                ((action.get("expected_points") or {}).get("estimate")),
+                ((action.get("deadline") or {}).get("at")),
+                tuple(
+                    (
+                        step.get("action"),
+                        step.get("player_id"),
+                        step.get("from_slot"),
+                        step.get("to_slot"),
+                    )
+                    for step in action.get("steps") or []
+                    if isinstance(step, dict)
+                ),
+            )
+            for action in actions
+            if isinstance(action, dict)
+        ),
+        no_action.get("reason"),
+        tuple(
+            (
+                alternative.get("id"),
+                alternative.get("kind"),
+                alternative.get("title"),
+                alternative.get("status"),
+                ((alternative.get("expected_points") or {}).get("estimate")),
+                alternative.get("reason"),
+                tuple(
+                    (
+                        step.get("action"),
+                        step.get("player_id"),
+                        step.get("from_slot"),
+                        step.get("to_slot"),
+                    )
+                    for step in alternative.get("steps") or []
+                    if isinstance(step, dict)
+                ),
+            )
+            for alternative in alternatives
+            if isinstance(alternative, dict)
+        ),
+    )
+
+
 def _valid_age(value: Any) -> bool:
     parsed = _number(value)
     return parsed is not None and parsed.is_integer() and 16 <= parsed <= 50
@@ -651,6 +905,18 @@ def _age_minutes(payload: dict[str, Any], now: datetime) -> int | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return max(0, int((now - parsed.astimezone(timezone.utc)).total_seconds() / 60))
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _number(value: Any) -> float | None:
