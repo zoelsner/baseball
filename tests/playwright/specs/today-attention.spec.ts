@@ -117,6 +117,9 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
       primary_action_id: 'waiver:test:add:drop',
       summary: {
         headline: 'Up 6.1; the best current path adds about 5.8 projected points to protect the lead.',
+        outlook: 'After this move, the remaining-week estimate puts you 9.8 points ahead.',
+        projected_margin_before_action: 4.0,
+        projected_margin_after_action: 9.8,
         win_probability_excluded_reason: 'Win probability is not calibrated; actions are ranked by projected remaining-week points.',
         projection_caveat: 'Known-opportunity lower bound: 3 pitcher(s) have no posted probable start and contribute zero until that changes.',
       },
@@ -197,6 +200,7 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('Win This Week', { exact: true })).toBeVisible();
     await expect(page.getByText('Review now', { exact: true })).toBeVisible();
     await expect(page.getByText('Add Impact Streamer and move out Cold Corner', { exact: true })).toBeVisible();
+    await expect(page.getByText('After this move, the remaining-week estimate puts you 9.8 points ahead.', { exact: true })).toBeVisible();
     await expect(page.getByText('+5.8', { exact: true })).toBeVisible();
     await expect(page.getByText('Live preflight required', { exact: true })).toBeVisible();
     await expect(page.getByText('Read-only', { exact: true })).toBeVisible();
@@ -257,6 +261,7 @@ test.describe('Today — Attention Queue', () => {
     await winPanel.getByRole('button', { name: 'Pressure-test with Skipper' }).click();
     await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/top Win This Week action/);
     await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Expected remaining-week impact: \+5.8 points/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/remaining-week estimate puts you 9.8 points ahead/);
     await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Add Impact Streamer/);
     await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Move out Cold Corner/);
 
@@ -310,7 +315,12 @@ test.describe('Today — Attention Queue', () => {
         state: 'no_action',
         read_only: true,
         writes_enabled: false,
-        summary: { headline: 'No lineup move clears the meaningful-gain threshold from this snapshot.' },
+        summary: {
+          headline: 'No lineup move clears the meaningful-gain threshold from this snapshot.',
+          outlook: 'The current remaining-week estimate leaves you 12.0 points behind.',
+          projected_margin_before_action: -12.0,
+          projected_margin_after_action: null,
+        },
         actions: [],
         monitoring_actions: [],
         no_action: {
@@ -333,6 +343,7 @@ test.describe('Today — Attention Queue', () => {
     const panel = page.getByRole('region', { name: 'Win This Week' });
     await expect(panel.getByText('No worthwhile move', { exact: true })).toBeVisible();
     await expect(panel.getByText('Best alternatives checked', { exact: true })).toBeVisible();
+    await expect(panel.getByText('The current remaining-week estimate leaves you 12.0 points behind.', { exact: true })).toBeVisible();
     await expect(panel.getByText('Start Small Upgrade over Current Starter', { exact: true })).toBeVisible();
     await expect(panel.getByText('+0.4 pts', { exact: true })).toBeVisible();
     await expect(panel.getByText(/below Sandlot's 1.0-point meaningful-gain threshold/)).toBeVisible();

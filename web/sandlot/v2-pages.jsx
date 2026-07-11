@@ -1112,6 +1112,7 @@ function v2WinWeekPrompt(action, plan) {
     '',
     `Plan: ${action?.title || 'Unknown action'}.`,
     `Expected remaining-week impact: ${v2Signed(points, 1)} points. ${deadline}.`,
+    plan?.summary?.outlook || null,
     `Confidence: ${action?.confidence || 'unknown'}. Dynasty cost: ${action?.dynasty_cost?.level || 'unknown'}.`,
     action?.dynasty_cost?.reason ? `Dynasty note: ${action.dynasty_cost.reason}` : null,
     ...steps,
@@ -1165,6 +1166,12 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
           ? 'The stored primary action has passed its deadline. Refresh before making any Fantrax change.'
           : plan.summary?.headline || plan.no_action?.reason || 'Waiting for a matchup plan.'}
       </div>
+
+      {!deadlineExpired && plan.summary?.outlook ? (
+        <div style={{ marginTop:7, color:V2.ink, fontSize:12.5, lineHeight:1.4, fontWeight:850, textWrap:'pretty' }}>
+          {plan.summary.outlook}
+        </div>
+      ) : null}
 
       {plan.summary?.projection_caveat ? (
         <div style={{ marginTop:10, background:V2.warnSoft, color:V2.warn, borderRadius:12, padding:'9px 10px', fontSize:11.5, lineHeight:1.4, fontWeight:800, textWrap:'pretty' }}>

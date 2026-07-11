@@ -104,6 +104,12 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertTrue(plan["read_only"])
         self.assertFalse(plan["writes_enabled"])
         self.assertEqual(plan["summary"]["headline"], "Down 10.0; the best current path adds about 9.0 projected points.")
+        self.assertEqual(plan["summary"]["projected_margin_before_action"], -11.0)
+        self.assertEqual(plan["summary"]["projected_margin_after_action"], -2.0)
+        self.assertEqual(
+            plan["summary"]["outlook"],
+            "After this move, the remaining-week estimate leaves you 2.0 points behind.",
+        )
         self.assertEqual([action["rank"] for action in plan["actions"]], list(range(1, len(plan["actions"]) + 1)))
 
         primary = plan["actions"][0]
@@ -353,6 +359,8 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertEqual(alternative["status"], "below_threshold")
         self.assertIn("1.0-point meaningful-gain threshold", alternative["reason"])
         self.assertEqual([step["player_id"] for step in alternative["steps"]], ["bench", "weak"])
+        self.assertIsNone(plan["summary"]["projected_margin_after_action"])
+        self.assertIn("current remaining-week estimate", plan["summary"]["outlook"].lower())
 
     def test_snapshot_api_payload_exposes_the_read_only_plan(self):
         payload = _snapshot_payload(snapshot_row())

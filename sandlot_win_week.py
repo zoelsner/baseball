@@ -942,8 +942,12 @@ def _summary(
     my_score = _number(matchup.get("my_score"))
     opponent_score = _number(matchup.get("opponent_score"))
     margin = (my_score - opponent_score) if my_score is not None and opponent_score is not None else None
+    projected_margin = _projected_margin(projection)
+    projected_margin_after_action = None
     if primary:
         points = _number((primary.get("expected_points") or {}).get("estimate")) or 0.0
+        if projected_margin is not None:
+            projected_margin_after_action = round(projected_margin + points, 1)
         if margin is not None and margin < 0:
             headline = f"Down {abs(margin):.1f}; the best current path adds about {points:.1f} projected points."
         elif margin is not None and margin > 0:
@@ -952,11 +956,23 @@ def _summary(
             headline = f"The best current path adds about {points:.1f} projected points."
     else:
         headline = no_action_reason or "No action plan is available."
+    outlook_margin = projected_margin_after_action if primary else projected_margin
+    outlook = None
+    if outlook_margin is not None and not matchup.get("complete"):
+        prefix = "After this move, the remaining-week estimate" if primary else "The current remaining-week estimate"
+        if outlook_margin < 0:
+            outlook = f"{prefix} leaves you {abs(outlook_margin):.1f} points behind."
+        elif outlook_margin > 0:
+            outlook = f"{prefix} puts you {outlook_margin:.1f} points ahead."
+        else:
+            outlook = f"{prefix} has the matchup tied."
     return {
         "headline": headline,
+        "outlook": outlook,
         "best_action_id": primary.get("id") if primary else None,
         "best_action_points": (primary.get("expected_points") or {}).get("estimate") if primary else None,
-        "projected_margin_before_action": _projected_margin(projection),
+        "projected_margin_before_action": projected_margin,
+        "projected_margin_after_action": projected_margin_after_action,
         "win_probability_excluded_reason": None
         if (projection or {}).get("probability_calibrated") is True
         else "Win probability is not calibrated; actions are ranked by projected remaining-week points.",

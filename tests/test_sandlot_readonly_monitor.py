@@ -65,6 +65,12 @@ def healthy_payloads():
             "legality": {"state": "snapshot_verified"},
             "writes_enabled": False,
         }],
+        "summary": {
+            "headline": "Best move adds 2.0 projected points.",
+            "outlook": "After this move, the remaining-week estimate puts you 6.0 points ahead.",
+            "projected_margin_before_action": 4.0,
+            "projected_margin_after_action": 6.0,
+        },
         "monitoring_actions": [],
         "diagnostics": {"probability_calibrated": False},
     }
@@ -274,6 +280,21 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         self.assertFalse(report["ok"])
         codes = {item["code"] for item in report["failures"]}
         self.assertIn("win_this_week_cross_endpoint_drift", codes)
+
+    def test_win_this_week_rejects_incorrect_post_action_outlook_math(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["summary"]["projected_margin_after_action"] = 9.0
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_outlook_math", codes)
+        self.assertIn("win_this_week_embedded_outlook_math", codes)
 
     def test_win_this_week_no_action_requires_reasoned_alternatives(self):
         payloads = healthy_payloads()

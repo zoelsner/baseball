@@ -725,6 +725,21 @@ def _validate_win_this_week(
     expected_primary = actions[0].get("id") if actions and isinstance(actions[0], dict) else None
     if primary_id != expected_primary:
         fail(f"{prefix}_primary_mismatch", "Win This Week primary action did not match rank 1")
+    if actions and isinstance(actions[0], dict):
+        summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
+        before = _number(summary.get("projected_margin_before_action"))
+        after = _number(summary.get("projected_margin_after_action"))
+        primary_points = _number(((actions[0].get("expected_points") or {}).get("estimate")))
+        if before is not None and primary_points is not None:
+            if after is None or abs(after - round(before + primary_points, 1)) > 0.05:
+                fail(
+                    f"{prefix}_outlook_math",
+                    "Win This Week post-action projected margin did not equal the base margin plus primary impact",
+                )
+            if not str(summary.get("outlook") or "").strip():
+                fail(f"{prefix}_outlook_missing", "Win This Week did not explain the post-action matchup outlook")
+        elif after is not None:
+            fail(f"{prefix}_outlook_math", "Win This Week exposed a post-action margin without comparable inputs")
     if plan.get("state") == "no_action":
         no_action = plan.get("no_action") if isinstance(plan.get("no_action"), dict) else {}
         if not str(no_action.get("reason") or "").strip():
@@ -772,12 +787,17 @@ def _validate_win_this_week(
 
 def _win_plan_signature(plan: dict[str, Any]) -> tuple[Any, ...]:
     actions = plan.get("actions") if isinstance(plan.get("actions"), list) else []
+    summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
     no_action = plan.get("no_action") if isinstance(plan.get("no_action"), dict) else {}
     alternatives = no_action.get("alternatives") if isinstance(no_action.get("alternatives"), list) else []
     return (
         plan.get("snapshot_id"),
         plan.get("state"),
         plan.get("primary_action_id"),
+        summary.get("headline"),
+        summary.get("outlook"),
+        summary.get("projected_margin_before_action"),
+        summary.get("projected_margin_after_action"),
         tuple(
             (
                 action.get("id"),

@@ -24,6 +24,7 @@ Each ranked action includes:
 
 - exact ordered steps
 - expected remaining-week point impact and its calculation basis
+- projected matchup margin before and after the primary action
 - an exact MLB-start-derived deadline
 - confidence
 - dynasty cost
@@ -33,6 +34,13 @@ Each ranked action includes:
 Win probability is included only after calibration is supported. Until then,
 the engine explicitly ranks by projected points and returns
 `win_probability_delta: null`.
+
+The post-action outlook is deterministic: Sandlot adds the primary action's
+comparable point impact to the pre-action projected margin and states whether
+the remaining-week estimate still leaves the manager behind, tied, or ahead.
+It does not translate that arithmetic into a win-probability claim until the
+probability model is calibrated. The production monitor recomputes this margin
+identity and fails if the API or UI-facing summary drifts.
 
 When MLB schedule acquisition succeeds but one or more pitchers have no posted
 probable start, Sandlot returns a labeled `known_opportunities_lower_bound`
