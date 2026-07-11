@@ -44,16 +44,22 @@ def build_plan(
     quality = data_quality or sandlot_data_quality.snapshot_data_quality(snapshot)
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
     base_projection = sandlot_matchup.compute_projection(snapshot, quality)
-    lineup_payload = lineup_recommendations or sandlot_matchup.rank_matchup_improvement_actions(
-        snapshot,
-        quality,
-    )
-    waiver_payload = sandlot_waivers.payload_for_snapshot(
-        {**snapshot_row, "data": snapshot},
-        overlay_cached_ai=False,
-    )
+    period_actions_ready = quality.get("current_period_actions_ready") is True
+    period_reason = _current_period_reason(quality)
+    if period_actions_ready:
+        lineup_payload = lineup_recommendations or sandlot_matchup.rank_matchup_improvement_actions(
+            snapshot,
+            quality,
+        )
+        waiver_payload = sandlot_waivers.payload_for_snapshot(
+            {**snapshot_row, "data": snapshot},
+            overlay_cached_ai=False,
+        )
+    else:
+        lineup_payload = {"recommendations": [], "no_action": {"reason": period_reason}}
+        waiver_payload = {"cards": [], "message": period_reason}
     waiver_cards = waiver_payload.get("cards") or []
-    if quality.get("add_drop_recommendations_ready") is True:
+    if period_actions_ready and quality.get("add_drop_recommendations_ready") is True:
         roster_rows = ((snapshot.get("roster") or {}).get("rows") or [])
         free_agent_rows = ((snapshot.get("free_agents") or {}).get("players") or [])
         # Preserve the complete deterministic card frontier until remaining-
@@ -78,7 +84,9 @@ def build_plan(
 
     considered: list[dict[str, Any]] = []
     rankable: list[dict[str, Any]] = []
-    monitoring: list[dict[str, Any]] = []
+    monitoring: list[dict[str, Any]] = (
+        [] if period_actions_ready else [_current_period_monitor(quality)]
+    )
 
     for recommendation in lineup_payload.get("recommendations") or []:
         action, monitor, diagnostic = _lineup_action(recommendation)
@@ -89,10 +97,14 @@ def build_plan(
         if monitor:
             monitoring.append(monitor)
 
-    lineup_bundle = _lineup_bundle(
-        snapshot=snapshot,
-        base_projection=base_projection,
-        now=now,
+    lineup_bundle = (
+        _lineup_bundle(
+            snapshot=snapshot,
+            base_projection=base_projection,
+            now=now,
+        )
+        if period_actions_ready
+        else None
     )
     if lineup_bundle:
         rankable.append(lineup_bundle)
@@ -137,6 +149,8 @@ def build_plan(
     complete = bool(matchup.get("complete"))
     if complete:
         state = "complete"
+    elif not period_actions_ready:
+        state = "paused"
     elif actions:
         state = "ready"
     elif base_projection is None:
@@ -148,6 +162,8 @@ def build_plan(
     if not actions:
         if complete:
             no_action_reason = "The matchup is complete."
+        elif not period_actions_ready:
+            no_action_reason = period_reason
         elif base_projection is None:
             no_action_reason = "Win This Week is paused because remaining-week projection inputs are incomplete."
         else:
@@ -160,7 +176,11 @@ def build_plan(
     if no_action_reason:
         no_action = {
             "reason": no_action_reason,
-            "alternatives": _no_action_alternatives(lineup_payload, considered),
+            "alternatives": (
+                _no_action_alternatives(lineup_payload, considered)
+                if period_actions_ready
+                else []
+            ),
         }
 
     return {
@@ -170,8 +190,9 @@ def build_plan(
         "taken_at": snapshot.get("snapshot_taken_at"),
         "read_only": True,
         "writes_enabled": False,
-        "handoffs": _fantrax_handoffs(snapshot),
+        "handoffs": _fantrax_handoffs(snapshot) if period_actions_ready else {},
         "schedule_optimizer": _schedule_optimizer_status(quality),
+        "current_period": quality.get("current_period"),
         "matchup": _matchup_context(matchup, base_projection),
         "summary": _summary(matchup, base_projection, primary, no_action_reason),
         "primary_action_id": primary.get("id") if primary else None,
@@ -187,6 +208,39 @@ def build_plan(
                 isinstance(base_projection, dict)
                 and base_projection.get("probability_calibrated") is True
             ),
+        },
+    }
+
+
+def _current_period_reason(data_quality: dict[str, Any]) -> str:
+    reasons = data_quality.get("current_period_action_reasons")
+    if isinstance(reasons, list) and reasons:
+        return str(reasons[0])
+    return "Fantrax's editable roster period is not proven to match the projected matchup."
+
+
+def _current_period_monitor(data_quality: dict[str, Any]) -> dict[str, Any]:
+    period = (
+        data_quality.get("current_period")
+        if isinstance(data_quality.get("current_period"), dict)
+        else {}
+    )
+    mismatch = period.get("state") == "mismatch"
+    reason = _current_period_reason(data_quality)
+    return {
+        "id": "monitor:current-period-alignment",
+        "kind": "monitor",
+        "state": "blocked" if mismatch else "needs_refresh",
+        "title": (
+            "Current-matchup actions are blocked by Fantrax's editable period"
+            if mismatch
+            else "Refresh Fantrax's editable roster period"
+        ),
+        "reason": reason,
+        "deadline": {"state": "unknown", "at": None, "reason": reason},
+        "expected_points": {
+            "estimate": None,
+            "basis": "current-week impact withheld until the editable period matches; not additive",
         },
     }
 

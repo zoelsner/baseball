@@ -128,12 +128,22 @@ def row_with_slot_source(row):
 
 
 def snapshot_data(roster, *, include_matchup=True):
-    data = {"roster": {"rows": [row_with_slot_source(row) for row in roster]}}
+    data = {
+        "roster": {
+            "rows": [row_with_slot_source(row) for row in roster],
+            "period_number": 13,
+            "period_start": "2026-06-23",
+            "period_end": "2026-06-29",
+            "period_source": "fantrax.getTeamRosterInfo.displayedSelections",
+        }
+    }
     if include_matchup:
         data["matchup"] = {
             "my_score": 1.0,
             "opponent_score": 1.0,
             "opponent_team_id": "opp",
+            "period_number": 13,
+            "start": "2026-06-23",
             "end": "2026-06-29",
         }
         data["all_team_rosters"] = {

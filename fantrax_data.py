@@ -16,6 +16,7 @@ import sys
 import types
 from datetime import date as date_cls, datetime, time as time_cls, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 from fantraxapi import FantraxAPI
@@ -123,8 +124,30 @@ class _RawRoster:
         self.reserve_max = _status_total_from_data(self._data, {"RES", "BN"}, "max")
         self.injured = _status_total_from_data(self._data, {"IR", "IL", "INJ", "INJURED"}, "total")
         self.injured_max = _status_total_from_data(self._data, {"IR", "IL", "INJ", "INJURED"}, "max")
-        self.period_number = _raw_period_value(self._data, "periodNumber", "scoringPeriod", "period")
-        self.period_date = _raw_period_value(self._data, "periodDate", "date")
+        displayed = self._data.get("displayedSelections")
+        displayed = displayed if isinstance(displayed, dict) else {}
+        self.period_number = _raw_period_value(
+            displayed,
+            "displayedPeriod",
+            "displayedScoringPeriod",
+        )
+        self.period_start = _raw_period_date(displayed, "displayedStartDate")
+        self.period_end = _raw_period_date(displayed, "displayedEndDate")
+        self.period_date = self.period_start
+        has_displayed_period = any(
+            displayed.get(key) not in (None, "")
+            for key in (
+                "displayedPeriod",
+                "displayedScoringPeriod",
+                "displayedStartDate",
+                "displayedEndDate",
+            )
+        )
+        self.period_source = (
+            "fantrax.getTeamRosterInfo.displayedSelections"
+            if has_displayed_period
+            else None
+        )
 
 
 def _team_roster(api: Any, team_id: str) -> Any:
@@ -486,15 +509,16 @@ def _status_total_from_data(data: dict[str, Any], labels: set[str], key: str) ->
 def _raw_period_value(data: dict[str, Any], *keys: str) -> Any:
     if not isinstance(data, dict):
         return None
-    for key in keys:
-        value = data.get(key)
-        if value not in (None, ""):
-            return _raw_scalar_period_value(value)
-    misc = data.get("miscData") if isinstance(data.get("miscData"), dict) else {}
-    for key in keys:
-        value = misc.get(key)
-        if value not in (None, ""):
-            return _raw_scalar_period_value(value)
+    containers = [
+        data.get("displayedSelections") if isinstance(data.get("displayedSelections"), dict) else {},
+        data,
+        data.get("miscData") if isinstance(data.get("miscData"), dict) else {},
+    ]
+    for container in containers:
+        for key in keys:
+            value = container.get(key)
+            if value not in (None, ""):
+                return _raw_scalar_period_value(value)
     return None
 
 
@@ -506,6 +530,23 @@ def _raw_scalar_period_value(value: Any) -> Any:
                 return nested
         return None
     return value
+
+
+def _raw_period_date(data: dict[str, Any], *keys: str) -> str | None:
+    value = _raw_period_value(data, *keys)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        seconds = float(value) / 1000.0 if abs(float(value)) >= 10_000_000_000 else float(value)
+        try:
+            return datetime.fromtimestamp(seconds, tz=ZoneInfo("America/New_York")).date().isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
+    text = str(value or "").strip()
+    if not text or text.casefold() == "none":
+        return None
+    try:
+        return date_cls.fromisoformat(text[:10]).isoformat()
+    except ValueError:
+        return None
 
 
 def _status_lookup(roster: Any) -> dict[str, str]:
@@ -986,8 +1027,18 @@ def extract_roster(
         "injured": _status_value_or_attr(roster, {"IR", "IL", "INJ", "INJURED"}, "total", "injured"),
         "injured_max": _status_value_or_attr(roster, {"IR", "IL", "INJ", "INJURED"}, "max", "injured_max"),
         "period_number": getattr(roster, "period_number", None),
-        "period_date": str(getattr(roster, "period_date", "")) or None,
+        "period_date": getattr(roster, "period_date", None) or None,
+        "period_start": getattr(roster, "period_start", None) or getattr(roster, "period_date", None) or None,
+        "period_end": getattr(roster, "period_end", None) or None,
+        "period_source": getattr(roster, "period_source", None) or None,
     }
+    if roster_data["period_source"]:
+        roster_data["period_selection"] = {
+            "period": roster_data["period_number"],
+            "start": roster_data["period_start"],
+            "end": roster_data["period_end"],
+            "source": roster_data["period_source"],
+        }
     if capture_lineup_policy and isinstance(roster, _RawRoster):
         roster_data["_lineup_change_policy"] = {
             **_lineup_change_policy_observation(roster._data, method="getTeamRosterInfo"),
