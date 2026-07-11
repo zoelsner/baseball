@@ -170,7 +170,13 @@ def evaluate_payloads(
         embedded_plan = snapshot.get("win_this_week")
         if isinstance(embedded_plan, dict):
             before_failures = len(failures)
-            embedded_check = _validate_win_this_week(embedded_plan, snapshot_id, fail, prefix="win_this_week_embedded")
+            embedded_check = _validate_win_this_week(
+                embedded_plan,
+                snapshot_id,
+                fail,
+                prefix="win_this_week_embedded",
+                now=now,
+            )
             embedded_check["name"] = "win_this_week_embedded"
             embedded_check["ok"] = len(failures) == before_failures
             checks.append(embedded_check)
@@ -219,9 +225,21 @@ def evaluate_payloads(
     win_this_week = payloads.get("/api/win-this-week/latest")
     if isinstance(win_this_week, dict):
         before_failures = len(failures)
-        win_check = _validate_win_this_week(win_this_week, snapshot_id, fail, prefix="win_this_week")
+        win_check = _validate_win_this_week(
+            win_this_week,
+            snapshot_id,
+            fail,
+            prefix="win_this_week",
+            now=now,
+        )
         win_check["ok"] = len(failures) == before_failures
         checks.append(win_check)
+        embedded_plan = snapshot.get("win_this_week") if isinstance(snapshot, dict) else None
+        if isinstance(embedded_plan, dict) and _win_plan_signature(embedded_plan) != _win_plan_signature(win_this_week):
+            fail(
+                "win_this_week_cross_endpoint_drift",
+                "Embedded and dedicated Win This Week plans did not expose the same ranked action contract",
+            )
     elif "/api/win-this-week/latest" not in (transport_errors or {}):
         fail("win_this_week_missing", "Win This Week payload was missing")
 
@@ -648,6 +666,7 @@ def _validate_win_this_week(
     fail,
     *,
     prefix: str,
+    now: datetime,
 ) -> dict[str, Any]:
     _require_matching_snapshot_id(prefix, plan, snapshot_id, fail)
     if plan.get("read_only") is not True or plan.get("writes_enabled") is not False:
@@ -680,6 +699,12 @@ def _validate_win_this_week(
         deadline = action.get("deadline") if isinstance(action.get("deadline"), dict) else {}
         if deadline.get("state") != "known" or not deadline.get("at"):
             fail(f"{prefix}_deadline_missing", f"Win This Week action {index + 1} lacked an exact deadline")
+        else:
+            deadline_at = _parse_datetime(deadline.get("at"))
+            if deadline_at is None:
+                fail(f"{prefix}_deadline_invalid", f"Win This Week action {index + 1} had an invalid deadline")
+            elif deadline_at <= now:
+                fail(f"{prefix}_deadline_expired", f"Win This Week action {index + 1} remained actionable after its deadline")
         dynasty = action.get("dynasty_cost") if isinstance(action.get("dynasty_cost"), dict) else {}
         if dynasty.get("level") not in {"none", "low", "medium", "high", "unknown"}:
             fail(f"{prefix}_dynasty_cost_missing", f"Win This Week action {index + 1} lacked dynasty cost")
@@ -707,6 +732,36 @@ def _validate_win_this_week(
         "monitoring_count": len(plan.get("monitoring_actions")) if isinstance(plan.get("monitoring_actions"), list) else None,
         "writes_enabled": plan.get("writes_enabled"),
     }
+
+
+def _win_plan_signature(plan: dict[str, Any]) -> tuple[Any, ...]:
+    actions = plan.get("actions") if isinstance(plan.get("actions"), list) else []
+    return (
+        plan.get("snapshot_id"),
+        plan.get("state"),
+        plan.get("primary_action_id"),
+        tuple(
+            (
+                action.get("id"),
+                action.get("rank"),
+                action.get("kind"),
+                ((action.get("expected_points") or {}).get("estimate")),
+                ((action.get("deadline") or {}).get("at")),
+                tuple(
+                    (
+                        step.get("action"),
+                        step.get("player_id"),
+                        step.get("from_slot"),
+                        step.get("to_slot"),
+                    )
+                    for step in action.get("steps") or []
+                    if isinstance(step, dict)
+                ),
+            )
+            for action in actions
+            if isinstance(action, dict)
+        ),
+    )
 
 
 def _valid_age(value: Any) -> bool:
@@ -745,6 +800,18 @@ def _age_minutes(payload: dict[str, Any], now: datetime) -> int | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return max(0, int((now - parsed.astimezone(timezone.utc)).total_seconds() / 60))
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _number(value: Any) -> float | None:

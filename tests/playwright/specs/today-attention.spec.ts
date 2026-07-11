@@ -136,7 +136,7 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
         expected_points: { estimate: 5.8, comparable: true },
         win_probability_delta: null,
         probability_calibrated: false,
-        deadline: { state: 'known', at: '2026-06-07T22:40:00Z' },
+        deadline: { state: 'known', at: '2099-06-07T22:40:00Z' },
         confidence: 'medium',
         dynasty_cost: { level: 'low', reason: 'No major dynasty concern from age alone.' },
         legality: { state: 'provisionally_legal', requires_live_preflight: true },
@@ -300,6 +300,60 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('No lineup-only move clears the meaningful-gain threshold right now.')).toBeVisible();
     await expect(page.getByText('No current issues')).toBeVisible();
     await expect(page.getByText('No injury, lineup, output, or replacement issue needs action in the current snapshot.')).toBeVisible();
+  });
+
+  test('blocks an expired primary action until the plan is refreshed', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Deadline-expiry safety is verified against the rebuilt local bundle.');
+    const expired = baseSnapshot();
+    expired.win_this_week.actions[0].deadline = { state: 'known', at: '2020-01-01T00:00:00Z' };
+    await mockSnapshot(page, expired);
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(panel.getByText('Refresh required', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Deadline passed · refresh required', { exact: true })).toBeVisible();
+    await expect(panel.getByText('expired estimate', { exact: true })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Refresh plan' })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Pressure-test with Skipper' })).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Open waiver board' })).toHaveCount(0);
+  });
+
+  test('silently refetches when the primary action deadline arrives', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Deadline-triggered refetch is verified against the rebuilt local bundle.');
+    const expiring = baseSnapshot();
+    expiring.win_this_week.actions[0].deadline = {
+      state: 'known',
+      at: new Date(Date.now() + 500).toISOString(),
+    };
+    const refreshed = baseSnapshot({
+      win_this_week: {
+        model_version: 'win_this_week_v1',
+        state: 'no_action',
+        read_only: true,
+        writes_enabled: false,
+        summary: { headline: 'No legal move remains after the deadline.' },
+        actions: [],
+        monitoring_actions: [],
+        no_action: { reason: 'No legal move remains after the deadline.' },
+      },
+    });
+    let requests = 0;
+    await page.route('**/api/snapshot/latest', async route => {
+      requests += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(requests === 1 ? expiring : refreshed),
+      });
+    });
+
+    await page.goto('/');
+    await waitForAppMount(page);
+    await expect(page.getByText('Add Impact Streamer and move out Cold Corner', { exact: true })).toBeVisible();
+    await expect(page.getByText('No worthwhile move', { exact: true })).toBeVisible();
+    expect(requests).toBeGreaterThanOrEqual(2);
   });
 
   test('pauses swap guidance when lineup slot provenance is untrusted', async ({ page }) => {

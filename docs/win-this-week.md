@@ -111,6 +111,13 @@ movability, or deadline evidence. The primary action also gets a preflight
 reminder because MLB lineups, injuries, Fantrax availability, and locks can
 change after the stored snapshot.
 
+Today schedules a silent snapshot refetch for the primary action's exact
+deadline. If a tab is throttled or misses that timer, the panel still detects a
+past deadline locally, replaces the action label with `Refresh required`, and
+hides the normal action handoffs until a new plan arrives. The production
+monitor also rejects expired action deadlines and any drift between the plan
+embedded in `/api/snapshot/latest` and `/api/win-this-week/latest`.
+
 ## Safety Boundary
 
 Win This Week never invokes Fantrax. The API payload, every ranked action, and

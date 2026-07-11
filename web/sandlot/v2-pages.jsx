@@ -555,6 +555,19 @@ function V2App({ initial }) {
     };
   }, [loadSnapshot, tickSyncAge]);
 
+  const primaryActionDeadline = model?.winThisWeek?.actions?.[0]?.deadline?.at || null;
+  React.useEffect(() => {
+    if (!primaryActionDeadline) return undefined;
+    const deadlineMs = new Date(primaryActionDeadline).getTime();
+    if (!Number.isFinite(deadlineMs)) return undefined;
+    const refreshInMs = Math.max(0, deadlineMs - Date.now() + 1000);
+    const timer = window.setTimeout(
+      () => loadSnapshot({ silent:true }),
+      Math.min(refreshInMs, 2_147_483_647),
+    );
+    return () => window.clearTimeout(timer);
+  }, [loadSnapshot, primaryActionDeadline]);
+
   React.useLayoutEffect(() => {
     if (mainScrollRef.current) mainScrollRef.current.scrollTop = 0;
   }, [page]);
@@ -1075,7 +1088,14 @@ function v2WinWeekDeadline(deadline) {
   if (!deadline || deadline.state !== 'known' || !deadline.at) return 'Deadline needs a fresh check';
   const parsed = new Date(deadline.at);
   if (Number.isNaN(parsed.getTime())) return 'Deadline needs a fresh check';
+  if (parsed.getTime() <= Date.now()) return 'Deadline passed · refresh required';
   return `Before ${parsed.toLocaleTimeString([], { weekday:'short', hour:'numeric', minute:'2-digit' })}`;
+}
+
+function v2WinWeekDeadlineExpired(deadline) {
+  if (!deadline || deadline.state !== 'known' || !deadline.at) return false;
+  const parsed = new Date(deadline.at);
+  return !Number.isNaN(parsed.getTime()) && parsed.getTime() <= Date.now();
 }
 
 function v2WinWeekPrompt(action, plan) {
@@ -1101,16 +1121,19 @@ function v2WinWeekPrompt(action, plan) {
   ].filter(Boolean).join('\n');
 }
 
-function V2WinThisWeekPanel({ plan, onNav, onAskSkipper }) {
+function V2WinThisWeekPanel({ plan, onNav, onAskSkipper, onRefresh }) {
   if (!plan) return null;
   const actions = Array.isArray(plan.actions) ? plan.actions : [];
   const primary = actions[0] || null;
+  const deadlineExpired = v2WinWeekDeadlineExpired(primary?.deadline);
   const monitor = (plan.monitoring_actions || [])[0] || null;
   const points = v2Number(primary?.expected_points?.estimate);
   const kindLabel = primary?.kind === 'waiver' ? 'Waiver move' : 'Lineup move';
-  const stateLabel = primary?.state === 'review_now' ? 'Review now' : 'Best move now';
+  const stateLabel = deadlineExpired ? 'Refresh required' : primary?.state === 'review_now' ? 'Review now' : 'Best move now';
   const dynastyLevel = primary?.dynasty_cost?.level || 'unknown';
-  const tone = plan.state === 'ready'
+  const tone = deadlineExpired
+    ? { fg:V2.warn, bg:V2.warnSoft }
+    : plan.state === 'ready'
     ? { fg:V2.accent, bg:V2.accentSoft }
     : plan.state === 'paused'
       ? { fg:V2.warn, bg:V2.warnSoft }
@@ -1137,7 +1160,9 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper }) {
       </div>
 
       <div style={{ marginTop:9, color:V2.body, fontSize:13.5, lineHeight:1.45, fontWeight:750, textWrap:'pretty' }}>
-        {plan.summary?.headline || plan.no_action?.reason || 'Waiting for a matchup plan.'}
+        {deadlineExpired
+          ? 'The stored primary action has passed its deadline. Refresh before making any Fantrax change.'
+          : plan.summary?.headline || plan.no_action?.reason || 'Waiting for a matchup plan.'}
       </div>
 
       {plan.summary?.projection_caveat ? (
@@ -1165,7 +1190,7 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper }) {
               <div style={{ color:V2.accent, fontSize:29, lineHeight:0.95, fontWeight:900, fontFamily:V2.fontDisplay, fontVariantNumeric:'tabular-nums' }}>
                 {v2Signed(points, 1)}
               </div>
-              <div style={{ marginTop:5, color:V2.muted, fontSize:10, fontWeight:900, letterSpacing:'0.06em', textTransform:'uppercase' }}>proj. points</div>
+              <div style={{ marginTop:5, color:V2.muted, fontSize:10, fontWeight:900, letterSpacing:'0.06em', textTransform:'uppercase' }}>{deadlineExpired ? 'expired estimate' : 'proj. points'}</div>
             </div>
           </div>
 
@@ -1174,7 +1199,7 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper }) {
               {dynastyLevel === 'none' ? 'No dynasty cost' : `${dynastyLevel} dynasty cost`}
             </span>
             <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'5px 8px', fontSize:10.5, fontWeight:850 }}>
-              {primary.legality?.state === 'snapshot_verified' ? 'Snapshot legal' : 'Live preflight required'}
+              {deadlineExpired ? 'Deadline passed' : primary.legality?.state === 'snapshot_verified' ? 'Snapshot legal' : 'Live preflight required'}
             </span>
             <span style={{ background:V2.surface2, color:V2.body, borderRadius:999, padding:'5px 8px', fontSize:10.5, fontWeight:850 }}>
               Read-only
@@ -1210,11 +1235,17 @@ function V2WinThisWeekPanel({ plan, onNav, onAskSkipper }) {
             </div>
           ) : null}
 
-          <div style={{ marginTop:14, display:'grid', gridTemplateColumns:primary.kind === 'waiver' ? '1fr 1fr' : '1fr', gap:9 }}>
-            <button onClick={()=>onAskSkipper(v2WinWeekPrompt(primary, plan))} style={{ minHeight:44, background:V2.ink, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
-              Pressure-test with Skipper
-            </button>
-            {primary.kind === 'waiver' ? (
+          <div style={{ marginTop:14, display:'grid', gridTemplateColumns:deadlineExpired || primary.kind !== 'waiver' ? '1fr' : '1fr 1fr', gap:9 }}>
+            {deadlineExpired ? (
+              <button onClick={onRefresh} style={{ minHeight:44, background:V2.warn, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
+                Refresh plan
+              </button>
+            ) : (
+              <button onClick={()=>onAskSkipper(v2WinWeekPrompt(primary, plan))} style={{ minHeight:44, background:V2.ink, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
+                Pressure-test with Skipper
+              </button>
+            )}
+            {!deadlineExpired && primary.kind === 'waiver' ? (
               <button onClick={()=>onNav('fa')} style={{ minHeight:44, background:V2.surface, color:V2.body, border:`1px solid ${V2.hairline}`, borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
                 Open waiver board
               </button>
@@ -1300,6 +1331,7 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
         plan={model.winThisWeek}
         onNav={onNav}
         onAskSkipper={onAskSkipper}
+        onRefresh={onRefresh}
       />
 
       <V2HotSwapsPanel

@@ -250,6 +250,31 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         self.assertIn("win_this_week_opportunity_scope", codes)
         self.assertIn("win_this_week_embedded_opportunity_scope", codes)
 
+    def test_win_this_week_rejects_expired_action_deadlines(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["actions"][0]["deadline"]["at"] = "2026-07-10T15:59:59Z"
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_deadline_expired", codes)
+        self.assertIn("win_this_week_embedded_deadline_expired", codes)
+
+    def test_win_this_week_requires_cross_endpoint_action_parity(self):
+        payloads = healthy_payloads()
+        payloads["/api/win-this-week/latest"]["actions"][0]["expected_points"]["estimate"] = 3.0
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_cross_endpoint_drift", codes)
+
     def test_cross_endpoint_snapshot_and_write_boundaries_fail_closed(self):
         payloads = healthy_payloads()
         payloads["/api/attention"]["snapshot_id"] = 263
