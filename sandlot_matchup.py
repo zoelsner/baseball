@@ -1902,7 +1902,6 @@ def _active_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             and str(row.get("slot") or "").strip().upper() not in INACTIVE_SLOTS
             and str(row.get("slot_source") or "").strip().casefold() not in EXPLICITLY_UNTRUSTED_SLOT_SOURCES
             and not _is_unavailable(row)
-            and not _is_protected_lineup_row(row)
         )
     ]
 
