@@ -544,6 +544,14 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
         proposal_entries.append({"proposal": card.get("proposal")})
         move_in = card.get("move_in") if isinstance(card.get("move_in"), dict) else {}
         move_out = card.get("move_out") if isinstance(card.get("move_out"), dict) else {}
+        move_in_status = str(move_in.get("injury") or move_in.get("status") or "").strip().upper()
+        if move_in.get("unavailable") is True or move_in_status in {
+            "OUT", "SUSP", "SUSPENDED", "IL", "IL10", "IL60", "IR",
+        }:
+            fail(
+                "matchup_unavailable_move_in",
+                f"Matchup recommendation {index + 1} promoted an unavailable player",
+            )
         outcome = (str(move_in.get("id") or ""), str(move_out.get("id") or ""))
         if not all(outcome):
             fail("matchup_outcome_identity", f"Matchup recommendation {index + 1} lacked player identities")

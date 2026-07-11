@@ -311,6 +311,32 @@ class ReadOnlyMonitorTests(unittest.TestCase):
             {item["code"] for item in report["failures"]},
         )
 
+    def test_matchup_recommendation_cannot_promote_suspended_player(self):
+        payloads = healthy_payloads()
+        recommendation = payloads["/api/snapshot/latest"]["matchup"]["recommendations"]["recommendations"][0]
+        recommendation["replacement_card"]["move_in"]["injury"] = "SUSP"
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            "matchup_unavailable_move_in",
+            {item["code"] for item in report["failures"]},
+        )
+
+    def test_matchup_recommendation_honors_explicit_unavailable_contract(self):
+        payloads = healthy_payloads()
+        recommendation = payloads["/api/snapshot/latest"]["matchup"]["recommendations"]["recommendations"][0]
+        recommendation["replacement_card"]["move_in"]["unavailable"] = True
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            "matchup_unavailable_move_in",
+            {item["code"] for item in report["failures"]},
+        )
+
     def test_transport_failure_is_sanitized_and_fails(self):
         payloads = healthy_payloads()
         payloads.pop("/api/attention")

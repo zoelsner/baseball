@@ -85,6 +85,29 @@ class TradeCounterTests(unittest.TestCase):
         self.assertEqual(result["my_delta"], 0.5)
         self.assertIn("already favors you", result["no_counter_reason"])
 
+    def test_suspended_players_are_excluded_from_counter_candidates(self):
+        snapshot = trade_snapshot()
+        suspended = snapshot["data"]["all_team_rosters"]["opp"]["rows"][2]
+        suspended.update({"fppg": 4.0, "injury": "SUSP"})
+
+        with patch.object(
+            sandlot_trades,
+            "_load_or_generate_rationale",
+            return_value=("Deterministic grade rationale.", "", False),
+        ), patch.object(sandlot_trades, "_overlay_counter_rationales"):
+            result = sandlot_trades.grade_offer(snapshot, ["m1"], ["o1"])
+
+        added_ids = {counter["added_player"]["id"] for counter in result["counters"]}
+        self.assertNotIn("o3", added_ids)
+
+    def test_raw_suspended_flag_is_unavailable_for_trade_candidates(self):
+        self.assertTrue(sandlot_trades._is_unavailable({
+            "raw": {"player": {"suspended": True}},
+        }))
+        self.assertFalse(sandlot_trades._is_unavailable({
+            "raw": {"player": {"suspended": "false"}},
+        }))
+
     def test_counter_bands_target_fair_packages_instead_of_biggest_star(self):
         candidates = [
             {"row": {"id": "star", "name": "Star"}, "counter_delta": 18.0, "score": 20.0},
