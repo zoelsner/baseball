@@ -140,6 +140,31 @@ class SnapshotDataQualityTests(unittest.TestCase):
         self.assertEqual(quality["fppg"]["covered_players"], 1)
         self.assertFalse(quality["projection_ready"])
 
+    def test_suspended_active_slot_does_not_poison_coverage_gates(self):
+        for unavailable_fields in (
+            {"injury": "SUSP"},
+            {"raw": {"player": {"suspended": True}}},
+        ):
+            with self.subTest(unavailable_fields=unavailable_fields):
+                snapshot = good_snapshot()
+                snapshot["roster"]["rows"].append({
+                    "id": "suspended",
+                    "name": "Suspended Player",
+                    "slot": "OF",
+                    "positions": "OF",
+                    "slot_source": "raw.lineupSlot",
+                    **unavailable_fields,
+                })
+
+                quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+                self.assertTrue(quality["projection_ready"])
+                self.assertTrue(quality["lineup_recommendations_ready"])
+                self.assertEqual(quality["fppg"]["covered_players"], 2)
+                self.assertEqual(quality["fppg"]["total_players"], 2)
+                self.assertEqual(quality["future_games"]["total_players"], 2)
+                self.assertEqual(quality["projection_slots"]["total_players"], 2)
+
     def test_nonfinite_or_absurd_fppg_marks_projection_not_ready(self):
         for value in (float("nan"), float("inf"), float("-inf"), 688.0):
             with self.subTest(value=value):

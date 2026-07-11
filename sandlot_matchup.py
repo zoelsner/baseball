@@ -23,7 +23,7 @@ PROTECTED_PLAYER_FLAGS = {
     "minors",
     "is_minor_leaguer",
 }
-UNAVAILABLE_INJURIES = {"OUT", "IL", "IL10", "IL60", "IR"}
+UNAVAILABLE_INJURIES = {"OUT", "SUSP", "SUSPENDED", "IL", "IL10", "IL60", "IR"}
 MODEL_VERSION = "matchup_projection_v4"
 MAX_ABS_FPPG = 100.0
 MIN_MEANINGFUL_POINTS_DELTA = 1.0
@@ -1329,6 +1329,7 @@ def _player_card_summary(
     period_start: date | None = None,
 ) -> dict[str, Any]:
     games = _games_remaining(row, period_end, period_start) if period_end else None
+    unavailable_status = _unavailable_status(row)
     return {
         "id": _player_id(row),
         "name": row.get("name") or step.get("player_name") or "Unknown player",
@@ -1337,6 +1338,8 @@ def _player_card_summary(
         "from_slot": step.get("from_slot"),
         "to_slot": step.get("to_slot"),
         "fppg": round(_row_fppg(row), 2),
+        "injury": row.get("injury") or row.get("status") or unavailable_status,
+        "unavailable": unavailable_status is not None,
         "remaining_games": games,
         "slot_source": row.get("slot_source") or "unknown",
     }
@@ -1377,7 +1380,6 @@ def _is_active_lineup_row(row: dict[str, Any]) -> bool:
         isinstance(row, dict)
         and bool(slot)
         and slot not in INACTIVE_SLOTS
-        and not _is_unavailable(row)
         and not _is_protected_lineup_row(row)
     )
 
@@ -1579,7 +1581,16 @@ def _participant_blocker(
             return f"{name} is protected and cannot be used in a hot swap"
         if not _has_trusted_slot_source(row):
             return f"slot provenance is untrusted for {name}"
-        if period_end and not _has_proposal_future_game_provenance(row, period_end, period_start):
+        demoting_unavailable = (
+            not _is_bench_slot(step.get("from_slot"))
+            and _is_bench_slot(step.get("to_slot"))
+            and _is_unavailable(row)
+        )
+        if (
+            period_end
+            and not demoting_unavailable
+            and not _has_proposal_future_game_provenance(row, period_end, period_start)
+        ):
             return f"future-game provenance is not trusted for {name}"
     return None
 
@@ -1634,6 +1645,8 @@ def _active_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             isinstance(row, dict)
             and str(row.get("slot") or "").strip().upper() not in INACTIVE_SLOTS
             and str(row.get("slot_source") or "").strip().casefold() not in EXPLICITLY_UNTRUSTED_SLOT_SOURCES
+            and not _is_unavailable(row)
+            and not _is_protected_lineup_row(row)
         )
     ]
 
@@ -1936,12 +1949,22 @@ def _active_rows_have_valid_fppg(rows: list[dict[str, Any]]) -> bool:
 
 
 def _is_unavailable(row: dict[str, Any]) -> bool:
+    return _unavailable_status(row) is not None
+
+
+def _unavailable_status(row: dict[str, Any]) -> str | None:
     status = str(row.get("injury") or row.get("status") or "").strip().upper()
     if status in UNAVAILABLE_INJURIES:
-        return True
+        return status
     raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
     player = raw.get("player") if isinstance(raw.get("player"), dict) else {}
-    return bool(player.get("out") or player.get("injured_reserve"))
+    if _truthy(player.get("suspended")):
+        return "SUSP"
+    if _truthy(player.get("injured_reserve")):
+        return "IL"
+    if _truthy(player.get("out")):
+        return "OUT"
+    return None
 
 
 def _deterministic_prob(margin: float) -> float:

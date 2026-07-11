@@ -152,6 +152,53 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertIsNone(result["recommendations"][0]["win_probability_delta"])
         self.assertEqual(result["recommendations"][0]["confidence"], "high")
 
+    def test_suspended_active_player_can_be_replaced_but_not_promoted(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player(
+                "suspended",
+                slot="2B",
+                positions="2B",
+                fppg=4.0,
+                injury="SUSP",
+                raw=raw_lineup_change(False),
+            ),
+            player(
+                "available-bench",
+                slot="BN",
+                positions="2B",
+                fppg=3.0,
+                raw=raw_lineup_change(False),
+            ),
+        ]))
+
+        recommendation = result["recommendations"][0]
+        card = recommendation["replacement_card"]
+        self.assertEqual(card["move_in"]["id"], "available-bench")
+        self.assertEqual(card["move_out"]["id"], "suspended")
+        self.assertEqual(card["move_out"]["injury"], "SUSP")
+        self.assertTrue(card["move_out"]["unavailable"])
+        self.assertFalse(card["move_in"]["unavailable"])
+        self.assertEqual(recommendation["points_delta"], 3.0)
+
+    def test_raw_suspended_bench_player_is_never_promoted(self):
+        result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
+            player("weak", slot="2B", positions="2B", fppg=1.0),
+            player(
+                "raw-suspended",
+                slot="BN",
+                positions="2B",
+                fppg=8.0,
+                raw={"scorer": {"disableLineupChange": False}, "player": {"suspended": True}},
+            ),
+            player("available", slot="BN", positions="2B", fppg=3.0),
+        ]))
+
+        promoted_ids = {
+            recommendation["replacement_card"]["move_in"]["id"]
+            for recommendation in result["recommendations"]
+        }
+        self.assertEqual(promoted_ids, {"available"})
+
     def test_suppresses_longer_chain_when_direct_swap_has_same_outcome(self):
         result = sandlot_matchup.rank_matchup_improvement_actions(snapshot([
             player("cortes", slot="OF", positions=["OF", "UT"], fppg=2.0),

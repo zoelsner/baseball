@@ -17,6 +17,7 @@ TRUE_FPG_KEYS = ("FP/G", "FPG", "FPts/G", "FP/Gm", "FP/Game", "Fantasy Points/Ga
 FANTRAX_AVG_KEYS = ("Avg", "Average")
 SCORE_CONTEXT_KEYS = ("Score", "FPts", "ProjFPts", "FP", "Fantasy Points")
 MAX_ABS_FPPG = 100.0
+UNAVAILABLE_STATUSES = {"OUT", "SUSP", "SUSPENDED", "IL", "IL10", "IL60", "IR"}
 
 
 def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -316,8 +317,27 @@ def _active_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         row
         for row in rows or []
-        if isinstance(row, dict) and str(row.get("slot") or "").strip().upper() not in INACTIVE_SLOTS
+        if (
+            isinstance(row, dict)
+            and str(row.get("slot") or "").strip().upper() not in INACTIVE_SLOTS
+            and not _is_unavailable(row)
+        )
     ]
+
+
+def _is_unavailable(row: dict[str, Any]) -> bool:
+    status = str(row.get("injury") or row.get("status") or "").strip().upper()
+    if status in UNAVAILABLE_STATUSES:
+        return True
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    player = raw.get("player") if isinstance(raw.get("player"), dict) else {}
+    return any(_truthy(player.get(key)) for key in ("out", "injured_reserve", "suspended"))
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return bool(value)
 
 
 def _lineup_slots_quality(rows: list[dict[str, Any]]) -> dict[str, Any]:

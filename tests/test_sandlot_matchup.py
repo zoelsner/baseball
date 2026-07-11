@@ -334,6 +334,60 @@ class MatchupProjectionTests(unittest.TestCase):
         snapshot["roster"]["rows"][0]["fppg"] = 688
         self.assertIsNone(sandlot_matchup.compute_projection(snapshot))
 
+    def test_suspended_active_row_does_not_block_or_score_in_projection(self):
+        snapshot = {
+            "matchup": {
+                "my_score": 0,
+                "opponent_score": 0,
+                "opponent_team_id": "opp",
+                "end": "2026-05-20",
+                "complete": False,
+            },
+            "roster": {
+                "rows": [
+                    {
+                        "id": "suspended",
+                        "slot": "OF",
+                        "slot_source": "raw.lineupSlot",
+                        "injury": "SUSP",
+                        "fppg": None,
+                        "future_games": [future_game(14)],
+                    },
+                    {
+                        "id": "available",
+                        "slot": "2B",
+                        "slot_source": "raw.lineupSlot",
+                        "fppg": 2.0,
+                        "future_games": [future_game(14)],
+                    },
+                ],
+            },
+            "all_team_rosters": {
+                "opp": {
+                    "rows": [{
+                        "id": "opp",
+                        "slot": "SS",
+                        "slot_source": "raw.lineupSlot",
+                        "fppg": 1.0,
+                        "future_games": [future_game(14)],
+                    }],
+                },
+            },
+        }
+
+        projection = sandlot_matchup.compute_projection(snapshot)
+
+        self.assertEqual(projection["projected_my"], 2.0)
+        self.assertEqual(projection["my_remaining_games"], 1)
+
+    def test_raw_suspended_flag_is_unavailable(self):
+        self.assertTrue(sandlot_matchup._is_unavailable({
+            "raw": {"player": {"suspended": True}},
+        }))
+        self.assertFalse(sandlot_matchup._is_unavailable({
+            "raw": {"player": {"suspended": "false"}},
+        }))
+
     def test_returns_none_when_opponent_roster_is_missing(self):
         projection = sandlot_matchup.compute_projection({
             "matchup": {
