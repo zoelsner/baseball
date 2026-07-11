@@ -1,8 +1,9 @@
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import sandlot_win_week
-from sandlot_api import _snapshot_payload
+from sandlot_api import _snapshot_payload, latest_win_this_week
 
 
 NOW = datetime(2026, 5, 14, 12, tzinfo=timezone.utc)
@@ -340,6 +341,15 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertTrue(payload["win_this_week"]["read_only"])
         self.assertFalse(payload["win_this_week"]["writes_enabled"])
         self.assertEqual(payload["win_this_week"]["snapshot_id"], 501)
+
+    def test_dedicated_endpoint_matches_snapshot_plan_exactly(self):
+        row = snapshot_row()
+
+        with patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=row):
+            dedicated = latest_win_this_week()
+        embedded = _snapshot_payload(row)["win_this_week"]
+
+        self.assertEqual(dedicated, embedded)
 
     def test_lineup_gain_with_unknown_start_time_is_monitor_only(self):
         roster = [

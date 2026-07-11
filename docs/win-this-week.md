@@ -8,7 +8,9 @@ points this week without making a reckless dynasty move?"
 
 - `GET /api/snapshot/latest` includes `win_this_week`.
 - `GET /api/win-this-week/latest` returns the same plan as a dedicated
-  machine-readable surface.
+  machine-readable surface. Both routes use the same matchup-decision context
+  so data quality, projection, lineup ranking, and action ranking cannot drift
+  through separate derivation paths.
 - Today renders the primary action immediately below the matchup score and
   above the supporting Hot Swaps and Attention Queue evidence.
 
@@ -133,4 +135,12 @@ action being ranked first.
 - the production monitor checks ranks, positive comparable impact, deadlines,
   dynasty cost, legal-path state, calibrated-probability boundaries, protected
   anchors, and read-only flags;
-- local mobile Playwright verifies the Today hierarchy and Skipper handoff.
+- local mobile Playwright verifies loading, empty, stale, expired, error,
+  success, Today hierarchy, and the Skipper handoff;
+- an authenticated, non-persisted live Fantrax run on 2026-07-11 verified the
+  browser → API → fresh snapshot → recommendation flow. Today rendered a legal
+  three-step lineup plan worth an estimated +3.3 remaining-week points, its
+  MLB-start deadline, lower-bound projection caveat, disabled mutation control,
+  and the exact read-only Skipper handoff;
+- a route-parity regression test and the production monitor require the
+  embedded and dedicated Win This Week plans to match exactly.
