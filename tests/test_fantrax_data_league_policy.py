@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import fantrax_data
 
@@ -83,24 +83,23 @@ class FantraxLineupPolicyObservationTests(unittest.TestCase):
 
 class FantraxLeagueRulesAcquisitionTests(unittest.TestCase):
     @staticmethod
-    def _response(*payloads):
+    def _response(payload):
         response = Mock(status_code=200)
-        response.json.return_value = {"responses": list(payloads)}
+        response.json.return_value = {"responses": [payload]}
         return response
 
     def test_later_policy_response_is_not_masked_by_first_success(self):
         session = Mock()
-        session.post.return_value = self._response(
-            {"leagueName": "Private"},
-            {"settings": {"lineupChangePeriod": "WEEKLY"}},
-            *[{"error": "unsupported"} for _ in range(4)],
-        )
+        session.post.side_effect = [
+            self._response({"leagueName": "Private"}),
+            self._response({"settings": {"lineupChangePeriod": "WEEKLY"}}),
+            *[self._response({"error": "unsupported"}) for _ in range(4)],
+        ]
 
         rules = fantrax_data.extract_league_rules(session, "league-1")
 
-        self.assertEqual(session.post.call_count, 1)
-        self.assertEqual(session.post.call_args.kwargs["timeout"], 15)
-        self.assertEqual(len(session.post.call_args.kwargs["json"]["msgs"]), 6)
+        self.assertEqual(session.post.call_count, 6)
+        self.assertTrue(all(call.kwargs["timeout"] <= 3 for call in session.post.call_args_list))
         self.assertEqual(rules["method"], "getLeagueRules")
         self.assertEqual(rules["policy_method"], "getLeagueInfo")
         self.assertEqual(rules["lineup_change_policy"]["state"], "observed_unclassified")
@@ -113,11 +112,11 @@ class FantraxLeagueRulesAcquisitionTests(unittest.TestCase):
 
     def test_scoring_and_policy_can_come_from_different_methods(self):
         session = Mock()
-        session.post.return_value = self._response(
-            {"categories": [{"name": "HR", "points": 4}]},
-            {"settings": {"lineupLockScope": "INDIVIDUAL_GAME"}},
-            *[{"errorMsg": "unsupported"} for _ in range(4)],
-        )
+        session.post.side_effect = [
+            self._response({"categories": [{"name": "HR", "points": 4}]}),
+            self._response({"settings": {"lineupLockScope": "INDIVIDUAL_GAME"}}),
+            *[self._response({"errorMsg": "unsupported"}) for _ in range(4)],
+        ]
 
         rules = fantrax_data.extract_league_rules(session, "league-1")
 
@@ -128,7 +127,7 @@ class FantraxLeagueRulesAcquisitionTests(unittest.TestCase):
 
     def test_all_successful_methods_remain_fail_closed_without_policy_fields(self):
         session = Mock()
-        session.post.return_value = self._response(*[{"ok": True} for _ in range(6)])
+        session.post.side_effect = [self._response({"ok": True}) for _ in range(6)]
 
         rules = fantrax_data.extract_league_rules(session, "league-1")
 
@@ -141,17 +140,17 @@ class FantraxLeagueRulesAcquisitionTests(unittest.TestCase):
 
     def test_richest_policy_response_wins_without_persisting_its_raw_payload(self):
         session = Mock()
-        session.post.return_value = self._response(
-            {"settings": {"lineupChangePeriod": "WEEKLY"}, "private": "first raw"},
-            {
+        session.post.side_effect = [
+            self._response({"settings": {"lineupChangePeriod": "WEEKLY"}, "private": "first raw"}),
+            self._response({
                 "settings": {
                     "lineupChangePeriod": "WEEKLY",
                     "lineupLockScope": "INDIVIDUAL_GAME",
                 },
                 "private": "later raw",
-            },
-            *[{"error": "unsupported"} for _ in range(4)],
-        )
+            }),
+            *[self._response({"error": "unsupported"}) for _ in range(4)],
+        ]
 
         rules = fantrax_data.extract_league_rules(session, "league-1")
 
@@ -165,6 +164,17 @@ class FantraxLeagueRulesAcquisitionTests(unittest.TestCase):
             ],
         )
         self.assertEqual(rules["raw"]["private"], "first raw")
+
+    def test_sequential_probe_obeys_one_total_deadline(self):
+        session = Mock()
+        session.post.side_effect = TimeoutError("slow Fantrax")
+
+        with patch.object(fantrax_data, "monotonic", side_effect=[0, 0, 4, 8, 12, 16]):
+            rules = fantrax_data.extract_league_rules(session, "league-1")
+
+        self.assertIsNone(rules)
+        self.assertEqual(session.post.call_count, 4)
+        self.assertTrue(all(call.kwargs["timeout"] <= 3 for call in session.post.call_args_list))
 
 
 if __name__ == "__main__":
