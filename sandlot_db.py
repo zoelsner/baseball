@@ -7,7 +7,9 @@ shape is still moving.
 
 from __future__ import annotations
 
+import math
 import os
+import re
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from typing import Any, Iterator
@@ -556,6 +558,184 @@ def list_recommendation_receipts(*, limit: int = 50) -> list[dict[str, Any]]:
             (limit,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def pending_recommendation_receipts(*, source: str) -> list[dict[str, Any]]:
+    """Return completed-horizon receipts that still need outcome telemetry."""
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM recommendation_receipts
+            WHERE source = %s
+              AND outcome_state = 'pending'
+              AND period_end < CURRENT_DATE
+            ORDER BY period_end, generated_at, receipt_id
+            """,
+            (source,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def recent_scored_recommendation_receipts(*, source: str, limit: int = 20) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit), 100))
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM recommendation_receipts
+            WHERE source = %s AND outcome_state = 'scored'
+            ORDER BY evaluated_at DESC, receipt_id DESC
+            LIMIT %s
+            """,
+            (source, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def score_recommendation_receipt_team_result(
+    *, receipt_id: str, outcome: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    """Persist one immutable, versioned observed-team outcome with CAS semantics."""
+    from sandlot_receipts import TEAM_RESULT_SCORING_VERSION, team_result_evidence_hash
+
+    if outcome.get("scoring_version") != TEAM_RESULT_SCORING_VERSION:
+        raise ValueError("Unsupported recommendation outcome scoring version")
+    if outcome.get("actual_baseline") is not None or outcome.get("actual_gain") is not None:
+        raise ValueError("team_result_v1 cannot claim counterfactual baseline or gain")
+    evidence = outcome.get("outcome_evidence")
+    if not isinstance(evidence, dict) or not evidence.get("evidence_hash"):
+        raise ValueError("Recommendation outcome evidence hash is required")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(evidence["evidence_hash"])):
+        raise ValueError("Recommendation outcome evidence hash must be lowercase SHA-256")
+    if evidence["evidence_hash"] != team_result_evidence_hash(evidence):
+        raise ValueError("Recommendation outcome evidence hash is invalid")
+    try:
+        actual_value = float(outcome.get("actual_value"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Recommendation actual team total must be finite") from exc
+    if not math.isfinite(actual_value):
+        raise ValueError("Recommendation actual team total must be finite")
+    required_evidence = {
+        "measurement_scope": "observed_team_total",
+        "adherence_state": "unverified",
+        "counterfactual_state": "unavailable",
+        "counterfactual_reason": "per_player_period_scoring_and_lineup_participation_not_ingested",
+    }
+    if any(evidence.get(key) != value for key, value in required_evidence.items()):
+        raise ValueError("team_result_v1 requires fixed non-counterfactual evidence labels")
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM recommendation_receipts WHERE receipt_id = %s FOR UPDATE",
+            (receipt_id,),
+        ).fetchone()
+        if not row:
+            raise LookupError("Recommendation receipt not found")
+        row = dict(row)
+        if row.get("outcome_state") == "scored":
+            same = (
+                row.get("scoring_version") == outcome["scoring_version"]
+                and row.get("actual_value") == outcome.get("actual_value")
+                and row.get("actual_baseline") is None
+                and row.get("actual_gain") is None
+                and row.get("outcome_evidence") == evidence
+            )
+            if same:
+                return row, False
+            raise ValueError("Recommendation receipt already has different outcome evidence")
+        if row.get("outcome_state") != "pending":
+            raise ValueError(f"Recommendation receipt outcome is already {row.get('outcome_state')}")
+        expected_binding = {
+            "receipt_id": row.get("receipt_id"),
+            "input_hash": row.get("input_hash"),
+            "league_id": row.get("league_id"),
+            "team_id": row.get("team_id"),
+        }
+        if any(evidence.get(key) != value for key, value in expected_binding.items()):
+            raise ValueError("Recommendation outcome evidence does not match the target receipt")
+        period = evidence.get("period") if isinstance(evidence.get("period"), dict) else {}
+        if str(period.get("start")) != str(row.get("period_start")) or str(period.get("end")) != str(row.get("period_end")):
+            raise ValueError("Recommendation outcome period does not match the target receipt")
+        if evidence.get("projected_team_total") != row.get("projected_value"):
+            raise ValueError("Recommendation outcome projection does not match the target receipt")
+        updated = conn.execute(
+            """
+            UPDATE recommendation_receipts
+            SET outcome_state = 'scored',
+                actual_baseline = NULL,
+                actual_value = %s,
+                actual_gain = NULL,
+                scoring_version = %s,
+                outcome_evidence = %s,
+                evaluated_at = clock_timestamp(),
+                updated_at = clock_timestamp()
+            WHERE receipt_id = %s AND outcome_state = 'pending'
+            RETURNING *
+            """,
+            (
+                actual_value,
+                outcome["scoring_version"],
+                Jsonb(evidence),
+                receipt_id,
+            ),
+        ).fetchone()
+        if not updated:
+            raise RuntimeError("Recommendation receipt changed during outcome scoring")
+    return dict(updated), True
+
+
+def mark_recommendation_receipt_outcome_unavailable(
+    *, receipt_id: str, evidence: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    """Record one terminal inability to observe a completed-period result."""
+    from sandlot_receipts import TEAM_RESULT_SCORING_VERSION, team_result_evidence_hash
+
+    if evidence.get("reason") != "completed_period_evidence_missed_after_grace_window":
+        raise ValueError("Unsupported unavailable outcome reason")
+    if evidence.get("retryable") is not False:
+        raise ValueError("Unavailable recommendation outcome must be terminal")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("evidence_hash") or "")):
+        raise ValueError("Unavailable outcome evidence hash must be lowercase SHA-256")
+    if evidence["evidence_hash"] != team_result_evidence_hash(evidence):
+        raise ValueError("Unavailable outcome evidence hash is invalid")
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM recommendation_receipts WHERE receipt_id = %s FOR UPDATE",
+            (receipt_id,),
+        ).fetchone()
+        if not row:
+            raise LookupError("Recommendation receipt not found")
+        row = dict(row)
+        if row.get("outcome_state") == "unavailable":
+            if row.get("scoring_version") == TEAM_RESULT_SCORING_VERSION and row.get("outcome_evidence") == evidence:
+                return row, False
+            raise ValueError("Recommendation receipt already has different unavailable evidence")
+        if row.get("outcome_state") != "pending":
+            raise ValueError(f"Recommendation receipt outcome is already {row.get('outcome_state')}")
+        expected_binding = {
+            "receipt_id": row.get("receipt_id"),
+            "input_hash": row.get("input_hash"),
+            "league_id": row.get("league_id"),
+            "team_id": row.get("team_id"),
+        }
+        if any(evidence.get(key) != value for key, value in expected_binding.items()):
+            raise ValueError("Unavailable outcome evidence does not match the target receipt")
+        period = evidence.get("period") if isinstance(evidence.get("period"), dict) else {}
+        if str(period.get("start")) != str(row.get("period_start")) or str(period.get("end")) != str(row.get("period_end")):
+            raise ValueError("Unavailable outcome period does not match the target receipt")
+        updated = conn.execute(
+            """
+            UPDATE recommendation_receipts
+            SET outcome_state = 'unavailable', scoring_version = %s,
+                actual_baseline = NULL, actual_value = NULL, actual_gain = NULL,
+                outcome_evidence = %s, evaluated_at = clock_timestamp(), updated_at = clock_timestamp()
+            WHERE receipt_id = %s AND outcome_state = 'pending'
+            RETURNING *
+            """,
+            (TEAM_RESULT_SCORING_VERSION, Jsonb(evidence), receipt_id),
+        ).fetchone()
+        if not updated:
+            raise RuntimeError("Recommendation receipt changed during unavailable outcome recording")
+    return dict(updated), True
 
 
 def latest_active_recommendation_receipt(*, source: str) -> dict[str, Any] | None:

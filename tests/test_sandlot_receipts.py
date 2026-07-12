@@ -199,6 +199,141 @@ class RecommendationReceiptBuilderTests(unittest.TestCase):
             })
 
 
+class RecommendationOutcomeBuilderTests(unittest.TestCase):
+    def completed_snapshot(self, **matchup_overrides):
+        matchup = {
+            "source": "fantrax_schedule",
+            "complete": True,
+            "start": "2026-07-13",
+            "end": "2026-07-19",
+            "period_number": 17,
+            "matchup_key": "week-17-team-opponent",
+            "my_team_id": "team",
+            "my_score": 188.5,
+            "score_state": "live_or_final",
+            **matchup_overrides,
+        }
+        return {"league_id": "league", "team_id": "team", "matchup": matchup}
+
+    def test_scores_exact_completed_team_result_without_claiming_gain(self):
+        outcome = sandlot_receipts.build_team_result_outcome(
+            receipt=receipt_fixture(),
+            snapshot=self.completed_snapshot(),
+            snapshot_id=300,
+            snapshot_taken_at="2026-07-20T12:00:00Z",
+        )
+
+        self.assertEqual(outcome["scoring_version"], "team_result_v1")
+        self.assertEqual(outcome["actual_value"], 188.5)
+        self.assertIsNone(outcome["actual_baseline"])
+        self.assertIsNone(outcome["actual_gain"])
+        evidence = outcome["outcome_evidence"]
+        self.assertEqual(evidence["measurement_scope"], "observed_team_total")
+        self.assertEqual(evidence["adherence_state"], "unverified")
+        self.assertEqual(evidence["counterfactual_state"], "unavailable")
+        self.assertEqual(evidence["team_total_residual"], 156.1543)
+        self.assertEqual(len(evidence["evidence_hash"]), 64)
+
+    def test_incomplete_or_wrong_period_remains_pending(self):
+        receipt = receipt_fixture()
+
+        self.assertIsNone(sandlot_receipts.build_team_result_outcome(
+            receipt=receipt,
+            snapshot=self.completed_snapshot(complete=False),
+            snapshot_id=300,
+            snapshot_taken_at="2026-07-20T12:00:00Z",
+        ))
+        self.assertIsNone(sandlot_receipts.build_team_result_outcome(
+            receipt=receipt,
+            snapshot=self.completed_snapshot(start="2026-07-20", end="2026-07-26"),
+            snapshot_id=300,
+            snapshot_taken_at="2026-07-27T12:00:00Z",
+        ))
+
+    def test_latest_completed_is_matched_by_exact_dates(self):
+        snapshot = self.completed_snapshot(start="2026-07-20", end="2026-07-26", complete=False)
+        snapshot["matchup"]["latest_completed"] = self.completed_snapshot()["matchup"]
+
+        outcome = sandlot_receipts.build_team_result_outcome(
+            receipt=receipt_fixture(),
+            snapshot=snapshot,
+            snapshot_id=301,
+            snapshot_taken_at="2026-07-20T12:00:00Z",
+        )
+
+        self.assertEqual(outcome["actual_value"], 188.5)
+
+    def test_nonfinite_score_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "completed team score must be finite"):
+            sandlot_receipts.build_team_result_outcome(
+                receipt=receipt_fixture(),
+                snapshot=self.completed_snapshot(my_score=float("nan")),
+                snapshot_id=300,
+                snapshot_taken_at="2026-07-20T12:00:00Z",
+            )
+
+    def test_missing_team_wrong_source_and_nonfinal_score_fail_closed(self):
+        cases = [
+            ({"my_team_id": None}, "team does not match"),
+            ({"source": "unknown"}, "source is not authoritative"),
+            ({"score_state": "invalid_future_score"}, "score is not final"),
+            ({"matchup_key": None}, "matchup key is required"),
+        ]
+        for overrides, message in cases:
+            with self.subTest(overrides=overrides), self.assertRaisesRegex(ValueError, message):
+                sandlot_receipts.build_team_result_outcome(
+                    receipt=receipt_fixture(),
+                    snapshot=self.completed_snapshot(**overrides),
+                    snapshot_id=300,
+                    snapshot_taken_at="2026-07-20T12:00:00Z",
+                )
+
+    def test_duplicate_identity_with_conflicting_score_fails_closed(self):
+        snapshot = self.completed_snapshot()
+        snapshot["matchup"]["latest_completed"] = {
+            **snapshot["matchup"],
+            "my_score": 190.0,
+        }
+
+        with self.assertRaisesRegex(ValueError, "ambiguous"):
+            sandlot_receipts.build_team_result_outcome(
+                receipt=receipt_fixture(),
+                snapshot=snapshot,
+                snapshot_id=300,
+                snapshot_taken_at="2026-07-20T12:00:00Z",
+            )
+
+    def test_missed_result_terminalizes_only_after_grace_and_newer_final_period(self):
+        receipt = receipt_fixture()
+        snapshot = self.completed_snapshot(start="2026-07-20", end="2026-07-26")
+        snapshot["matchup"] = {
+            **snapshot["matchup"],
+            "complete": False,
+            "latest_completed": {
+                **snapshot["matchup"],
+                "complete": True,
+                "start": "2026-07-20",
+                "end": "2026-07-26",
+            },
+        }
+
+        self.assertIsNone(sandlot_receipts.build_team_result_unavailable(
+            receipt=receipt,
+            snapshot=snapshot,
+            snapshot_id=310,
+            snapshot_taken_at="2026-07-27T12:00:00Z",
+        ))
+        unavailable = sandlot_receipts.build_team_result_unavailable(
+            receipt=receipt,
+            snapshot=snapshot,
+            snapshot_id=311,
+            snapshot_taken_at="2026-07-28T12:00:00Z",
+        )
+        self.assertEqual(unavailable["reason"], "completed_period_evidence_missed_after_grace_window")
+        self.assertFalse(unavailable["retryable"])
+        self.assertEqual(len(unavailable["evidence_hash"]), 64)
+
+
 class RecommendationReceiptPersistenceTests(unittest.TestCase):
     def test_schema_is_durable_and_all_states_are_constrained(self):
         calls = []
@@ -220,6 +355,198 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
         self.assertIn("CHECK (lifecycle_state IN ('active', 'superseded', 'expired'))", sql)
         self.assertIn("CHECK (decision_state IN ('pending', 'accepted', 'rejected'))", sql)
         self.assertIn("WHERE lifecycle_state = 'active'", sql)
+
+    def test_team_result_outcome_is_idempotent_and_counterfactual_fields_stay_null(self):
+        receipt = {**receipt_fixture(), "outcome_state": "pending"}
+        outcome = sandlot_receipts.build_team_result_outcome(
+            receipt=receipt,
+            snapshot={
+                "league_id": "league",
+                "team_id": "team",
+                "matchup": {
+                    "complete": True,
+                    "source": "fantrax_schedule",
+                    "start": "2026-07-13",
+                    "end": "2026-07-19",
+                    "period_number": 17,
+                    "matchup_key": "week-17",
+                    "my_team_id": "team",
+                    "my_score": 188.5,
+                    "score_state": "live_or_final",
+                },
+            },
+            snapshot_id=300,
+            snapshot_taken_at="2026-07-20T12:00:00Z",
+        )
+        calls = []
+
+        class Result:
+            def __init__(self, row):
+                self.row = row
+            def fetchone(self):
+                return self.row
+
+        scored = {
+            **receipt,
+            "outcome_state": "scored",
+            "scoring_version": outcome["scoring_version"],
+            "actual_value": outcome["actual_value"],
+            "actual_baseline": None,
+            "actual_gain": None,
+            "outcome_evidence": outcome["outcome_evidence"],
+        }
+
+        class FakeConn:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                if "FOR UPDATE" in sql:
+                    return Result(receipt)
+                if "UPDATE recommendation_receipts" in sql:
+                    return Result(scored)
+                raise AssertionError(sql)
+
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            row, changed = sandlot_db.score_recommendation_receipt_team_result(
+                receipt_id=receipt["receipt_id"], outcome=outcome
+            )
+        self.assertTrue(changed)
+        self.assertEqual(row["actual_value"], 188.5)
+        update_sql = next(sql for sql, _ in calls if "UPDATE recommendation_receipts" in sql)
+        self.assertIn("actual_baseline = NULL", update_sql)
+        self.assertIn("actual_gain = NULL", update_sql)
+        self.assertIn("WHERE receipt_id = %s AND outcome_state = 'pending'", update_sql)
+
+        class ReplayConn:
+            def execute(self, sql, params=None):
+                self.assert_for_update = sql
+                return Result(scored)
+
+        @contextmanager
+        def replay_connect():
+            yield ReplayConn()
+
+        with patch.object(sandlot_db, "connect", replay_connect):
+            replayed, changed = sandlot_db.score_recommendation_receipt_team_result(
+                receipt_id=receipt["receipt_id"], outcome=outcome
+            )
+        self.assertFalse(changed)
+        self.assertEqual(replayed["outcome_evidence"], outcome["outcome_evidence"])
+
+    def test_team_result_rejects_different_evidence_after_scoring(self):
+        outcome = {
+            "scoring_version": "team_result_v1",
+            "actual_value": 100.0,
+            "actual_baseline": None,
+            "actual_gain": None,
+            "outcome_evidence": {
+                "measurement_scope": "observed_team_total",
+                "adherence_state": "unverified",
+                "counterfactual_state": "unavailable",
+                "counterfactual_reason": "per_player_period_scoring_and_lineup_participation_not_ingested",
+            },
+        }
+        outcome["outcome_evidence"]["evidence_hash"] = sandlot_receipts.team_result_evidence_hash(
+            outcome["outcome_evidence"]
+        )
+        existing = {
+            "outcome_state": "scored",
+            "scoring_version": "team_result_v1",
+            "actual_value": 99.0,
+            "actual_baseline": None,
+            "actual_gain": None,
+            "outcome_evidence": {"evidence_hash": "old"},
+        }
+
+        class Result:
+            def fetchone(self):
+                return existing
+        class FakeConn:
+            def execute(self, sql, params=None):
+                return Result()
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            with self.assertRaisesRegex(ValueError, "different outcome evidence"):
+                sandlot_db.score_recommendation_receipt_team_result(receipt_id="receipt", outcome=outcome)
+
+    def test_team_result_writer_rejects_invalid_hash_labels_and_value(self):
+        base = {
+            "scoring_version": "team_result_v1",
+            "actual_value": 100.0,
+            "actual_baseline": None,
+            "actual_gain": None,
+            "outcome_evidence": {
+                "measurement_scope": "observed_team_total",
+                "adherence_state": "unverified",
+                "counterfactual_state": "unavailable",
+                "counterfactual_reason": "per_player_period_scoring_and_lineup_participation_not_ingested",
+            },
+        }
+        cases = [
+            ({**base, "outcome_evidence": {**base["outcome_evidence"], "evidence_hash": "x"}}, "lowercase SHA-256"),
+            ({**base, "actual_value": float("nan")}, "must be finite"),
+            ({
+                **base,
+                "outcome_evidence": {
+                    **base["outcome_evidence"],
+                    "adherence_state": "verified",
+                },
+            }, "fixed non-counterfactual"),
+        ]
+        for candidate, message in cases:
+            evidence = candidate["outcome_evidence"]
+            if "evidence_hash" not in evidence:
+                evidence["evidence_hash"] = sandlot_receipts.team_result_evidence_hash(evidence)
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                sandlot_db.score_recommendation_receipt_team_result(
+                    receipt_id="receipt", outcome=candidate
+                )
+
+    def test_team_result_writer_rejects_valid_outcome_for_different_receipt(self):
+        receipt_a = {**receipt_fixture(), "outcome_state": "pending"}
+        outcome = sandlot_receipts.build_team_result_outcome(
+            receipt=receipt_a,
+            snapshot={
+                "league_id": "league",
+                "team_id": "team",
+                "matchup": {
+                    "source": "fantrax_schedule",
+                    "complete": True,
+                    "start": "2026-07-13",
+                    "end": "2026-07-19",
+                    "period_number": 17,
+                    "matchup_key": "week-17",
+                    "my_team_id": "team",
+                    "my_score": 188.5,
+                    "score_state": "live_or_final",
+                },
+            },
+            snapshot_id=300,
+            snapshot_taken_at="2026-07-20T12:00:00Z",
+        )
+        receipt_b = {**receipt_a, "receipt_id": "monday-lineup:" + "b" * 64}
+
+        class Result:
+            def fetchone(self):
+                return receipt_b
+        class FakeConn:
+            def execute(self, sql, params=None):
+                return Result()
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            with self.assertRaisesRegex(ValueError, "does not match the target receipt"):
+                sandlot_db.score_recommendation_receipt_team_result(
+                    receipt_id=receipt_b["receipt_id"], outcome=outcome
+                )
 
     def test_new_receipt_supersedes_changed_pending_scope(self):
         receipt = receipt_fixture()
@@ -489,6 +816,43 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         self.assertEqual(response.content, b"")
         self.assertEqual(response.headers["cache-control"], "no-store")
 
+    def test_recent_outcomes_are_honestly_labeled_and_hide_counterfactual_gain(self):
+        scored = {
+            **self.receipt,
+            "outcome_state": "scored",
+            "scoring_version": "team_result_v1",
+            "actual_value": 188.5,
+            "actual_baseline": None,
+            "actual_gain": None,
+            "evaluated_at": "2026-07-20T12:00:00Z",
+            "outcome_evidence": {
+                "measurement_scope": "observed_team_total",
+                "team_total_residual": -12.7,
+                "absolute_error": 12.7,
+                "adherence_state": "unverified",
+                "counterfactual_state": "unavailable",
+                "counterfactual_reason": "per_player_period_scoring_and_lineup_participation_not_ingested",
+                "counterfactual_reason": "per_player_period_scoring_and_lineup_participation_not_ingested",
+            },
+        }
+        with patch(
+            "sandlot_api.sandlot_db.recent_scored_recommendation_receipts",
+            return_value=[scored],
+        ) as recent:
+            response = self.client.get("/api/recommendation-outcomes/recent?limit=5")
+
+        self.assertEqual(response.status_code, 200)
+        recent.assert_called_once_with(source="monday_lineup", limit=5)
+        payload = response.json()
+        self.assertFalse(payload["counterfactual_gain_available"])
+        self.assertFalse(payload["autopilot_eligible"])
+        outcome = payload["items"][0]["outcome"]
+        self.assertEqual(outcome["actual_team_total"], 188.5)
+        self.assertIsNone(outcome["actual_baseline"])
+        self.assertIsNone(outcome["actual_gain"])
+        self.assertEqual(outcome["adherence_state"], "unverified")
+        self.assertFalse(outcome["autopilot_eligible"])
+
     def test_decision_requires_owner_auth_and_records_intent_only(self):
         body = {
             "decision": "accepted",
@@ -543,6 +907,80 @@ class RecommendationReceiptApiTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("SANDLOT_TEST_DATABASE_URL"), "requires disposable Postgres")
 class RecommendationReceiptPostgresConcurrencyTests(unittest.TestCase):
+    def test_two_outcome_workers_commit_one_identical_result(self):
+        database_url = os.environ["SANDLOT_TEST_DATABASE_URL"]
+        receipt = receipt_fixture(week_start=date(2099, 1, 5))
+        results = []
+        errors = []
+        start = threading.Barrier(2)
+        snapshot_id = None
+        outcome = {
+            "scoring_version": "team_result_v1",
+            "actual_value": 188.5,
+            "actual_baseline": None,
+            "actual_gain": None,
+            "outcome_evidence": {
+                "receipt_id": receipt["receipt_id"],
+                "input_hash": receipt["input_hash"],
+                "league_id": receipt["league_id"],
+                "team_id": receipt["team_id"],
+                "measurement_scope": "observed_team_total",
+                "adherence_state": "unverified",
+                "counterfactual_state": "unavailable",
+                "counterfactual_reason": "per_player_period_scoring_and_lineup_participation_not_ingested",
+                "period": {
+                    "start": str(receipt["period_start"]),
+                    "end": str(receipt["period_end"]),
+                },
+                "projected_team_total": receipt["projected_value"],
+            },
+        }
+        outcome["outcome_evidence"]["evidence_hash"] = sandlot_receipts.team_result_evidence_hash(
+            outcome["outcome_evidence"]
+        )
+
+        with patch.dict(os.environ, {"DATABASE_URL": database_url}):
+            sandlot_db.init_schema()
+            with sandlot_db.connect() as setup:
+                row = setup.execute(
+                    """
+                    INSERT INTO snapshots (taken_at, source, status, league_id, team_id, errors, data)
+                    VALUES (clock_timestamp(), 'outcome_test', 'success', 'league', 'team', '[]'::jsonb, '{}'::jsonb)
+                    RETURNING id
+                    """
+                ).fetchone()
+                snapshot_id = int(row["id"])
+            receipt["snapshot_id"] = snapshot_id
+            sandlot_db.record_recommendation_receipt(receipt)
+
+            def score():
+                try:
+                    start.wait(timeout=2)
+                    _row, changed = sandlot_db.score_recommendation_receipt_team_result(
+                        receipt_id=receipt["receipt_id"], outcome=outcome
+                    )
+                    results.append(changed)
+                except Exception as exc:
+                    errors.append(exc)
+
+            workers = [threading.Thread(target=score) for _ in range(2)]
+            try:
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join(timeout=4)
+                self.assertFalse(any(worker.is_alive() for worker in workers))
+                self.assertEqual(errors, [])
+                self.assertEqual(sorted(results), [False, True])
+            finally:
+                with sandlot_db.connect() as cleanup:
+                    cleanup.execute(
+                        "DELETE FROM recommendation_receipts WHERE receipt_id = %s",
+                        (receipt["receipt_id"],),
+                    )
+                    if snapshot_id is not None:
+                        cleanup.execute("DELETE FROM snapshots WHERE id = %s", (snapshot_id,))
+
     def test_waiting_decision_rechecks_wall_clock_expiry_after_row_lock(self):
         database_url = os.environ["SANDLOT_TEST_DATABASE_URL"]
         receipt = receipt_fixture(week_start=date(2099, 1, 5))
