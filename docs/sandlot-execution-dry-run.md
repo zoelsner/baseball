@@ -96,6 +96,12 @@ its server-to-server request to Sandlot and proxies sanitized status back to
 the review sheet. The token never enters page state, browser storage, request
 JSON, logs, or the committed bundle.
 
+Chromium treats public HTTPS → loopback as Local Network Access. Sandlot marks
+each bridge fetch with `targetAddressSpace: "local"` so Chromium can show its
+one-time local-network permission prompt instead of silently blocking the
+health check. Denying that permission leaves the bridge offline and the
+confirmation button disabled.
+
 The bridge binds only to loopback, requires the exact configured production
 origin, validates the loopback Host header, requires a per-process nonce on
 state-changing/status requests, answers Private Network Access preflight, caps
