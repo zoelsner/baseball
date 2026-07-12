@@ -3527,6 +3527,95 @@ function V2TradeAnalysisSummary({ result, onAskSkipper }) {
   );
 }
 
+function V2TradeDecisionReceipt({ initialReceipt, expectedGive, expectedGet }) {
+  const [receipt, setReceipt] = React.useState(initialReceipt || null);
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  React.useEffect(() => { setReceipt(initialReceipt || null); setError(null); }, [initialReceipt?.receipt_id]);
+  const bridge = useV2OwnerBridge(
+    receipt ? `${receipt.receipt_id}:${receipt.input_hash}` : 'trade-receipt-none',
+    { enabled:Boolean(receipt) },
+  );
+  if (!receipt) return null;
+  const pending = receipt.decision_state === 'pending';
+  const boundGive = Array.isArray(receipt?.trade?.give) ? receipt.trade.give : [];
+  const boundGet = Array.isArray(receipt?.trade?.get) ? receipt.trade.get : [];
+  const ids = rows => (rows || []).map(item => String(item?.player_id || item?.id || '')).filter(Boolean).sort();
+  const sameIds = (left, right) => left.length === right.length && left.every((value, index) => value === right[index]);
+  const identityMatches = sameIds(ids(boundGive), ids(expectedGive)) && sameIds(ids(boundGet), ids(expectedGet));
+  const expiresAt = Date.parse(String(receipt.expires_at || ''));
+  const expired = !Number.isFinite(expiresAt) || expiresAt <= Date.now();
+  const canDecide = pending && identityMatches && !expired && bridge.state === 'ready' && bridge.decisionsEnabled && bridge.nonce;
+  const decide = async decision => {
+    if (!canDecide || saving) return;
+    const deadline = Date.parse(String(receipt.expires_at || ''));
+    if (!Number.isFinite(deadline) || deadline <= Date.now()) {
+      setError('This assessment expired. Refresh Fantrax data and re-grade before deciding.');
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        `${V2_OWNER_BRIDGE_URL}/recommendation-receipts/${encodeURIComponent(receipt.receipt_id)}/decision`,
+        {
+          method:'POST', targetAddressSpace:'local',
+          headers:{ 'content-type':'application/json', 'X-Sandlot-Bridge-Nonce':bridge.nonce },
+          body:JSON.stringify({ decision, input_hash:receipt.input_hash }),
+        },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.detail || 'Could not record this trade decision.');
+      if (
+        body?.receipt_id !== receipt.receipt_id
+        || String(body?.input_hash || '').toLowerCase() !== String(receipt.input_hash || '').toLowerCase()
+        || body?.decision_state !== decision
+        || body?.action_type !== 'trade_assessment'
+        || body?.fantrax_changed !== false
+        || body?.writes_enabled !== false
+      ) throw new Error('Decision response did not preserve the exact manual-trade boundary.');
+      setReceipt(body);
+    } catch (reason) {
+      setError(reason?.message || 'Could not record this trade decision.');
+    } finally {
+      setSaving(false);
+    }
+  };
+  const recorded = receipt.decision_state === 'accepted' ? 'Intent to accept recorded' : receipt.decision_state === 'rejected' ? 'Pass recorded' : null;
+  const names = rows => rows.map(item => item.player_name).filter(Boolean).join(', ') || 'Unavailable';
+  return (
+    <section aria-label="Exact trade decision" style={{ background:V2.surface2, border:`1px solid ${V2.hairline2}`, borderRadius:15, padding:'12px 13px' }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:10 }}>
+        <V2Eyebrow color={recorded ? (receipt.decision_state === 'accepted' ? V2.ok : V2.muted) : V2.accent}>Exact offer receipt</V2Eyebrow>
+        <span style={{ color:V2.muted, fontFamily:V2.fontMono, fontSize:9.5, fontWeight:800 }}>#{String(receipt.receipt_id || '').slice(-8)}</span>
+      </div>
+      <div style={{ marginTop:7, color:V2.body, fontSize:11.5, lineHeight:1.45, fontWeight:700, textWrap:'pretty' }}>
+        {recorded || 'Record your current intent against this exact snapshot.'} This never accepts, rejects, or counters in Fantrax.
+      </div>
+      <div style={{ marginTop:8, paddingTop:8, borderTop:`1px solid ${V2.hairline2}`, color:V2.muted, fontSize:10.5, lineHeight:1.45 }}>
+        <strong style={{ color:V2.body }}>Give:</strong> {names(boundGive)}<br/>
+        <strong style={{ color:V2.body }}>Get:</strong> {names(boundGet)}
+      </div>
+      {pending && !identityMatches ? (
+        <div role="alert" style={{ marginTop:8, color:V2.bad, fontSize:10.5, lineHeight:1.4, fontWeight:750 }}>Receipt does not match the displayed offer. Edit and re-grade before deciding.</div>
+      ) : pending && expired ? (
+        <div role="status" style={{ marginTop:8, color:V2.warn, fontSize:10.5, lineHeight:1.4, fontWeight:750 }}>This assessment expired. Refresh Fantrax data and re-grade before deciding.</div>
+      ) : pending && !canDecide ? (
+        <div style={{ marginTop:8, color:V2.muted, fontSize:10.5, lineHeight:1.4 }}>
+          {bridge.state === 'connecting' ? 'Checking owner controls on this Mac…' : 'Start the local owner bridge to record your intent.'}
+        </div>
+      ) : null}
+      {error ? <div role="alert" style={{ marginTop:8, color:V2.bad, fontSize:11, fontWeight:750 }}>{error}</div> : null}
+      {canDecide ? (
+        <div style={{ marginTop:10, display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
+          <button onClick={()=>decide('accepted')} disabled={saving} style={{ minHeight:44, border:'none', borderRadius:999, background:V2.ink, color:'#fff', fontFamily:'inherit', fontSize:11.5, fontWeight:850, cursor:saving ? 'wait' : 'pointer', opacity:saving ? 0.65 : 1 }}>Record intent to accept</button>
+          <button onClick={()=>decide('rejected')} disabled={saving} style={{ minHeight:44, border:`1px solid ${V2.hairline}`, borderRadius:999, background:V2.surface, color:V2.body, fontFamily:'inherit', fontSize:11.5, fontWeight:850, cursor:saving ? 'wait' : 'pointer', opacity:saving ? 0.65 : 1 }}>Pass</button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function V2TradeGradeCard({ result, onAskSkipper }) {
   const fairness = Math.max(0, Math.min(1, Number(result.fairness) || 0));
   const fairnessPct = (fairness * 100).toFixed(0);
@@ -3540,6 +3629,7 @@ function V2TradeGradeCard({ result, onAskSkipper }) {
   return (
     <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
       <V2TradeAnalysisSummary result={result} onAskSkipper={onAskSkipper}/>
+      <div style={{ marginTop:12 }}><V2TradeDecisionReceipt initialReceipt={result.receipt} expectedGive={result.my_give} expectedGet={result.my_get}/></div>
       <div style={{ margin:'16px 0', borderTop:`1px solid ${V2.hairline2}` }}/>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:14 }}>
         <div style={{ flex:1, minWidth:0 }}>

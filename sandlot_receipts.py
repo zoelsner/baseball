@@ -17,6 +17,7 @@ from sandlot_lineup import FULL_ACTIVE_TEMPLATE
 
 
 MONDAY_LINEUP_BUILDER_VERSION = "monday_lineup_v1"
+TRADE_ASSESSMENT_BUILDER_VERSION = "trade_assessment_v1"
 TEAM_RESULT_SCORING_VERSION = "team_result_v1"
 COUNTERFACTUAL_LINEUP_SCORING_VERSION = "counterfactual_lineup_v1"
 COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION = "fantrax_period_lineup_v2"
@@ -35,6 +36,152 @@ SLOT_POSITION_IDS = {
     "RP": {"016"},
     "P": {"015", "016"},
 }
+
+
+def build_trade_assessment_receipt(
+    *,
+    snapshot: dict[str, Any],
+    result: dict[str, Any],
+    generated_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Build immutable, snapshot-scoped evidence for one manual-only trade assessment."""
+    snapshot = copy.deepcopy(snapshot)
+    result = copy.deepcopy(result)
+    generated_at = _utc_datetime(generated_at or datetime.now(timezone.utc))
+    snapshot_id = _required_int(snapshot.get("id"), "snapshot.id")
+    result_snapshot_id = _required_int(result.get("snapshot_id"), "trade result snapshot_id")
+    if result_snapshot_id != snapshot_id:
+        raise ValueError("trade result snapshot does not match receipt snapshot")
+    league_id = _required_text(snapshot.get("league_id"), "snapshot.league_id")
+    team_id = _required_text(snapshot.get("team_id"), "snapshot.team_id")
+    snapshot_taken_at = _utc_datetime(snapshot.get("taken_at"))
+
+    def side(key: str) -> list[dict[str, Any]]:
+        rows = result.get(key)
+        if not isinstance(rows, list) or not rows:
+            raise ValueError(f"trade result {key} is missing")
+        normalized = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError(f"trade result {key} contains an invalid player")
+            normalized.append({
+                "player_id": _required_text(row.get("id"), f"{key} player id"),
+                "player_name": _required_text(row.get("name"), f"{key} player name"),
+                "mlb_team": str(row.get("team") or "").strip() or None,
+                "positions": str(row.get("positions") or "").strip() or None,
+                "fppg": _finite_number(row.get("fppg"), f"{key} player FP/G"),
+                "age": _finite_number(row.get("age"), f"{key} player age"),
+            })
+        return sorted(normalized, key=lambda item: item["player_id"])
+
+    give = side("my_give")
+    get = side("my_get")
+    give_ids = [item["player_id"] for item in give]
+    get_ids = [item["player_id"] for item in get]
+    if len(give_ids) != len(set(give_ids)) or len(get_ids) != len(set(get_ids)):
+        raise ValueError("trade receipt sides must contain unique player ids")
+    if set(give_ids) & set(get_ids):
+        raise ValueError("trade receipt give and get sides must be disjoint")
+    analysis = result.get("analysis") if isinstance(result.get("analysis"), dict) else {}
+    horizons = analysis.get("horizons") if isinstance(analysis.get("horizons"), list) else []
+    normalized_horizons = []
+    for item in horizons:
+        if not isinstance(item, dict):
+            continue
+        value = item.get("value")
+        normalized_horizons.append({
+            "key": _required_text(item.get("key"), "trade horizon key"),
+            "label": str(item.get("label") or "").strip() or None,
+            "status": _required_text(item.get("status"), "trade horizon status"),
+            "value": None if value is None else _finite_number(value, "trade horizon value"),
+            "unit": str(item.get("unit") or "").strip() or None,
+            "detail": str(item.get("detail") or "").strip() or None,
+        })
+
+    eligibility = result.get("eligibility_evidence")
+    if not isinstance(eligibility, dict) or eligibility.get("all_checks_passed") is not True:
+        raise ValueError("trade result eligibility evidence is missing or failed")
+    policy_version = _required_text(eligibility.get("policy_version"), "trade eligibility policy version")
+    safety_rows = eligibility.get("participants")
+    if not isinstance(safety_rows, list) or len(safety_rows) != len(give_ids) + len(get_ids):
+        raise ValueError("trade eligibility participant evidence is incomplete")
+    normalized_safety = []
+    for item in safety_rows:
+        if not isinstance(item, dict):
+            raise ValueError("trade eligibility participant evidence is invalid")
+        participant = {
+            "side": _required_text(item.get("side"), "trade eligibility side"),
+            "player_id": _required_text(item.get("player_id"), "trade eligibility player id"),
+            "slot": str(item.get("slot") or "").strip() or None,
+            "age": _finite_number(item.get("age"), "trade eligibility age"),
+            "age_source": str(item.get("age_source") or "").strip() or None,
+            "protected_trade_player": item.get("protected_trade_player") is True,
+            "requires_manual_dynasty_review": item.get("requires_manual_dynasty_review") is True,
+            "fppg_valid": item.get("fppg_valid") is True,
+        }
+        expected_ids = give_ids if participant["side"] == "give" else get_ids if participant["side"] == "get" else []
+        if participant["player_id"] not in expected_ids:
+            raise ValueError("trade eligibility participant does not match the exact offer")
+        if participant["protected_trade_player"] or participant["requires_manual_dynasty_review"] or not participant["fppg_valid"]:
+            raise ValueError("trade eligibility evidence did not pass all participant gates")
+        normalized_safety.append(participant)
+    if len({(item["side"], item["player_id"]) for item in normalized_safety}) != len(normalized_safety):
+        raise ValueError("trade eligibility participant evidence contains duplicates")
+    evidence = {
+        "builder_version": TRADE_ASSESSMENT_BUILDER_VERSION,
+        "snapshot": {"id": snapshot_id, "taken_at": snapshot_taken_at.isoformat()},
+        "league_id": league_id,
+        "team_id": team_id,
+        "offer": {"give": give, "get": get},
+        "grade": {
+            "letter": _required_text(result.get("letter_grade"), "trade letter grade"),
+            "fairness": _finite_number(result.get("fairness"), "trade fairness"),
+            "my_delta": _finite_number(result.get("my_delta"), "trade owner delta"),
+            "their_delta": _finite_number(result.get("their_delta"), "trade partner delta"),
+            "age_delta": None if result.get("age_delta") is None else _finite_number(result.get("age_delta"), "trade age delta"),
+            "value_basis": _required_text(result.get("value_basis"), "trade value basis"),
+            "scope": _required_text(result.get("grade_scope"), "trade grade scope"),
+            "give_fppg": _finite_number(result.get("my_give_fppg"), "trade give FP/G"),
+            "get_fppg": _finite_number(result.get("my_get_fppg"), "trade get FP/G"),
+        },
+        "horizons": normalized_horizons,
+        "guardrails": {
+            "manual_execution_only": True,
+            "fantrax_write_authorized": False,
+            "dynasty_complete": result.get("dynasty_complete") is True,
+            "eligibility_policy_version": policy_version,
+            "eligibility": sorted(normalized_safety, key=lambda item: (item["side"], item["player_id"])),
+        },
+    }
+    input_hash = _sha256(evidence)
+    day = snapshot_taken_at.astimezone(ET).date()
+    scope_key = f"{league_id}:{team_id}:trade_assessment:{snapshot_id}:{','.join(give_ids)}:{','.join(get_ids)}"
+    proposal_id = f"trade:{input_hash[:24]}"
+    projected_gain = evidence["grade"]["my_delta"]
+    return {
+        "receipt_id": f"trade-assessment:{input_hash}",
+        "builder_version": TRADE_ASSESSMENT_BUILDER_VERSION,
+        "scope_key": scope_key,
+        "source": "trade_cockpit",
+        "action_type": "trade_assessment",
+        "league_id": league_id,
+        "team_id": team_id,
+        "season": day.year,
+        "period_start": day,
+        "period_end": day,
+        "proposal_id": proposal_id,
+        "input_hash": input_hash,
+        "snapshot_id": snapshot_id,
+        "recommendation": evidence,
+        "evaluation_horizon": "current_rate_only",
+        "metric_name": "roster_fppg",
+        "metric_unit": "fppg",
+        "baseline_value": evidence["grade"]["give_fppg"],
+        "projected_value": evidence["grade"]["get_fppg"],
+        "projected_gain": projected_gain,
+        "generated_at": generated_at,
+        "expires_at": generated_at + timedelta(hours=24),
+    }
 
 
 def build_monday_lineup_receipt(

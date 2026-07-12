@@ -539,11 +539,15 @@ def grade_trade(payload: TradeGradeIn) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="No Fantrax snapshot yet — run a refresh first")
     try:
         result = sandlot_trades.grade_offer(snapshot_row, payload.give, payload.get)
+        receipt, _created = sandlot_db.record_recommendation_receipt(
+            sandlot_receipts.build_trade_assessment_receipt(snapshot=snapshot_row, result=result)
+        )
+        result["receipt"] = _public_recommendation_receipt(receipt)
     except sandlot_trades.TradeGradeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         log.exception("Trade grade failed")
-        raise HTTPException(status_code=500, detail=f"Trade grade failed: {exc}") from exc
+        raise HTTPException(status_code=503, detail="Trade analysis is temporarily unavailable") from exc
     return jsonable_encoder(result)
 
 
@@ -1136,6 +1140,7 @@ def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
     evaluation = recommendation.get("evaluation") if isinstance(recommendation.get("evaluation"), dict) else {}
     snapshot = recommendation.get("snapshot") if isinstance(recommendation.get("snapshot"), dict) else {}
     period = recommendation.get("period") if isinstance(recommendation.get("period"), dict) else {}
+    trade = recommendation.get("offer") if isinstance(recommendation.get("offer"), dict) else None
     return {
         "receipt_id": row.get("receipt_id"),
         "builder_version": row.get("builder_version"),
@@ -1159,6 +1164,13 @@ def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
         "baseline_assignment": recommendation.get("baseline_assignment") or [],
         "proposed_assignment": recommendation.get("proposed_assignment") or [],
         "unfilled_slots": recommendation.get("unfilled_slots") or [],
+        "trade": ({
+            "give": trade.get("give") or [],
+            "get": trade.get("get") or [],
+            "grade": recommendation.get("grade") or {},
+            "horizons": recommendation.get("horizons") or [],
+            "guardrails": recommendation.get("guardrails") or {},
+        } if trade is not None else None),
         "evidence": {
             "snapshot_id": snapshot.get("id"),
             "snapshot_taken_at": snapshot.get("taken_at"),

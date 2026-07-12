@@ -2,6 +2,9 @@ import { test, expect } from '@playwright/test';
 import { waitForAppMount, gotoTab } from '../fixtures/sandlot';
 
 async function mockTradeAdvisor(page: import('@playwright/test').Page) {
+  await page.route('http://127.0.0.1:8765/health', route => route.fulfill({
+    status:200, contentType:'application/json', body:JSON.stringify({ ok:false }),
+  }));
   await page.route('**/api/recommendation-receipts/latest', route => route.fulfill({ status:204 }));
   await page.route('**/api/recommendation-learning', route => route.fulfill({
     status:200,
@@ -41,7 +44,21 @@ async function mockTradeAdvisor(page: import('@playwright/test').Page) {
         my_delta: -0.5,
         their_delta: 0.5,
         age_delta: 1,
+        my_give: [{ id:'m1', name:'My Second Baseman' }],
+        my_get: [{ id:'o1', name:'Their Outfielder' }],
         my_weakest_position: '2B',
+        receipt: {
+          receipt_id: `trade-assessment:${'b'.repeat(64)}`,
+          input_hash: 'b'.repeat(64), source: 'trade_cockpit', action_type: 'trade_assessment',
+          lifecycle_state: 'active', decision_state: 'pending', read_only: true,
+          expires_at: '2099-07-13T00:00:00Z',
+          trade: {
+            give:[{ player_id:'m1', player_name:'My Second Baseman' }],
+            get:[{ player_id:'o1', player_name:'Their Outfielder' }],
+            guardrails:{ manual_execution_only:true, fantrax_write_authorized:false },
+          },
+          fantrax_changed: false, writes_enabled: false,
+        },
         rationale: 'The current snapshot rate favors the other roster.',
         counters: [{
           tier: 'balanced', acceptance_band: 'balanced', my_delta: 0.5,
@@ -145,5 +162,93 @@ test.describe('Trade page', () => {
     await page.getByRole('button', { name: 'Edit offer', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Counter before accepting' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Grade', exact: true })).toBeVisible();
+  });
+
+  test('records exact trade intent through the owner bridge without a Fantrax write', async ({ page }) => {
+    await mockTradeAdvisor(page);
+    await page.route('http://127.0.0.1:8765/health', route => route.fulfill({
+      status:200, contentType:'application/json',
+      body:JSON.stringify({ ok:true, mode:'dry_run', writes_enabled:false, recommendation_decisions_enabled:true, nonce:'trade-nonce' }),
+    }));
+    let submitted: any = null;
+    await page.route('http://127.0.0.1:8765/recommendation-receipts/**/decision', async route => {
+      submitted = route.request().postDataJSON();
+      await route.fulfill({
+        status:200, contentType:'application/json',
+        body:JSON.stringify({
+          receipt_id:`trade-assessment:${'b'.repeat(64)}`, input_hash:'b'.repeat(64),
+          source:'trade_cockpit', action_type:'trade_assessment', lifecycle_state:'active',
+          decision_state:'accepted', fantrax_changed:false, writes_enabled:false, changed:true,
+        }),
+      });
+    });
+    await page.goto('/');
+    await waitForAppMount(page);
+    await gradeMockOffer(page);
+
+    const receipt = page.getByRole('region', { name:'Exact trade decision' });
+    await expect(receipt.getByText(/never accepts, rejects, or counters in Fantrax/i)).toBeVisible();
+    await receipt.getByRole('button', { name:'Record intent to accept' }).click();
+    await expect(receipt.getByText(/Intent to accept recorded.*never accepts/i)).toBeVisible();
+    expect(submitted).toEqual({ decision:'accepted', input_hash:'b'.repeat(64) });
+  });
+
+  test('blocks an expired or mismatched exact trade receipt before owner intent', async ({ page }) => {
+    await mockTradeAdvisor(page);
+    await page.route('**/api/trades/grade', route => route.fulfill({
+      status:200, contentType:'application/json', body:JSON.stringify({
+        snapshot_id:321, letter_grade:'C', fairness:0.9, my_delta:-0.5, their_delta:0.5,
+        my_give:[{ id:'m1', name:'My Second Baseman' }], my_get:[{ id:'o1', name:'Their Outfielder' }],
+        analysis:{ recommendation:{ title:'Review this offer' }, horizons:[] },
+        receipt:{
+          receipt_id:`trade-assessment:${'c'.repeat(64)}`, input_hash:'c'.repeat(64),
+          action_type:'trade_assessment', decision_state:'pending', expires_at:'2020-01-01T00:00:00Z',
+          trade:{ give:[{ player_id:'wrong', player_name:'Wrong Player' }], get:[{ player_id:'o1', player_name:'Their Outfielder' }], guardrails:{ manual_execution_only:true, fantrax_write_authorized:false } },
+        },
+      }),
+    }));
+    await page.goto('/');
+    await waitForAppMount(page);
+    await gradeMockOffer(page);
+
+    const receipt = page.getByRole('region', { name:'Exact trade decision' });
+    await expect(receipt.getByText(/does not match the displayed offer/i)).toBeVisible();
+    await expect(receipt.getByRole('button', { name:'Record intent to accept' })).toHaveCount(0);
+  });
+
+  test('blocks a matching trade receipt after its deadline', async ({ page }) => {
+    await mockTradeAdvisor(page);
+    await page.route('http://127.0.0.1:8765/health', route => route.fulfill({
+      status:200, contentType:'application/json', body:JSON.stringify({ ok:true, mode:'dry_run', writes_enabled:false, recommendation_decisions_enabled:true, nonce:'expiry-nonce' }),
+    }));
+    let submissions = 0;
+    await page.route('http://127.0.0.1:8765/recommendation-receipts/**/decision', route => {
+      submissions += 1;
+      return route.fulfill({ status:500, contentType:'application/json', body:'{}' });
+    });
+    const expiresAt = new Date(Date.now() + 1_500).toISOString();
+    await page.route('**/api/trades/grade', route => route.fulfill({
+      status:200, contentType:'application/json', body:JSON.stringify({
+        snapshot_id:321, letter_grade:'C', fairness:0.9, my_delta:-0.5, their_delta:0.5,
+        my_give:[{ id:'m1', name:'My Second Baseman' }], my_get:[{ id:'o1', name:'Their Outfielder' }],
+        analysis:{ recommendation:{ title:'Review this offer' }, horizons:[] },
+        receipt:{
+          receipt_id:`trade-assessment:${'d'.repeat(64)}`, input_hash:'d'.repeat(64),
+          action_type:'trade_assessment', decision_state:'pending', expires_at:expiresAt,
+          trade:{ give:[{ player_id:'m1', player_name:'My Second Baseman' }], get:[{ player_id:'o1', player_name:'Their Outfielder' }], guardrails:{ manual_execution_only:true, fantrax_write_authorized:false } },
+        },
+      }),
+    }));
+    await page.goto('/');
+    await waitForAppMount(page);
+    await gradeMockOffer(page);
+
+    const receipt = page.getByRole('region', { name:'Exact trade decision' });
+    const accept = receipt.getByRole('button', { name:'Record intent to accept' });
+    await expect(accept).toBeVisible();
+    await page.waitForTimeout(1_600);
+    await accept.click();
+    await expect(receipt.getByRole('alert')).toContainText(/assessment expired/i);
+    expect(submissions).toBe(0);
   });
 });

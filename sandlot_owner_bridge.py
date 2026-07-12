@@ -26,7 +26,7 @@ DEFAULT_PORT = 8765
 DEFAULT_ORIGIN = "https://web-production-90664.up.railway.app"
 MAX_BODY_BYTES = 64 * 1024
 REQUEST_ID_RE = re.compile(r"xreq_[A-Za-z0-9_-]{20,80}\Z")
-RECEIPT_ID_RE = re.compile(r"monday-lineup:[a-f0-9]{64}\Z")
+RECEIPT_ID_RE = re.compile(r"(?:monday-lineup|trade-assessment):[a-f0-9]{64}\Z")
 PUBLIC_REQUEST_FIELDS = {
     "request_id", "mode", "snapshot_id", "proposal_id", "input_hash", "state",
     "created_at", "expires_at", "claimed_at", "completed_at", "failure_reason",
@@ -35,6 +35,7 @@ PUBLIC_REQUEST_FIELDS = {
 PUBLIC_DECISION_FIELDS = {
     "receipt_id", "input_hash", "source", "action_type", "period", "evaluation",
     "baseline_assignment", "proposed_assignment", "unfilled_slots", "evidence",
+    "trade",
     "lifecycle_state", "decision_state", "decision_reason", "decided_at",
     "outcome_state", "generated_at", "expires_at", "read_only",
     "fantrax_changed", "writes_enabled", "changed",
@@ -336,6 +337,13 @@ def _validate_public_decision(
         return "Sandlot response returned a non-active recommendation receipt"
     if body.get("decision_state") != payload["decision"]:
         return "Sandlot response did not record the exact recommendation decision"
+    if receipt_id.startswith("trade-assessment:"):
+        trade = body.get("trade") if isinstance(body.get("trade"), dict) else {}
+        guardrails = trade.get("guardrails") if isinstance(trade.get("guardrails"), dict) else {}
+        if body.get("source") != "trade_cockpit" or body.get("action_type") != "trade_assessment":
+            return "Sandlot response returned contradictory trade receipt identity"
+        if guardrails.get("manual_execution_only") is not True or guardrails.get("fantrax_write_authorized") is not False:
+            return "Sandlot response did not preserve manual-only trade guardrails"
     return None
 
 

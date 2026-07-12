@@ -156,6 +156,56 @@ def period_evidence_fixture(receipt, *, actual="proposed", capability=True):
 
 
 class RecommendationReceiptBuilderTests(unittest.TestCase):
+    def test_trade_receipt_is_exact_snapshot_scoped_and_manual_only(self):
+        result = {
+            "snapshot_id": 281,
+            "letter_grade": "B+", "fairness": 0.82, "my_delta": 1.5,
+            "their_delta": -1.5, "age_delta": -2.0,
+            "my_give_fppg": 4.0, "my_get_fppg": 5.5,
+            "value_basis": "current_snapshot_fppg", "grade_scope": "current_rate_only",
+            "dynasty_complete": False,
+            "my_give": [{"id": "mine", "name": "Mine", "team": "NYY", "positions": "OF", "fppg": 4.0, "age": 30}],
+            "my_get": [{"id": "theirs", "name": "Theirs", "team": "SEA", "positions": "2B", "fppg": 5.5, "age": 28}],
+            "analysis": {"horizons": [
+                {"key": "current_rate", "label": "Current rate", "status": "modeled", "value": 1.5, "unit": "FP/G", "detail": "Current snapshot."},
+                {"key": "rest_of_season", "label": "Rest of season", "status": "unavailable", "value": None, "detail": "Not modeled."},
+            ]},
+            "eligibility_evidence": {
+                "policy_version": "trade_eligibility_v1", "all_checks_passed": True,
+                "participants": [
+                    {"side": "give", "player_id": "mine", "slot": "OF", "age": 30, "age_source": "fantrax", "protected_trade_player": False, "requires_manual_dynasty_review": False, "fppg_valid": True},
+                    {"side": "get", "player_id": "theirs", "slot": "2B", "age": 28, "age_source": "fantrax", "protected_trade_player": False, "requires_manual_dynasty_review": False, "fppg_valid": True},
+                ],
+            },
+        }
+        snapshot = {"id": 281, "taken_at": "2026-07-12T14:00:00Z", "league_id": "league", "team_id": "team"}
+        receipt = sandlot_receipts.build_trade_assessment_receipt(snapshot=snapshot, result=result, generated_at=NOW)
+        replay = sandlot_receipts.build_trade_assessment_receipt(snapshot=snapshot, result=result, generated_at=NOW)
+
+        self.assertEqual(receipt["receipt_id"], replay["receipt_id"])
+        self.assertEqual(receipt["source"], "trade_cockpit")
+        self.assertEqual(receipt["action_type"], "trade_assessment")
+        self.assertIn(":281:", receipt["scope_key"])
+        self.assertEqual(receipt["projected_gain"], 1.5)
+        self.assertEqual(receipt["baseline_value"], 4.0)
+        self.assertEqual(receipt["projected_value"], 5.5)
+        self.assertEqual(receipt["expires_at"], NOW + timedelta(hours=24))
+        self.assertTrue(receipt["recommendation"]["guardrails"]["manual_execution_only"])
+        self.assertFalse(receipt["recommendation"]["guardrails"]["fantrax_write_authorized"])
+        self.assertFalse(receipt["recommendation"]["guardrails"]["dynasty_complete"])
+        self.assertEqual(receipt["recommendation"]["guardrails"]["eligibility_policy_version"], "trade_eligibility_v1")
+
+        newer = sandlot_receipts.build_trade_assessment_receipt(snapshot={**snapshot, "id": 282}, result={**result, "snapshot_id": 282}, generated_at=NOW)
+        self.assertNotEqual(newer["scope_key"], receipt["scope_key"])
+        self.assertNotEqual(newer["receipt_id"], receipt["receipt_id"])
+
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            sandlot_receipts.build_trade_assessment_receipt(snapshot={**snapshot, "id": 999}, result=result, generated_at=NOW)
+        overlap = copy.deepcopy(result)
+        overlap["my_get"][0]["id"] = "mine"
+        with self.assertRaisesRegex(ValueError, "disjoint"):
+            sandlot_receipts.build_trade_assessment_receipt(snapshot=snapshot, result=overlap, generated_at=NOW)
+
     def test_hash_is_stable_across_input_and_assignment_order(self):
         baseline = receipt_fixture()
         entries = list(reversed(baseline["recommendation"]["projection_inputs"]))
@@ -1330,6 +1380,60 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         self.assertTrue(payload["read_only"])
         self.assertFalse(payload["fantrax_changed"])
         self.assertFalse(payload["writes_enabled"])
+
+    def test_trade_grade_persists_and_returns_sanitized_exact_receipt(self):
+        snapshot = {"id": 281, "taken_at": "2026-07-12T14:00:00Z", "league_id": "league", "team_id": "team"}
+        result = {
+            "snapshot_id": 281,
+            "letter_grade": "B+", "fairness": 0.82, "my_delta": 1.5,
+            "their_delta": -1.5, "age_delta": -2.0,
+            "my_give_fppg": 4.0, "my_get_fppg": 5.5,
+            "value_basis": "current_snapshot_fppg", "grade_scope": "current_rate_only",
+            "dynasty_complete": False,
+            "my_give": [{"id": "mine", "name": "Mine", "team": "NYY", "positions": "OF", "fppg": 4.0, "age": 30}],
+            "my_get": [{"id": "theirs", "name": "Theirs", "team": "SEA", "positions": "2B", "fppg": 5.5, "age": 28}],
+            "analysis": {"horizons": [{"key": "current_rate", "label": "Current rate", "status": "modeled", "value": 1.5, "unit": "FP/G", "detail": "Current snapshot."}]},
+            "eligibility_evidence": {
+                "policy_version": "trade_eligibility_v1", "all_checks_passed": True,
+                "participants": [
+                    {"side": "give", "player_id": "mine", "slot": "OF", "age": 30, "age_source": "fantrax", "protected_trade_player": False, "requires_manual_dynasty_review": False, "fppg_valid": True},
+                    {"side": "get", "player_id": "theirs", "slot": "2B", "age": 28, "age_source": "fantrax", "protected_trade_player": False, "requires_manual_dynasty_review": False, "fppg_valid": True},
+                ],
+            },
+        }
+        with (
+            patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot),
+            patch("sandlot_api.sandlot_trades.grade_offer", return_value=copy.deepcopy(result)),
+            patch("sandlot_api.sandlot_db.record_recommendation_receipt") as record,
+        ):
+            built = sandlot_receipts.build_trade_assessment_receipt(snapshot=snapshot, result=result, generated_at=NOW)
+            record.return_value = ({**built, "lifecycle_state": "active", "decision_state": "pending", "outcome_state": "pending"}, True)
+            response = self.client.post("/api/trades/grade", json={"give": ["mine"], "get": ["theirs"]})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["receipt"]["action_type"], "trade_assessment")
+        self.assertEqual(payload["receipt"]["trade"]["give"][0]["player_id"], "mine")
+        self.assertTrue(payload["receipt"]["trade"]["guardrails"]["manual_execution_only"])
+        self.assertFalse(payload["receipt"]["fantrax_changed"])
+        self.assertFalse(payload["receipt"]["writes_enabled"])
+        self.assertNotIn("recommendation", payload["receipt"])
+        persisted = record.call_args.args[0]
+        self.assertEqual(persisted["receipt_id"], built["receipt_id"])
+        self.assertEqual(persisted["input_hash"], built["input_hash"])
+
+    def test_trade_receipt_failure_does_not_expose_database_details(self):
+        snapshot = {"id": 281, "taken_at": "2026-07-12T14:00:00Z", "league_id": "league", "team_id": "team"}
+        with (
+            patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot),
+            patch("sandlot_api.sandlot_trades.grade_offer", return_value={"snapshot_id": 281}),
+            patch("sandlot_api.sandlot_receipts.build_trade_assessment_receipt", side_effect=RuntimeError("postgres secret.internal")),
+        ):
+            response = self.client.post("/api/trades/grade", json={"give": ["mine"], "get": ["theirs"]})
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "Trade analysis is temporarily unavailable")
+        self.assertNotIn("secret.internal", response.text)
 
     def test_latest_receipt_returns_no_content_when_none_is_active(self):
         with patch("sandlot_api.sandlot_db.latest_active_recommendation_receipt", return_value=None):
