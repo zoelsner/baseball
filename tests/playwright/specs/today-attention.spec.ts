@@ -504,7 +504,7 @@ test.describe('Today — Attention Queue', () => {
     future.win_this_week.actions[0].review = {
       state: 'reviewable',
       proposal_id: 'lineup-swap:corner:bench-bat:UT',
-      snapshot_id: 'snapshot-attention-test',
+      snapshot_id: 274,
       input_hash: 'a'.repeat(64),
       target_period: future.win_this_week.actions[0].target_period,
       slot_moves: [
@@ -516,6 +516,22 @@ test.describe('Today — Attention Queue', () => {
       requires_live_preflight: true,
       writes_enabled: false,
     };
+    future.win_this_week.actions[0].review.contract = {
+      proposal_id: 'lineup-swap:corner:bench-bat:UT',
+      snapshot_id: 274,
+      input_hash: 'a'.repeat(64),
+      target_period: future.win_this_week.actions[0].target_period,
+      slot_moves: future.win_this_week.actions[0].review.slot_moves,
+      confirmation: {
+        expected: {
+          proposal_id: 'lineup-swap:corner:bench-bat:UT',
+          snapshot_id: 274,
+          input_hash: 'a'.repeat(64),
+          target_period: future.win_this_week.actions[0].target_period,
+          slot_moves: future.win_this_week.actions[0].review.slot_moves,
+        },
+      },
+    };
     future.win_this_week.summary.headline = 'Planning Period 17: the best legal lineup path adds about 5.8 projected points.';
     future.win_this_week.handoffs.lineup.label = 'Open Fantrax Period 17 lineup';
     future.win_this_week.handoffs.lineup.target_period = future.win_this_week.actions[0].target_period;
@@ -526,6 +542,33 @@ test.describe('Today — Attention Queue', () => {
       title: 'Future-period waivers remain research-only',
       reason: 'Period 17 add/drop timing is not proven.',
     }];
+    await page.route('http://127.0.0.1:8765/health', async route => {
+      await route.fulfill({ status:200, contentType:'application/json', body:JSON.stringify({ ok:true, mode:'dry_run', writes_enabled:false, nonce:'bridge-test-nonce' }) });
+    });
+    await page.route('http://127.0.0.1:8765/execution-requests', async route => {
+      const body = route.request().postDataJSON();
+      expect(route.request().headers()['x-sandlot-bridge-nonce']).toBe('bridge-test-nonce');
+      expect(body).toEqual({
+        mode:'dry_run',
+        proposal_id:'lineup-swap:corner:bench-bat:UT',
+        snapshot_id:274,
+        input_hash:'a'.repeat(64),
+        confirmation:future.win_this_week.actions[0].review.contract.confirmation.expected,
+      });
+      await route.fulfill({ status:201, contentType:'application/json', body:JSON.stringify({
+        request_id:'xreq_ui_test_abcdefghijklmnop', mode:'dry_run', state:'pending', writes_enabled:false,
+        proposal_id:'lineup-swap:corner:bench-bat:UT', snapshot_id:274, input_hash:'a'.repeat(64),
+      }) });
+    });
+    let statusReads = 0;
+    await page.route('http://127.0.0.1:8765/execution-requests/xreq_ui_test_abcdefghijklmnop', async route => {
+      statusReads += 1;
+      await route.fulfill({ status:200, contentType:'application/json', body:JSON.stringify({
+        request_id:'xreq_ui_test_abcdefghijklmnop', mode:'dry_run', state:statusReads < 2 ? 'pending' : 'preflight_passed', writes_enabled:false,
+        proposal_id:'lineup-swap:corner:bench-bat:UT', snapshot_id:274, input_hash:'a'.repeat(64),
+        evidence:statusReads < 2 ? {} : { writes_attempted:false, evidence:{ fantrax_click_count:0, fantrax_write_count:0 } },
+      }) });
+    });
     await mockSnapshot(page, future);
 
     await page.goto('/');
@@ -547,17 +590,24 @@ test.describe('Today — Attention Queue', () => {
     await expect(review.getByText('Period 17', { exact: true })).toBeVisible();
     await expect(review.getByText('BN → UT', { exact: true })).toBeVisible();
     await expect(review.getByText('UT → BN', { exact: true })).toBeVisible();
-    await expect(review.getByText(/Local executor offline\. Nothing will change from this screen/)).toBeVisible();
+    await expect(review.getByText(/Local owner bridge connected/)).toBeVisible();
+    const confirm = review.getByRole('button', { name:'Confirm exact action and request live safety check' });
+    await expect(confirm).toBeEnabled();
+    await confirm.click();
+    await expect(review.getByText('Safety check passed', { exact:true })).toBeVisible();
+    await expect(review.getByText(/Zero clicks and zero writes were made/)).toBeVisible();
+    await expect(review.getByText('xreq_ui_test_abcdefghijklmnop', { exact:true })).toBeVisible();
+    expect(statusReads).toBeGreaterThanOrEqual(2);
     await expect(review.getByRole('button', { name: 'Ask Skipper' })).toBeVisible();
     await expect(review.getByRole('link', { name: 'Open Fantrax Period 17 lineup' })).toBeVisible();
-    await expect(review.getByRole('button', { name: /confirm|execute|apply/i })).toHaveCount(0);
+    await expect(review.getByRole('button', { name: /execute|apply/i })).toHaveCount(0);
     await page.keyboard.press('Escape');
     await expect(review).toHaveCount(0);
     await expect(panel.getByRole('button', { name: 'Review exact action' })).toBeFocused();
     await panel.getByRole('button', { name: 'Review exact action' }).click();
     await page.getByRole('dialog', { name: 'Review exact lineup action' }).getByRole('button', { name: 'Ask Skipper' }).click();
     const skipperPrompt = page.getByPlaceholder(/Ask about your roster/);
-    await expect(skipperPrompt).toHaveValue(/Immutable proposal: snapshot snapshot-attention-test; proposal lineup-swap:corner:bench-bat:UT; input hash a{64}/);
+    await expect(skipperPrompt).toHaveValue(/Immutable proposal: snapshot 274; proposal lineup-swap:corner:bench-bat:UT; input hash a{64}/);
     await expect(skipperPrompt).toHaveValue(/Exact target: Period 17; matchup period-17; 2026-07-13 through 2026-07-26/);
     await expect(skipperPrompt).toHaveValue(/Bench Bat: BN → UT/);
     await expect(skipperPrompt).toHaveValue(/This is a read-only review/);

@@ -49,6 +49,8 @@ const V2_SKIPPER_MODELS = [
 const V2_SKIPPER_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash';
 const V2_INACTIVE_SLOTS = ['BN', 'BE', 'BENCH', 'IL', 'IR', 'RES', 'RESERVE', 'MIN', 'MINORS'];
 const V2_BENCH_SLOTS = ['BN', 'BE', 'BENCH', 'RES', 'RESERVE', 'MIN', 'MINORS'];
+const V2_OWNER_BRIDGE_URL = 'http://127.0.0.1:8765';
+const V2_EXECUTION_TERMINAL_STATES = ['preflight_passed', 'preflight_failed', 'expired', 'cancelled'];
 
 // Preference persistence helpers removed in #36 — Sandlot does not persist UI
 // state to `window.localStorage` (global rule in CLAUDE.md). Skipper model +
@@ -1355,6 +1357,89 @@ function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
   const moves = Array.isArray(review.slot_moves) ? review.slot_moves : [];
   const hash = String(review.input_hash || '');
   const points = v2Number(action?.expected_points?.estimate);
+  const confirmation = review?.contract?.confirmation?.expected || null;
+  const [bridge, setBridge] = React.useState({ state:'connecting', nonce:null, error:null });
+  const [requestState, setRequestState] = React.useState({ state:'idle', requestId:null, error:null });
+  const exactRequestReady = review.state === 'reviewable'
+    && confirmation
+    && String(confirmation.proposal_id || '') === String(review.proposal_id || '')
+    && String(confirmation.input_hash || '') === String(review.input_hash || '')
+    && Number(confirmation.snapshot_id) === Number(review.snapshot_id);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch(`${V2_OWNER_BRIDGE_URL}/health`, { cache:'no-store' })
+      .then(async response => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || body?.ok !== true || body?.mode !== 'dry_run' || !body?.nonce || body?.writes_enabled !== false) {
+          throw new Error('Local owner bridge did not return a safe dry-run handshake.');
+        }
+        return body;
+      })
+      .then(body => { if (!cancelled) setBridge({ state:'ready', nonce:body.nonce, error:null }); })
+      .catch(() => { if (!cancelled) setBridge({ state:'offline', nonce:null, error:'Start the local owner bridge to request a live safety check.' }); });
+    return () => { cancelled = true; };
+  }, [review.proposal_id, review.input_hash]);
+
+  React.useEffect(() => {
+    if (!requestState.requestId || !bridge.nonce) return undefined;
+    let cancelled = false;
+    let timer = null;
+    const requestId = requestState.requestId;
+    const poll = async () => {
+      try {
+        const response = await fetch(`${V2_OWNER_BRIDGE_URL}/execution-requests/${encodeURIComponent(requestId)}`, {
+          cache:'no-store',
+          headers:{ 'X-Sandlot-Bridge-Nonce':bridge.nonce },
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(v2ExecutionError(body, response.status));
+        v2ValidateExecutionResponse(body, { requestId, review, requireZeroWriteProof:body?.state === 'preflight_passed' });
+        if (cancelled) return;
+        const nextState = body.state || 'pending';
+        setRequestState({ state:nextState, requestId, error:null });
+        if (!V2_EXECUTION_TERMINAL_STATES.includes(nextState)) timer = window.setTimeout(poll, 1500);
+      } catch (error) {
+        if (!cancelled) setRequestState(current => ({ ...current, state:'status_error', error:error?.message || 'Could not read live safety-check status.' }));
+      }
+    };
+    timer = window.setTimeout(poll, 1500);
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
+  }, [bridge.nonce, requestState.requestId, review.proposal_id, review.snapshot_id, review.input_hash]);
+
+  const requestPreflight = async () => {
+    if (bridge.state !== 'ready' || !bridge.nonce || !exactRequestReady || requestState.state === 'requesting') return;
+    setRequestState({ state:'requesting', requestId:null, error:null });
+    try {
+      const response = await fetch(`${V2_OWNER_BRIDGE_URL}/execution-requests`, {
+        method:'POST',
+        headers:{ 'content-type':'application/json', 'X-Sandlot-Bridge-Nonce':bridge.nonce },
+        body:JSON.stringify({
+          mode:'dry_run',
+          proposal_id:review.proposal_id,
+          snapshot_id:Number(review.snapshot_id),
+          input_hash:review.input_hash,
+          confirmation,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(v2ExecutionError(body, response.status));
+      v2ValidateExecutionResponse(body, { review });
+      setRequestState({ state:body.state || 'pending', requestId:body.request_id, error:null });
+    } catch (error) {
+      setRequestState({ state:'error', requestId:null, error:error?.message || 'Live safety check could not be requested.' });
+    }
+  };
+
+  const requestTone = requestState.state === 'preflight_passed'
+    ? { fg:V2.ok, bg:V2.okSoft, label:'Safety check passed' }
+    : ['preflight_failed','expired','cancelled','error','status_error'].includes(requestState.state)
+      ? { fg:V2.warn, bg:V2.warnSoft, label:requestState.state === 'expired' ? 'Request expired' : 'Safety check stopped' }
+      : { fg:V2.body, bg:V2.surface2, label:['pending','claimed'].includes(requestState.state) ? 'Checking live Fantrax…' : 'Dry-run only' };
+  const confirmationDisabled = bridge.state !== 'ready'
+    || !exactRequestReady
+    || requestState.state === 'requesting'
+    || Boolean(requestState.requestId);
   return (
     <div onClick={onClose} style={{ position:'fixed', inset:0, zIndex:70, background:'rgba(31,20,12,0.62)', display:'flex', alignItems:'flex-end', justifyContent:'center' }}>
       <div
@@ -1399,20 +1484,98 @@ function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
           </div>
         </div>
 
-        <div style={{ marginTop:12, background:V2.warnSoft, color:V2.warn, borderRadius:16, padding:'12px 13px', fontSize:12, lineHeight:1.45, fontWeight:800, textWrap:'pretty' }}>
-          Local executor offline. Nothing will change from this screen. A future execution request will still require live Fantrax preflight and visible approval on your Mac.
+        <div style={{ marginTop:12, background:bridge.state === 'ready' ? V2.okSoft : V2.warnSoft, color:bridge.state === 'ready' ? V2.ok : V2.warn, borderRadius:16, padding:'12px 13px', fontSize:12, lineHeight:1.45, fontWeight:800, textWrap:'pretty' }}>
+          {bridge.state === 'ready'
+            ? 'Local owner bridge connected. Confirming below requests a visible, zero-click live safety check; it still cannot change Fantrax.'
+            : bridge.state === 'connecting'
+              ? 'Checking for the trusted local owner bridge. Nothing can change while this check runs.'
+              : 'Local owner bridge offline. Start it on your Mac to enable the exact dry-run confirmation below; nothing will change from this screen.'}
         </div>
         <div style={{ marginTop:9, color:V2.muted, fontSize:10.5, lineHeight:1.4, fontFamily:V2.fontMono, overflowWrap:'anywhere' }}>
           Snapshot #{review.snapshot_id || plan.snapshot_id} · proposal {review.proposal_id || action.id} · contract {hash ? `${hash.slice(0, 12)}…` : 'unavailable'}
         </div>
 
-        <div style={{ marginTop:16, display:'grid', gridTemplateColumns:handoff ? '1fr 1fr' : '1fr', gap:9 }}>
+        <div aria-live="polite" style={{ marginTop:12, background:requestTone.bg, color:requestTone.fg, borderRadius:16, padding:'11px 13px', fontSize:12, lineHeight:1.4, fontWeight:800 }}>
+          <div>{requestTone.label}</div>
+          {requestState.state === 'preflight_passed' ? <div style={{ marginTop:3 }}>The exact proposal still matched live Fantrax. Zero clicks and zero writes were made.</div> : null}
+          {requestState.error ? <div role="alert" style={{ marginTop:3 }}>{requestState.error}</div> : null}
+          {requestState.requestId ? <div style={{ marginTop:4, fontFamily:V2.fontMono, fontSize:10, overflowWrap:'anywhere' }}>{requestState.requestId}</div> : null}
+        </div>
+
+        <button
+          onClick={requestPreflight}
+          disabled={confirmationDisabled}
+          aria-label="Confirm exact action and request live safety check"
+          style={{
+            marginTop:14, width:'100%', minHeight:48, border:'none', borderRadius:999,
+            background:!confirmationDisabled ? V2.ink : V2.surface2,
+            color:!confirmationDisabled ? '#fff' : V2.muted,
+            padding:'12px 15px', cursor:!confirmationDisabled ? 'pointer' : 'not-allowed',
+            opacity:['requesting','pending','claimed'].includes(requestState.state) ? 0.72 : 1,
+            fontFamily:'inherit', fontSize:13, fontWeight:900,
+            transitionProperty:'transform, opacity', transitionDuration:'160ms',
+          }}
+          onPointerDown={event=>{ if (!event.currentTarget.disabled) event.currentTarget.style.transform='scale(0.96)'; }}
+          onPointerUp={event=>{ event.currentTarget.style.transform='scale(1)'; }}
+          onPointerCancel={event=>{ event.currentTarget.style.transform='scale(1)'; }}
+          onPointerLeave={event=>{ event.currentTarget.style.transform='scale(1)'; }}
+        >
+          {requestState.state === 'requesting'
+            ? 'Requesting safety check…'
+            : ['pending','claimed'].includes(requestState.state)
+              ? 'Live safety check running…'
+              : requestState.state === 'preflight_passed'
+                ? 'Live safety check passed'
+                : requestState.state === 'preflight_failed'
+                  ? 'Live safety check failed'
+                  : requestState.state === 'expired'
+                    ? 'Safety-check request expired'
+                    : requestState.requestId
+                      ? 'Safety-check request stopped'
+                      : 'Confirm exact action · run safety check'}
+        </button>
+        {!exactRequestReady ? <div style={{ marginTop:7, color:V2.warn, fontSize:11.5, lineHeight:1.4, fontWeight:750 }}>Exact confirmation data is incomplete. Refresh instead of attempting this proposal.</div> : null}
+
+        <div style={{ marginTop:10, display:'grid', gridTemplateColumns:handoff ? '1fr 1fr' : '1fr', gap:9 }}>
           <button onClick={()=>{ onClose(); onAskSkipper(v2WinWeekPrompt(action, plan)); }} style={{ minHeight:46, border:'none', borderRadius:999, background:V2.ink, color:'#fff', padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>Ask Skipper</button>
           {handoff ? <a href={handoff.url} target="_blank" rel="noopener noreferrer" style={{ minHeight:46, borderRadius:999, background:V2.surface, color:V2.body, padding:'11px 14px', display:'flex', alignItems:'center', justifyContent:'center', textDecoration:'none', boxShadow:'0 0 0 1px rgba(0,0,0,0.08)', fontSize:12.5, fontWeight:850 }}>{handoff.label || 'Open Fantrax lineup'}</a> : null}
         </div>
       </div>
     </div>
   );
+}
+
+function v2ExecutionError(body, status) {
+  const detail = body?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+  if (detail && typeof detail === 'object') {
+    if (typeof detail.reason === 'string') return detail.reason;
+    if (typeof detail.error === 'string') return detail.error;
+  }
+  return `Live safety check unavailable (${status}).`;
+}
+
+function v2ValidateExecutionResponse(body, { review, requestId=null, requireZeroWriteProof=false }) {
+  if (body?.mode !== 'dry_run' || body?.writes_enabled !== false) {
+    throw new Error('Safety-check response did not remain dry-run and write-disabled.');
+  }
+  if (!/^xreq_[A-Za-z0-9_-]{20,80}$/.test(String(body?.request_id || '')) || (requestId && body.request_id !== requestId)) {
+    throw new Error('Safety-check response returned a mismatched request id.');
+  }
+  if (
+    String(body?.proposal_id || '') !== String(review?.proposal_id || '')
+    || Number(body?.snapshot_id) !== Number(review?.snapshot_id)
+    || String(body?.input_hash || '') !== String(review?.input_hash || '')
+  ) {
+    throw new Error('Safety-check response no longer matches the exact proposal.');
+  }
+  if (requireZeroWriteProof) {
+    const report = body?.evidence || {};
+    const proof = report?.evidence || {};
+    if (report?.writes_attempted !== false || proof?.fantrax_click_count !== 0 || proof?.fantrax_write_count !== 0) {
+      throw new Error('Passing safety check did not prove zero Fantrax clicks and writes.');
+    }
+  }
 }
 
 function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {

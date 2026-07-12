@@ -78,6 +78,38 @@ Every response exposes `writes_enabled: false`.
 
 ## Local visible runner
 
+### One-click proposal confirmation
+
+The exact-action review sheet can request the same dry-run without receiving or
+persisting the owner bearer. Start the loopback-only owner bridge on the Mac
+that holds the plaintext owner token:
+
+```bash
+SANDLOT_OWNER_ACTION_TOKEN='<local plaintext owner secret>' \
+python sandlot_owner_bridge.py
+```
+
+The browser probes `http://127.0.0.1:8765`, then one explicit **Confirm exact
+action · run safety check** click sends the immutable proposal identity and
+confirmation to that local process. The bridge adds the owner bearer only on
+its server-to-server request to Sandlot and proxies sanitized status back to
+the review sheet. The token never enters page state, browser storage, request
+JSON, logs, or the committed bundle.
+
+The bridge binds only to loopback, requires the exact configured production
+origin, validates the loopback Host header, requires a per-process nonce on
+state-changing/status requests, answers Private Network Access preflight, caps
+JSON bodies, rejects upstream redirects, and accepts only an uncredentialed
+HTTPS Sandlot origin. `--allowed-origin http://127.0.0.1:<port>` is available
+for local frontend development. The bridge and visible runner are separate
+processes: the bridge confirms/creates the request; the runner claims it and
+performs the zero-click visible preflight.
+
+If the bridge, control plane, or runner is offline, the review sheet stays
+disabled or reports a terminal safe failure. A passing state means only that
+the exact proposal still matched live evidence. It does not authorize or
+perform a Fantrax mutation.
+
 With a current local Fantrax login and the runner plaintext in the environment:
 
 ```bash
