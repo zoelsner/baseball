@@ -74,6 +74,11 @@ class SkipperModelConfigTests(unittest.TestCase):
         self.assertFalse(any("Web fallback is enabled" in m["content"] for m in base))
         self.assertTrue(any("Web fallback is enabled" in m["content"] for m in with_web))
 
+    def test_system_prompt_accepts_bounded_trade_advisor_handoffs(self):
+        self.assertIn('Sandlot trade-analysis evidence:', sandlot_skipper.SYSTEM_PROMPT)
+        self.assertIn('never invent weekly/ROS/dynasty numbers', sandlot_skipper.SYSTEM_PROMPT)
+        self.assertIn('never tell the user to accept automatically', sandlot_skipper.SYSTEM_PROMPT)
+
     def test_stream_adds_capped_openrouter_web_search_tool_when_enabled(self):
         class CapturingCompletions:
             def __init__(self):

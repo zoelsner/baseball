@@ -70,6 +70,48 @@ class TradeCounterTests(unittest.TestCase):
         self.assertNotIn("accept_pct", json.dumps(result))
         self.assertNotIn("%", json.dumps(result["counters"]))
 
+        analysis = result["analysis"]
+        self.assertEqual(analysis["recommendation"]["action"], "counter")
+        self.assertEqual(analysis["recommended_counter"]["tier"], "balanced")
+        self.assertTrue(analysis["manual_only"])
+        self.assertIn("My Second Baseman", analysis["skipper_prompt"])
+        self.assertIn("Their Outfielder", analysis["skipper_prompt"])
+        self.assertTrue(analysis["skipper_prompt"].startswith("Sandlot trade-analysis evidence:"))
+        self.assertIn(analysis["recommended_counter"]["added_player"]["name"], analysis["skipper_prompt"])
+        self.assertIn("recommended balanced counter", analysis["skipper_prompt"])
+
+    def test_trade_analysis_separates_supported_and_unsupported_horizons(self):
+        with patch.object(
+            sandlot_trades,
+            "_load_or_generate_rationale",
+            return_value=("Deterministic grade rationale.", "", False),
+        ), patch.object(sandlot_trades, "_overlay_counter_rationales"):
+            result = sandlot_trades.grade_offer(trade_snapshot(), ["m1"], ["o1"])
+
+        horizons = {item["key"]: item for item in result["analysis"]["horizons"]}
+        self.assertEqual(horizons["current_rate"]["status"], "modeled")
+        self.assertEqual(horizons["current_rate"]["unit"], "FP/G")
+        self.assertEqual(horizons["this_week"]["status"], "unavailable")
+        self.assertIsNone(horizons["this_week"]["value"])
+        self.assertEqual(horizons["rest_of_season"]["status"], "unavailable")
+        self.assertIsNone(horizons["rest_of_season"]["value"])
+        self.assertEqual(horizons["dynasty"]["status"], "limited")
+        self.assertIn("not modeled", horizons["rest_of_season"]["detail"])
+
+    def test_trade_analysis_explains_roster_fit_without_overclaiming(self):
+        with patch.object(
+            sandlot_trades,
+            "_load_or_generate_rationale",
+            return_value=("Deterministic grade rationale.", "", False),
+        ), patch.object(sandlot_trades, "_overlay_counter_rationales"):
+            result = sandlot_trades.grade_offer(trade_snapshot(), ["m1"], ["o1"])
+
+        fit = result["analysis"]["roster_fit"]
+        self.assertEqual(fit["weakest_position"], "2B")
+        self.assertFalse(fit["fills_weakest_position"])
+        self.assertEqual(fit["acquired_positions"], ["OF"])
+        self.assertIn("Does not directly fill 2B", fit["label"])
+
     def test_offer_already_favoring_me_returns_no_counter_reason(self):
         snapshot = trade_snapshot()
         snapshot["data"]["all_team_rosters"]["opp"]["rows"][0]["fppg"] = 2.5
