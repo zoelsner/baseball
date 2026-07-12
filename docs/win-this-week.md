@@ -211,6 +211,33 @@ confirm a mutation. Waiver actions continue to open Sandlot's internal waiver
 review because a stable Fantrax add/drop route has not been independently
 proven.
 
+### Exact action review
+
+Every reviewable lineup action carries the immutable proposal contract derived
+on the server: snapshot ID, proposal ID, SHA-256 input hash, target period,
+ordered final slot mapping, freshness rules, and post-write verification
+requirements. `GET /api/action-proposals/{proposal_id}` requires the exact
+`snapshot_id` and `input_hash`, then re-derives that action from the latest
+successful snapshot instead of trusting contract fields sent by the browser.
+Replaced IDs return 404; a recurring ID with a stale snapshot or hash returns
+409 and requires review of the replacement contract.
+
+Today exposes this as **Review exact action**. The review sheet shows the exact
+period, projected impact, ordered slot mapping, proposal identity, and Ask
+Skipper handoff. It intentionally has no Confirm or Execute control yet. The
+sheet states that the local executor is offline and that nothing changes from
+the review screen. Ask Skipper receives the same snapshot ID, proposal ID,
+input hash, target period, and final slot mapping so the conversation remains
+bound to the reviewed action even if a newer snapshot appears.
+
+Execution request creation remains disabled until Sandlot has both real owner
+authentication and a trusted local/headful runner. The future control plane
+must keep cloud Fantrax cookies server-side, use a distinct scoped runner
+credential, require live period/roster/propagation preflight, obtain final
+approval locally while the browser is visible, treat any post-click crash as
+uncertain without retry, and verify the complete final slot mapping plus an
+unchanged roster set.
+
 ## Verification
 
 - deterministic unit tests cover cross-surface ranking, lower-rate streaming,

@@ -158,6 +158,59 @@ def latest_win_this_week() -> dict[str, Any]:
     return jsonable_encoder(_matchup_decisions(row)["win_this_week"])
 
 
+@app.get("/api/action-proposals/{proposal_id}")
+def latest_action_proposal(
+    proposal_id: str,
+    snapshot_id: int,
+    input_hash: str,
+) -> dict[str, Any]:
+    """Return one server-derived immutable action review; never execute it."""
+    try:
+        row = sandlot_db.latest_successful_snapshot()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="No successful Fantrax snapshot has been stored yet")
+    plan = _matchup_decisions(row)["win_this_week"]
+    action = next(
+        (
+            candidate
+            for candidate in plan.get("actions") or []
+            if isinstance(candidate, dict)
+            and str(((candidate.get("review") or {}).get("proposal_id")) or candidate.get("id") or "") == proposal_id
+        ),
+        None,
+    )
+    if not action:
+        raise HTTPException(
+            status_code=404,
+            detail="That proposal is not part of the latest actionable plan; refresh and review the replacement.",
+        )
+    review = action.get("review") if isinstance(action.get("review"), dict) else {}
+    if review.get("state") != "reviewable":
+        raise HTTPException(status_code=409, detail=review.get("reason") or "Proposal is not reviewable")
+    if int(review.get("snapshot_id") or 0) != snapshot_id or str(review.get("input_hash") or "") != input_hash:
+        raise HTTPException(
+            status_code=409,
+            detail="That proposal instance is stale or replaced; refresh and review the latest contract.",
+        )
+    return jsonable_encoder({
+        "snapshot_id": row.get("id"),
+        "taken_at": row.get("taken_at"),
+        "freshness": _freshness(row.get("taken_at")),
+        "is_current": True,
+        "read_only": True,
+        "writes_enabled": False,
+        "action": action,
+        "review": review,
+        "execution": {
+            "state": "offline",
+            "request_enabled": False,
+            "reason": "A trusted local headful runner and owner authentication are required before execution requests can be created.",
+        },
+    })
+
+
 @app.post("/api/refresh")
 def refresh(request: Request, background_tasks: BackgroundTasks) -> dict[str, Any]:
     from sandlot_refresh import run_refresh

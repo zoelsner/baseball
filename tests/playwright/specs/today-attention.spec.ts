@@ -501,6 +501,21 @@ test.describe('Today — Attention Queue', () => {
       end: '2026-07-26',
       matchup_key: 'period-17',
     };
+    future.win_this_week.actions[0].review = {
+      state: 'reviewable',
+      proposal_id: 'lineup-swap:corner:bench-bat:UT',
+      snapshot_id: 'snapshot-attention-test',
+      input_hash: 'a'.repeat(64),
+      target_period: future.win_this_week.actions[0].target_period,
+      slot_moves: [
+        { order: 1, player_id: 'bench-bat', player_name: 'Bench Bat', from_slot: 'BN', to_slot: 'UT' },
+        { order: 2, player_id: 'corner', player_name: 'Cold Corner', from_slot: 'UT', to_slot: 'BN' },
+      ],
+      executor: { state: 'offline' },
+      requires_local_visible_approval: true,
+      requires_live_preflight: true,
+      writes_enabled: false,
+    };
     future.win_this_week.summary.headline = 'Planning Period 17: the best legal lineup path adds about 5.8 projected points.';
     future.win_this_week.handoffs.lineup.label = 'Open Fantrax Period 17 lineup';
     future.win_this_week.handoffs.lineup.target_period = future.win_this_week.actions[0].target_period;
@@ -520,9 +535,32 @@ test.describe('Today — Attention Queue', () => {
     await expect(panel.getByText('Plan Period 17', { exact: true })).toBeVisible();
     await expect(panel.getByText('Best next-period lineup', { exact: true })).toBeVisible();
     await expect(panel.getByText(/Planning Period 17: the best legal lineup path/)).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Review exact action' })).toBeVisible();
     await expect(panel.getByRole('link', { name: 'Open Fantrax Period 17 lineup' })).toBeVisible();
     await expect(panel.getByRole('button', { name: 'Open waiver board' })).toHaveCount(0);
     await expect(panel.getByText(/Monitor: Future-period waivers remain research-only/)).toBeVisible();
+
+    await panel.getByRole('button', { name: 'Review exact action' }).click();
+    const review = page.getByRole('dialog', { name: 'Review exact lineup action' });
+    await expect(review.getByText('Exact action review', { exact: true })).toBeVisible();
+    await expect(review.getByText('Start Bench Bat over Cold Corner', { exact: true })).toBeVisible();
+    await expect(review.getByText('Period 17', { exact: true })).toBeVisible();
+    await expect(review.getByText('BN → UT', { exact: true })).toBeVisible();
+    await expect(review.getByText('UT → BN', { exact: true })).toBeVisible();
+    await expect(review.getByText(/Local executor offline\. Nothing will change from this screen/)).toBeVisible();
+    await expect(review.getByRole('button', { name: 'Ask Skipper' })).toBeVisible();
+    await expect(review.getByRole('link', { name: 'Open Fantrax Period 17 lineup' })).toBeVisible();
+    await expect(review.getByRole('button', { name: /confirm|execute|apply/i })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(review).toHaveCount(0);
+    await expect(panel.getByRole('button', { name: 'Review exact action' })).toBeFocused();
+    await panel.getByRole('button', { name: 'Review exact action' }).click();
+    await page.getByRole('dialog', { name: 'Review exact lineup action' }).getByRole('button', { name: 'Ask Skipper' }).click();
+    const skipperPrompt = page.getByPlaceholder(/Ask about your roster/);
+    await expect(skipperPrompt).toHaveValue(/Immutable proposal: snapshot snapshot-attention-test; proposal lineup-swap:corner:bench-bat:UT; input hash a{64}/);
+    await expect(skipperPrompt).toHaveValue(/Exact target: Period 17; matchup period-17; 2026-07-13 through 2026-07-26/);
+    await expect(skipperPrompt).toHaveValue(/Bench Bat: BN → UT/);
+    await expect(skipperPrompt).toHaveValue(/This is a read-only review/);
   });
 
   test('silently refetches when the primary action deadline arrives', async ({ page }) => {

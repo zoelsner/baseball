@@ -696,6 +696,28 @@ def _validate_win_this_week(
             if not isinstance(action, dict)
             or action.get("kind") not in {"lineup", "lineup_plan"}
             or action.get("target_period") != expected_target
+            or (
+                action.get("kind") == "lineup"
+                and (
+                    not isinstance(action.get("review"), dict)
+                    or action.get("review", {}).get("state") != "reviewable"
+                    or action.get("review", {}).get("target_period") != expected_target
+                    or action.get("review", {}).get("writes_enabled") is not False
+                    or (action.get("review", {}).get("contract") or {}).get("target_period") != expected_target
+                    or action.get("review", {}).get("proposal_id") != (action.get("review", {}).get("contract") or {}).get("proposal_id")
+                    or action.get("review", {}).get("snapshot_id") != (action.get("review", {}).get("contract") or {}).get("snapshot_id")
+                    or action.get("review", {}).get("input_hash") != (action.get("review", {}).get("contract") or {}).get("input_hash")
+                    or action.get("review", {}).get("slot_moves") != (action.get("review", {}).get("contract") or {}).get("slot_moves")
+                )
+            )
+            or (
+                action.get("kind") == "lineup_plan"
+                and (
+                    not isinstance(action.get("review"), dict)
+                    or action.get("review", {}).get("state") != "unavailable"
+                    or action.get("review", {}).get("writes_enabled") is not False
+                )
+            )
         ]
         handoff_target = lineup_handoff.get("target_period")
         monitoring = plan.get("monitoring_actions") if isinstance(plan.get("monitoring_actions"), list) else []
