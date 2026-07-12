@@ -36,9 +36,23 @@ retains the original snapshot identity and decision-time evidence.
 - `expired`: no longer actionable for its horizon
 
 Decision states are `pending`, `accepted`, and `rejected`. Outcome states are
-`pending`, `scored`, and `unavailable`. The schema reserves explicit values,
-versions, and evidence for future scoring; this first slice does not yet expose
-a decision API or claim that any recommendation has been followed or scored.
+`pending`, `scored`, and `unavailable`. `GET
+/api/recommendation-receipts/latest` exposes only the latest active, unexpired
+Monday receipt through a sanitized public projection; it never exposes the raw
+projection inputs and returns `204 No Content` when no receipt is active. `POST
+/api/recommendation-receipts/{receipt_id}/decision`
+records one terminal owner intent with exact receipt/hash binding, DB-clock
+expiry, and compare-and-swap semantics. An exact same-state replay is
+idempotent; stale, expired, superseded, or conflicting decisions return a
+conflict instead of changing history.
+
+The Today card shows the projected gain and exact start/bench delta. Decision
+controls are desktop-owner-only: the production browser sends the exact
+receipt decision to the loopback owner bridge, which retains the bearer token
+locally and revalidates the upstream identity and no-write boundary. Mobile or
+bridge-offline sessions remain useful and read-only instead of showing dead
+controls. Accepting means “I intend to use this plan”; it does not claim the
+lineup was changed. Outcome scoring remains a separate future slice.
 
 ## Safety boundary
 
@@ -48,7 +62,7 @@ after deterministic optimization and before publishing the artifact. A
 persistence failure fails the workflow rather than publishing an untracked
 recommendation as trustworthy.
 
-Receipts do not execute Fantrax actions. A future accepted lineup receipt may
+Receipts and decision recording do not execute Fantrax actions. An accepted lineup receipt may
 be linked to an `execution_request`, but the execution request remains a
 separate exact-confirmation, visible-preflight, and post-write-verification
 control plane. Trade execution remains manual.

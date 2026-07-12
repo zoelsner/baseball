@@ -558,6 +558,80 @@ def list_recommendation_receipts(*, limit: int = 50) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def latest_active_recommendation_receipt(*, source: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM recommendation_receipts
+            WHERE source = %s
+              AND lifecycle_state = 'active'
+              AND expires_at > clock_timestamp()
+            ORDER BY generated_at DESC, receipt_id DESC
+            LIMIT 1
+            """,
+            (source,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def decide_recommendation_receipt(
+    *,
+    receipt_id: str,
+    input_hash: str,
+    decision: str,
+    source: str,
+    reason: str | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Record one terminal owner decision with DB-clock expiry and CAS semantics."""
+    if decision not in {"accepted", "rejected"}:
+        raise ValueError("Decision must be accepted or rejected")
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM recommendation_receipts
+            WHERE receipt_id = %s
+            FOR UPDATE
+            """,
+            (receipt_id,),
+        ).fetchone()
+        if not row:
+            raise LookupError("Recommendation receipt not found")
+        row = dict(row)
+        if str(row.get("input_hash") or "") != input_hash:
+            raise ValueError("Recommendation receipt hash is stale or mismatched")
+        clock_row = conn.execute("SELECT clock_timestamp() AS current_time").fetchone()
+        if row.get("expires_at") <= clock_row["current_time"]:
+            raise ValueError("Recommendation receipt has expired")
+        if row.get("lifecycle_state") != "active":
+            raise ValueError("Recommendation receipt is no longer active")
+        current = row.get("decision_state")
+        if current == decision:
+            return row, False
+        if current != "pending":
+            raise ValueError(f"Recommendation receipt was already {current}")
+        updated = conn.execute(
+            """
+            UPDATE recommendation_receipts
+            SET decision_state = %s,
+                decision_source = %s,
+                decision_reason = %s,
+                decided_at = clock_timestamp(),
+                updated_at = clock_timestamp()
+            WHERE receipt_id = %s
+              AND input_hash = %s
+              AND lifecycle_state = 'active'
+              AND decision_state = 'pending'
+              AND expires_at > clock_timestamp()
+            RETURNING *
+            """,
+            (decision, source, reason, receipt_id, input_hash),
+        ).fetchone()
+        if not updated:
+            raise RuntimeError("Recommendation receipt changed during decision recording")
+    return dict(updated), True
+
+
 def latest_successful_snapshot() -> dict[str, Any] | None:
     with connect() as conn:
         return conn.execute(

@@ -16,7 +16,7 @@ import re
 import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import requests
 
@@ -26,10 +26,18 @@ DEFAULT_PORT = 8765
 DEFAULT_ORIGIN = "https://web-production-90664.up.railway.app"
 MAX_BODY_BYTES = 64 * 1024
 REQUEST_ID_RE = re.compile(r"xreq_[A-Za-z0-9_-]{20,80}\Z")
+RECEIPT_ID_RE = re.compile(r"monday-lineup:[a-f0-9]{64}\Z")
 PUBLIC_REQUEST_FIELDS = {
     "request_id", "mode", "snapshot_id", "proposal_id", "input_hash", "state",
     "created_at", "expires_at", "claimed_at", "completed_at", "failure_reason",
     "evidence", "writes_enabled", "created", "request_enabled",
+}
+PUBLIC_DECISION_FIELDS = {
+    "receipt_id", "input_hash", "source", "action_type", "period", "evaluation",
+    "baseline_assignment", "proposed_assignment", "unfilled_slots", "evidence",
+    "lifecycle_state", "decision_state", "decision_reason", "decided_at",
+    "outcome_state", "generated_at", "expires_at", "read_only",
+    "fantrax_changed", "writes_enabled", "changed",
 }
 
 
@@ -75,6 +83,7 @@ class OwnerBridge:
             "ok": True,
             "mode": "dry_run",
             "writes_enabled": False,
+            "recommendation_decisions_enabled": True,
             "nonce": self.nonce,
         }
 
@@ -106,6 +115,24 @@ class OwnerBridge:
         if error:
             return 502, {"detail": error}
         return status, _sanitize_public_request(body)
+
+    def decide(self, receipt_id: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        if not RECEIPT_ID_RE.fullmatch(receipt_id):
+            return 400, {"detail": "Invalid recommendation receipt id"}
+        validation_error = _validate_decision_payload(payload)
+        if validation_error:
+            return 400, {"detail": validation_error}
+        status, body = self._request(
+            "POST",
+            f"/api/recommendation-receipts/{receipt_id}/decision",
+            json=payload,
+        )
+        if status != 200:
+            return status, {"detail": str(body.get("detail") or "Recommendation decision failed")}
+        error = _validate_public_decision(body, receipt_id=receipt_id, payload=payload)
+        if error:
+            return 502, {"detail": error}
+        return status, _sanitize_public_decision(body)
 
     def _request(self, method: str, path: str, **kwargs: Any) -> tuple[int, dict[str, Any]]:
         try:
@@ -209,7 +236,10 @@ def make_handler(bridge: OwnerBridge):
         def do_POST(self) -> None:  # noqa: N802
             if not self._authorized_browser():
                 return
-            if self.path != "/execution-requests":
+            decision_prefix = "/recommendation-receipts/"
+            is_execution = self.path == "/execution-requests"
+            is_decision = self.path.startswith(decision_prefix) and self.path.endswith("/decision")
+            if not is_execution and not is_decision:
                 self._send(404, {"detail": "Not found"})
                 return
             if not bridge.nonce_matches(self.headers.get("X-Sandlot-Bridge-Nonce")):
@@ -233,7 +263,11 @@ def make_handler(bridge: OwnerBridge):
             if not isinstance(payload, dict):
                 self._send(400, {"detail": "Request body must be an object"})
                 return
-            status, result = bridge.create(payload)
+            if is_execution:
+                status, result = bridge.create(payload)
+            else:
+                receipt_id = unquote(self.path[len(decision_prefix):-len("/decision")])
+                status, result = bridge.decide(receipt_id, payload)
             self._send(status, result)
 
         def log_message(self, _format: str, *_args: Any) -> None:
@@ -271,6 +305,42 @@ def _validate_create_payload(payload: dict[str, Any]) -> str | None:
     ):
         return "Exact confirmation does not match the proposal identity"
     return None
+
+
+def _validate_decision_payload(payload: dict[str, Any]) -> str | None:
+    if set(payload) - {"decision", "input_hash", "reason"}:
+        return "Recommendation decision contains unsupported fields"
+    if payload.get("decision") not in {"accepted", "rejected"}:
+        return "Recommendation decision must be accepted or rejected"
+    if not re.fullmatch(r"[A-Fa-f0-9]{64}", str(payload.get("input_hash") or "")):
+        return "Recommendation decision hash is malformed"
+    reason = payload.get("reason")
+    if reason is not None and (not isinstance(reason, str) or len(reason) > 240):
+        return "Recommendation decision reason is malformed"
+    return None
+
+
+def _validate_public_decision(
+    body: dict[str, Any],
+    *,
+    receipt_id: str,
+    payload: dict[str, Any],
+) -> str | None:
+    if body.get("fantrax_changed") is not False or body.get("writes_enabled") is not False:
+        return "Sandlot response did not preserve the no-Fantrax-write boundary"
+    if str(body.get("receipt_id") or "") != receipt_id:
+        return "Sandlot response returned a mismatched recommendation receipt id"
+    if str(body.get("input_hash") or "").casefold() != str(payload["input_hash"]).casefold():
+        return "Sandlot response returned a mismatched recommendation hash"
+    if body.get("lifecycle_state") != "active":
+        return "Sandlot response returned a non-active recommendation receipt"
+    if body.get("decision_state") != payload["decision"]:
+        return "Sandlot response did not record the exact recommendation decision"
+    return None
+
+
+def _sanitize_public_decision(body: dict[str, Any]) -> dict[str, Any]:
+    return {key: body[key] for key in PUBLIC_DECISION_FIELDS if key in body}
 
 
 def _validate_public_request(

@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { waitForAppMount, gotoTab } from '../fixtures/sandlot';
 
 async function mockTradeAdvisor(page: import('@playwright/test').Page) {
+  await page.route('**/api/recommendation-receipts/latest', route => route.fulfill({ status:204 }));
   await page.route('**/api/skipper/options', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) }));
   await page.route('**/api/waiver-swaps/latest', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ brief: { state: 'missing' } }) }));
   await page.route('**/api/skipper/messages', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ messages: [] }) }));

@@ -76,6 +76,12 @@ class ExecutionRequestCreate(StrictModel):
     confirmation: ExactExecutionConfirmation
 
 
+class RecommendationDecisionIn(StrictModel):
+    decision: Literal["accepted", "rejected"]
+    input_hash: str = Field(pattern=r"^[A-Fa-f0-9]{64}$")
+    reason: str | None = Field(default=None, max_length=240)
+
+
 class ExecutionClaim(StrictModel):
     runner_id: str = Field(min_length=1, max_length=80)
 
@@ -212,6 +218,49 @@ def latest_win_this_week() -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail="No successful Fantrax snapshot has been stored yet")
     return jsonable_encoder(_matchup_decisions(row)["win_this_week"])
+
+
+@app.get("/api/recommendation-receipts/latest", response_model=None)
+def latest_recommendation_receipt(source: Literal["monday_lineup"] = "monday_lineup") -> dict[str, Any] | Response:
+    try:
+        row = sandlot_db.latest_active_recommendation_receipt(source=source)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Recommendation receipt unavailable: {exc}") from exc
+    if not row:
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+    return jsonable_encoder(_public_recommendation_receipt(row))
+
+
+@app.post("/api/recommendation-receipts/{receipt_id}/decision")
+def decide_recommendation_receipt(
+    receipt_id: str,
+    payload: RecommendationDecisionIn,
+    request: Request,
+) -> dict[str, Any]:
+    """Record owner intent only; this route never executes a Fantrax action."""
+    _require_hashed_role(request, "SANDLOT_OWNER_ACTION_TOKEN_SHA256")
+    reason = " ".join(str(payload.reason or "").split()) or None
+    try:
+        row, changed = sandlot_db.decide_recommendation_receipt(
+            receipt_id=receipt_id,
+            input_hash=payload.input_hash.lower(),
+            decision=payload.decision,
+            source="owner_bridge",
+            reason=reason,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Recommendation decision unavailable: {exc}") from exc
+    result = _public_recommendation_receipt(row)
+    result["changed"] = changed
+    result["fantrax_changed"] = False
+    result["writes_enabled"] = False
+    return jsonable_encoder(result)
 
 
 @app.get("/api/action-proposals/{proposal_id}")
@@ -1035,6 +1084,52 @@ def _run_summary(row: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
+    recommendation = row.get("recommendation") if isinstance(row.get("recommendation"), dict) else {}
+    evaluation = recommendation.get("evaluation") if isinstance(recommendation.get("evaluation"), dict) else {}
+    snapshot = recommendation.get("snapshot") if isinstance(recommendation.get("snapshot"), dict) else {}
+    period = recommendation.get("period") if isinstance(recommendation.get("period"), dict) else {}
+    return {
+        "receipt_id": row.get("receipt_id"),
+        "builder_version": row.get("builder_version"),
+        "scope_key": row.get("scope_key"),
+        "source": row.get("source"),
+        "action_type": row.get("action_type"),
+        "proposal_id": row.get("proposal_id"),
+        "input_hash": row.get("input_hash"),
+        "period": {
+            "start": period.get("start") or row.get("period_start"),
+            "end": period.get("end") or row.get("period_end"),
+        },
+        "evaluation": {
+            "horizon": evaluation.get("horizon") or row.get("evaluation_horizon"),
+            "metric_name": evaluation.get("metric_name") or row.get("metric_name"),
+            "metric_unit": evaluation.get("metric_unit") or row.get("metric_unit"),
+            "baseline_value": row.get("baseline_value"),
+            "projected_value": row.get("projected_value"),
+            "projected_gain": row.get("projected_gain"),
+        },
+        "baseline_assignment": recommendation.get("baseline_assignment") or [],
+        "proposed_assignment": recommendation.get("proposed_assignment") or [],
+        "unfilled_slots": recommendation.get("unfilled_slots") or [],
+        "evidence": {
+            "snapshot_id": snapshot.get("id"),
+            "snapshot_taken_at": snapshot.get("taken_at"),
+            "builder_version": recommendation.get("builder_version") or row.get("builder_version"),
+        },
+        "lifecycle_state": row.get("lifecycle_state"),
+        "decision_state": row.get("decision_state"),
+        "decision_reason": row.get("decision_reason"),
+        "decided_at": row.get("decided_at"),
+        "outcome_state": row.get("outcome_state"),
+        "generated_at": row.get("generated_at"),
+        "expires_at": row.get("expires_at"),
+        "read_only": True,
+        "fantrax_changed": False,
+        "writes_enabled": False,
+    }
+
+
 def _require_refresh_token(request: Request) -> None:
     expected = os.environ.get("SANDLOT_REFRESH_TOKEN")
     if not expected:
@@ -1052,6 +1147,10 @@ def _require_execution_role(request: Request, digest_env: str) -> None:
         raise HTTPException(status_code=503, detail="Execution dry-run control plane is disabled")
     if not sandlot_execution.distinct_role_credentials_configured():
         raise HTTPException(status_code=503, detail="Distinct execution credentials are not configured")
+    _require_hashed_role(request, digest_env)
+
+
+def _require_hashed_role(request: Request, digest_env: str) -> None:
     try:
         sandlot_execution.require_hashed_bearer(
             request.headers.get("authorization"),
