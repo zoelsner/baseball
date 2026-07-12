@@ -266,6 +266,11 @@ signed-in visible browser. Headshotless rows resolve only through a unique
 initial/surname/team join; any ambiguity or count drift fails closed. No browser
 cookies or storage cross into Sandlot.
 
+The exact-action sheet can now request this immutable dry-run with one explicit
+confirmation click when the loopback owner bridge is connected. The browser
+never receives the owner bearer, and a passing result still records zero
+Fantrax clicks and zero writes.
+
 See `docs/sandlot-execution-dry-run.md` for the API, state machine, kill
 switches, and local runner procedure.
 

@@ -1,9 +1,18 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-03** (analytics track ported onto main; Skipper streaming + MLB cache fixes).
+> Last updated: **2026-07-12** (one-click exact proposal dry-run confirmation UI).
 
 ## Where things stand
+
+- **One-click proposal safety check in progress:** the exact-action review
+  sheet can connect to a loopback-only owner bridge and submit the immutable
+  lineup proposal with one explicit confirmation click. The bridge retains the
+  owner bearer locally, enforces exact Origin/Host/nonce/PNA guards, and proxies
+  only sanitized request status. The separate visible runner still performs a
+  zero-click, zero-write live preflight; no Fantrax mutation path is added.
+  Current verification: 381 Python tests and the local mobile Today flow are
+  green. Production remains disabled until the branch is reviewed and merged.
 
 - **Zero-AI-cost maintenance loop prepared:** `.github/workflows/sandlot-automation.yml`
   checks read-only production contracts after the existing twice-daily Railway
