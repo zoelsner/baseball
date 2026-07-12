@@ -122,6 +122,10 @@ snapshot. Outbound and unrelated offers are filtered. Draft-pick or incomplete
 player offers fail closed to manual review. The League card can submit a fully
 identified player-only offer to the existing grader in one click; reading or
 reviewing an offer never answers it in Fantrax.
+The incoming projection also runs the grader's participant-policy preflight
+without AI work, so protected, missing-data, or age-24-and-younger dynasty
+assets are labeled for manual review before the user clicks. This is a
+temporary honest limitation until a richer dynasty/prospect model ships.
 
 ### Skipper
 

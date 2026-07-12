@@ -3333,6 +3333,15 @@ function v2GradeColor(letter) {
   return V2.injured;
 }
 
+function v2TradeManualReviewCopy(reason) {
+  const text = String(reason || '').trim();
+  const age = text.match(/^(?:give|get) player (.+) is age ([0-9.]+) and requires manual dynasty review$/i);
+  if (age) return `${age[1]} is ${age[2]}, so Sandlot can’t grade this dynasty trade reliably yet. Review it manually in Fantrax.`;
+  const protectedAsset = text.match(/^(?:give|get) player (.+) is protected as a keeper\/minors asset/i);
+  if (protectedAsset) return `${protectedAsset[1]} is a protected keeper or minors asset, so Sandlot won’t grade this offer automatically. Review it manually in Fantrax.`;
+  return text || 'Sandlot cannot grade this offer reliably yet. Review it manually in Fantrax.';
+}
+
 function V2PlayerPicker({ label, source, model, value, onChange }) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState('');
@@ -3850,10 +3859,11 @@ function V2TradeGrader({ model, onAskSkipper }) {
                 <div style={{ marginTop:6, color:V2.ink, fontSize:12.5, lineHeight:1.4, fontWeight:750 }}>You get {(offer.get || []).map(item=>item.player_name).filter(Boolean).join(', ') || '—'}</div>
                 <div style={{ marginTop:2, color:V2.muted, fontSize:11.5, lineHeight:1.4, fontWeight:650 }}>You give {(offer.give || []).map(item=>item.player_name).filter(Boolean).join(', ') || '—'}</div>
                 {offer.includes_draft_pick ? <div style={{ marginTop:5, color:V2.warn, fontSize:10.5, lineHeight:1.35, fontWeight:750 }}>Includes a draft pick · picks are not modeled yet</div> : null}
+                {offer.manual_review_reason ? <div style={{ marginTop:5, color:V2.warn, fontSize:10.5, lineHeight:1.35, fontWeight:750 }}>{v2TradeManualReviewCopy(offer.manual_review_reason)}</div> : null}
                 <button onClick={()=>reviewIncoming(offer)} disabled={!offer.gradeable || loading} style={{ marginTop:9, minHeight:44, width:'100%', border:'none', borderRadius:999, background:offer.gradeable ? V2.ink : V2.hairline, color:offer.gradeable ? '#fff' : V2.muted, fontFamily:'inherit', fontSize:11.5, fontWeight:850, cursor:offer.gradeable && !loading ? 'pointer' : 'not-allowed' }}>
                   {offer.gradeable ? (reviewingTradeId === offer.trade_id ? 'Reviewing…' : 'Review exact offer') : offer.status === 'awaiting_execution' ? 'Already accepted in Fantrax' : 'Manual review required'}
                 </button>
-                {!offer.gradeable && !offer.includes_draft_pick && offer.status !== 'awaiting_execution' ? <div style={{ marginTop:6, color:V2.muted, fontSize:10.5, lineHeight:1.35 }}>This offer is incomplete, stale, or includes terms Sandlot cannot model exactly. Open Fantrax to inspect it.</div> : null}
+                {!offer.gradeable && !offer.includes_draft_pick && !offer.manual_review_reason && offer.status !== 'awaiting_execution' ? <div style={{ marginTop:6, color:V2.muted, fontSize:10.5, lineHeight:1.35 }}>This offer is incomplete, stale, or includes terms Sandlot cannot model exactly. Open Fantrax to inspect it.</div> : null}
               </div>
             ))}
           </div>

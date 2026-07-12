@@ -86,6 +86,23 @@ class TradeGradeError(Exception):
     """Raised for caller-visible problems (missing players, empty side, etc)."""
 
 
+def offer_validation_error(
+    snapshot_row: dict[str, Any], give_ids: list[str], get_ids: list[str],
+    *, expected_get_owner_id: str | None = None,
+) -> str | None:
+    """Return one safe fail-closed participant-policy reason without grading or AI work."""
+    try:
+        give_ids, get_ids = _validate_offer_ids(give_ids, get_ids)
+        data = snapshot_row.get("data") or {}
+        give_players, get_players = _resolve_trade_sides(
+            data, give_ids, get_ids, expected_get_owner_id=expected_get_owner_id,
+        )
+        _validate_trade_participants(give_players, get_players)
+    except TradeGradeError as exc:
+        return str(exc)
+    return None
+
+
 def grade_offer(
     snapshot_row: dict[str, Any],
     give_ids: list[str],
@@ -371,6 +388,8 @@ def _resolve_trade_sides(
     data: dict[str, Any],
     give_ids: list[str],
     get_ids: list[str],
+    *,
+    expected_get_owner_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     my_rows: dict[str, dict[str, Any]] = {}
     for row in (data.get("roster") or {}).get("rows") or []:
@@ -440,6 +459,8 @@ def _resolve_trade_sides(
 
     if len(selected_owner_ids) != 1:
         raise TradeGradeError("get players must all come from one opponent roster")
+    if expected_get_owner_id is not None and selected_owner_ids != {str(expected_get_owner_id)}:
+        raise TradeGradeError("get players no longer belong to the incoming offer counterparty")
     return give_players, get_players
 
 

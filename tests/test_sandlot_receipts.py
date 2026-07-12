@@ -1451,7 +1451,10 @@ class RecommendationReceiptApiTests(unittest.TestCase):
                 {"trade_id": "outbound", "proposed_by_id": "mine", "moves": []},
             ]},
         }
-        with patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot):
+        with (
+            patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot),
+            patch("sandlot_api.sandlot_trades.offer_validation_error", return_value=None),
+        ):
             response = self.client.get("/api/trades/incoming")
 
         self.assertEqual(response.status_code, 200)
@@ -1512,7 +1515,10 @@ class RecommendationReceiptApiTests(unittest.TestCase):
                 ],
             }]},
         }
-        with patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot):
+        with (
+            patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot),
+            patch("sandlot_api.sandlot_trades.offer_validation_error", return_value=None),
+        ):
             stale = self.client.post("/api/trades/grade", json={
                 "give": ["p1"], "get": ["p2"], "incoming_trade_id": "tx1", "incoming_snapshot_id": 280,
             })
@@ -1524,6 +1530,27 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         self.assertIn("snapshot changed", stale.json()["detail"])
         self.assertEqual(changed.status_code, 409)
         self.assertIn("changed or is no longer", changed.json()["detail"])
+
+    def test_incoming_trade_surfaces_participant_policy_before_review(self):
+        snapshot = {
+            "id": 281, "taken_at": NOW, "team_id": "mine",
+            "data": {"team_id": "mine", "pending_trades": [{
+                "trade_id": "tx-young", "proposed_by_id": "other", "moves": [
+                    {"from_team_id": "mine", "to_team_id": "other", "player_id": "p1", "player": "Mine"},
+                    {"from_team_id": "other", "to_team_id": "mine", "player_id": "p2", "player": "Young Player"},
+                ],
+            }]},
+        }
+        reason = "get player Young Player is age 24 and requires manual dynasty review"
+        with (
+            patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot),
+            patch("sandlot_api.sandlot_trades.offer_validation_error", return_value=reason),
+        ):
+            offer = self.client.get("/api/trades/incoming").json()["offers"][0]
+
+        self.assertFalse(offer["gradeable"])
+        self.assertIn("participant_policy", offer["blocked_reasons"])
+        self.assertEqual(offer["manual_review_reason"], reason)
 
     def test_incoming_trade_excludes_ambiguous_proposer_and_blocks_duplicate_players(self):
         base_moves = [
