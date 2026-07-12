@@ -6,12 +6,14 @@ import copy
 import hashlib
 import json
 import math
+from collections import Counter
 from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from sandlot_autopsy import PITCHER_TOKENS
+from sandlot_lineup import FULL_ACTIVE_TEMPLATE
 
 
 MONDAY_LINEUP_BUILDER_VERSION = "monday_lineup_v1"
@@ -354,6 +356,13 @@ def build_counterfactual_lineup_evaluation(
     unfilled = [str(slot).strip().upper() for slot in (recommendation.get("unfilled_slots") or [])]
     if any(slot not in SLOT_POSITION_IDS for slot in unfilled):
         raise ValueError("receipt unfilled slots are invalid")
+    template_counts = Counter(FULL_ACTIVE_TEMPLATE)
+    baseline_counts = Counter(item["slot"] for item in baseline["assignments"])
+    proposed_counts = Counter(item["slot"] for item in proposed["assignments"])
+    if any(count > template_counts[slot] for slot, count in baseline_counts.items()):
+        raise ValueError("baseline assignment exceeds the league active slot template")
+    if proposed_counts + Counter(unfilled) != template_counts:
+        raise ValueError("proposed assignment and unfilled slots do not match the league active template")
 
     days = participation.get("days")
     if not isinstance(days, list) or not days:

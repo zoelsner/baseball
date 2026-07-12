@@ -707,6 +707,7 @@ def receipts_missing_outcome_evaluation(
               ON e.receipt_id = r.receipt_id AND e.scoring_version = %s
             WHERE r.source = %s
               AND r.period_end < CURRENT_DATE
+              AND r.expires_at <= clock_timestamp()
               AND e.receipt_id IS NULL
               AND l.evidence->'counterfactual_capability'->>'eligible' = 'true'
             ORDER BY r.period_end, r.generated_at, r.receipt_id
@@ -722,6 +723,7 @@ def record_recommendation_outcome_evaluation(
     """Append one immutable scorer version without touching legacy outcome columns."""
     from sandlot_receipts import (
         COUNTERFACTUAL_LINEUP_SCORING_VERSION,
+        COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION,
         counterfactual_evidence_hash,
     )
 
@@ -736,6 +738,8 @@ def record_recommendation_outcome_evaluation(
     metrics = evaluation.get("metrics")
     if not source_version or not re.fullmatch(r"[0-9a-f]{64}", source_hash):
         raise ValueError("counterfactual source evidence identity is invalid")
+    if source_version != COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION:
+        raise ValueError("counterfactual source evidence version is unsupported")
     if not isinstance(evidence, dict) or not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("evidence_hash") or "")):
         raise ValueError("counterfactual evaluation evidence hash is required")
     if evidence["evidence_hash"] != counterfactual_evidence_hash(evidence):
@@ -784,6 +788,8 @@ def record_recommendation_outcome_evaluation(
         }
         if any(evidence.get(key) != value for key, value in expected.items()):
             raise ValueError("counterfactual evaluation does not match target receipt")
+        if evidence.get("decision_state") not in (None, receipt.get("decision_state")):
+            raise ValueError("counterfactual evaluation decision state is stale")
         period = evidence.get("period") if isinstance(evidence.get("period"), dict) else {}
         if str(period.get("start")) != str(receipt.get("period_start")) or str(period.get("end")) != str(receipt.get("period_end")):
             raise ValueError("counterfactual evaluation period does not match target receipt")

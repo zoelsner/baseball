@@ -18,7 +18,7 @@
   missing players, ambiguous two-way usage, illegal slots, or changed evidence
   fail closed. This telemetry is retrospective, not causal lift, does not prove
   execution, and is explicitly ineligible for autopilot. Current verification:
-  453 Python tests pass with 2 disposable-Postgres tests skipped.
+  456 Python tests pass with 2 disposable-Postgres tests skipped.
 
 - **Recommendation decisions in progress (#92):** the durable Monday lineup
   receipt foundation is merged. The current focused slice adds a sanitized

@@ -1,10 +1,12 @@
 import copy
 import hashlib
+import inspect
 import json
 import os
 import threading
 import time
 import unittest
+from collections import Counter
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import Mock, patch
@@ -20,6 +22,13 @@ from scripts import run_monday_lineup
 
 
 NOW = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+DEFAULT_UNFILLED = (
+    ["C", "1B", "2B", "3B", "SS"]
+    + ["OF"] * 2
+    + ["UT"] * 3
+    + ["SP"] * 5
+    + ["RP"] * 3
+)
 
 
 def receipt_fixture(*, entries=None, result=None, week_start=date(2026, 7, 13)):
@@ -52,7 +61,7 @@ def receipt_fixture(*, entries=None, result=None, week_start=date(2026, 7, 13)):
     result = result or {
         "lineup": [("SP", "Two Way"), ("OF", "Bench Bat")],
         "projected_total": 32.34567,
-        "unfilled": ["RP"],
+        "unfilled": list(DEFAULT_UNFILLED),
     }
     current = next((entry for entry in entries if entry.get("id") == "two-way"), entries[0])
     return sandlot_receipts.build_monday_lineup_receipt(
@@ -170,7 +179,7 @@ class RecommendationReceiptBuilderTests(unittest.TestCase):
             result={
                 "lineup": [("OF", "Bench Bat"), ("SP", "Two Way")],
                 "projected_total": 32.34567,
-                "unfilled": ["RP"],
+                "unfilled": list(DEFAULT_UNFILLED),
             },
         )
 
@@ -455,6 +464,23 @@ class CounterfactualLineupEvaluationTests(unittest.TestCase):
         self.assertFalse(unavailable["evidence"]["retryable"])
         self.assertFalse(unavailable["evidence"]["autopilot_eligible"])
 
+    def test_refresh_does_not_terminalize_database_writer_failure(self):
+        receipt = receipt_fixture()
+        receipt["period_evidence"] = period_evidence_fixture(receipt)
+        record = Mock(side_effect=ValueError("database validation failed"))
+        with (
+            patch.dict(os.environ, {"DATABASE_URL": "postgres://test"}),
+            patch.object(sandlot_db, "receipts_missing_outcome_evaluation", return_value=[receipt]),
+            patch.object(sandlot_db, "record_recommendation_outcome_evaluation", record),
+            patch.object(sandlot_db, "pending_recommendation_receipts", return_value=[]),
+        ):
+            sandlot_refresh._persist_recommendation_outcomes(
+                301, {"timestamp": "2026-07-20T12:00:00Z"}
+            )
+
+        self.assertEqual(record.call_count, 1)
+        self.assertEqual(record.call_args.kwargs["evaluation"]["state"], "scored")
+
     def test_repeated_real_slot_labels_and_partially_unfilled_type_are_valid(self):
         base = receipt_fixture()
         entries = [
@@ -476,7 +502,12 @@ class CounterfactualLineupEvaluationTests(unittest.TestCase):
         receipt = receipt_fixture(entries=entries, result={
             "lineup": [("SP", "Two Way"), ("OF", "Bench Bat"), ("OF", "Second Bat")],
             "projected_total": 37.34567,
-            "unfilled": ["OF", "RP", "RP"],
+            "unfilled": (
+                ["C", "1B", "2B", "3B", "SS", "OF"]
+                + ["UT"] * 3
+                + ["SP"] * 5
+                + ["RP"] * 3
+            ),
         })
         archive = period_evidence_fixture(receipt)
         archive["players"].append({
@@ -496,7 +527,10 @@ class CounterfactualLineupEvaluationTests(unittest.TestCase):
         )
 
         self.assertEqual(evaluation["metrics"]["counterfactual_proposed_total"], 39.0)
-        self.assertEqual(evaluation["evidence"]["unfilled_slots"], ["OF", "RP", "RP"])
+        self.assertEqual(Counter(evaluation["evidence"]["unfilled_slots"]), Counter({
+            "C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1,
+            "OF": 1, "UT": 3, "SP": 5, "RP": 3,
+        }))
 
     def test_scores_static_baseline_and_proposal_separately_from_observed_total(self):
         receipt = {**receipt_fixture(), "decision_state": "accepted"}
@@ -579,6 +613,15 @@ class CounterfactualLineupEvaluationTests(unittest.TestCase):
                     receipt=receipt, period_evidence=archive
                 )
 
+    def test_proposal_and_unfilled_counts_must_equal_full_league_template(self):
+        receipt = receipt_fixture()
+        receipt["recommendation"]["unfilled_slots"].pop()
+
+        with self.assertRaisesRegex(ValueError, "do not match the league active template"):
+            sandlot_receipts.build_counterfactual_lineup_evaluation(
+                receipt=receipt, period_evidence=period_evidence_fixture(receipt)
+            )
+
 
 class RecommendationReceiptPersistenceTests(unittest.TestCase):
     def test_schema_is_durable_and_all_states_are_constrained(self):
@@ -603,6 +646,9 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
         self.assertIn("CHECK (lifecycle_state IN ('active', 'superseded', 'expired'))", sql)
         self.assertIn("CHECK (decision_state IN ('pending', 'accepted', 'rejected'))", sql)
         self.assertIn("WHERE lifecycle_state = 'active'", sql)
+        self.assertIn("r.expires_at <= clock_timestamp()", inspect.getsource(
+            sandlot_db.receipts_missing_outcome_evaluation
+        ))
 
     def test_counterfactual_evaluation_appends_without_touching_legacy_outcome(self):
         receipt = {
@@ -725,6 +771,30 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
             sandlot_db.record_recommendation_outcome_evaluation(
                 receipt_id=receipt["receipt_id"], evaluation=evaluation
             )
+
+    def test_counterfactual_writer_rejects_stale_decision_alignment(self):
+        evaluated_receipt = {**receipt_fixture(), "decision_state": "accepted"}
+        locked_receipt = {**evaluated_receipt, "decision_state": "rejected"}
+        archive = period_evidence_fixture(evaluated_receipt)
+        evaluation = sandlot_receipts.build_counterfactual_lineup_evaluation(
+            receipt=evaluated_receipt, period_evidence=archive
+        )
+
+        class Result:
+            def fetchone(self):
+                return locked_receipt
+        class FakeConn:
+            def execute(self, sql, params=None):
+                return Result()
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            with self.assertRaisesRegex(ValueError, "decision state is stale"):
+                sandlot_db.record_recommendation_outcome_evaluation(
+                    receipt_id=evaluated_receipt["receipt_id"], evaluation=evaluation
+                )
 
     def test_counterfactual_writer_persists_terminal_unavailable_state(self):
         receipt = receipt_fixture()

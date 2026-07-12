@@ -209,9 +209,6 @@ def _persist_recommendation_outcomes(snapshot_id: int, snapshot: dict[str, Any])
                     receipt=receipt,
                     period_evidence=receipt["period_evidence"],
                 )
-                sandlot_db.record_recommendation_outcome_evaluation(
-                    receipt_id=receipt["receipt_id"], evaluation=evaluation
-                )
             except ValueError as exc:
                 try:
                     unavailable = sandlot_receipts.build_counterfactual_lineup_unavailable(
@@ -232,6 +229,16 @@ def _persist_recommendation_outcomes(snapshot_id: int, snapshot: dict[str, Any])
                     "Counterfactual recommendation evaluation failed for receipt_id=%s",
                     receipt.get("receipt_id"),
                 )
+            else:
+                try:
+                    sandlot_db.record_recommendation_outcome_evaluation(
+                        receipt_id=receipt["receipt_id"], evaluation=evaluation
+                    )
+                except Exception:
+                    log.exception(
+                        "Counterfactual recommendation evaluation write failed for receipt_id=%s",
+                        receipt.get("receipt_id"),
+                    )
     except Exception:
         log.exception("Counterfactual recommendation evaluation batch failed for snapshot_id=%s", snapshot_id)
     try:
