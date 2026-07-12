@@ -22,6 +22,7 @@ import sandlot_data_quality
 import sandlot_db
 import sandlot_future_games
 import sandlot_matchup
+import sandlot_receipts
 
 log = logging.getLogger(__name__)
 REFRESH_LOCK_ID = 2026051501
@@ -84,6 +85,7 @@ def _run_refresh_unlocked(source: str, started: float) -> RefreshResult:
         )
         if status == "success":
             _persist_projection_log(snapshot_id, snapshot)
+            _persist_recommendation_outcomes(snapshot_id, snapshot)
         sandlot_db.finish_refresh_run(
             run_id,
             status=status,
@@ -177,6 +179,44 @@ def _persist_projection_log(snapshot_id: int, snapshot: dict[str, Any]) -> None:
             sandlot_db.update_projection_actuals(**actual)
     except Exception:
         log.exception("Projection log write failed for snapshot_id=%s", snapshot_id)
+
+
+def _persist_recommendation_outcomes(snapshot_id: int, snapshot: dict[str, Any]) -> None:
+    """Score exact completed receipt periods without blocking a healthy refresh."""
+    if not os.environ.get("DATABASE_URL"):
+        return
+    try:
+        receipts = sandlot_db.pending_recommendation_receipts(source="monday_lineup")
+        taken_at = snapshot.get("timestamp")
+        if not taken_at:
+            raise ValueError("Successful snapshot is missing its capture timestamp")
+        for receipt in receipts:
+            try:
+                outcome = sandlot_receipts.build_team_result_outcome(
+                    receipt=receipt,
+                    snapshot=snapshot,
+                    snapshot_id=snapshot_id,
+                    snapshot_taken_at=taken_at,
+                )
+                if outcome:
+                    sandlot_db.score_recommendation_receipt_team_result(
+                        receipt_id=receipt["receipt_id"], outcome=outcome
+                    )
+                    continue
+                unavailable = sandlot_receipts.build_team_result_unavailable(
+                    receipt=receipt,
+                    snapshot=snapshot,
+                    snapshot_id=snapshot_id,
+                    snapshot_taken_at=taken_at,
+                )
+                if unavailable:
+                    sandlot_db.mark_recommendation_receipt_outcome_unavailable(
+                        receipt_id=receipt["receipt_id"], evidence=unavailable
+                    )
+            except Exception:
+                log.exception("Recommendation outcome failed for receipt_id=%s", receipt.get("receipt_id"))
+    except Exception:
+        log.exception("Recommendation outcome write failed for snapshot_id=%s", snapshot_id)
 
 
 def _maybe_apply_dom_slot_proof(

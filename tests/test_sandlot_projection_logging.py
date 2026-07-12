@@ -60,6 +60,28 @@ def projection_ready_snapshot():
 
 
 class ProjectionLoggingTests(unittest.TestCase):
+    def test_outcome_batch_continues_after_one_poison_receipt(self):
+        valid_outcome = {"scoring_version": "team_result_v1"}
+        score = Mock()
+        with patch.dict(sandlot_refresh.os.environ, {"DATABASE_URL": "postgres://test"}), patch.object(
+            sandlot_refresh.sandlot_db,
+            "pending_recommendation_receipts",
+            return_value=[{"receipt_id": "bad"}, {"receipt_id": "good"}],
+        ), patch.object(
+            sandlot_refresh.sandlot_receipts,
+            "build_team_result_outcome",
+            side_effect=[ValueError("bad receipt"), valid_outcome],
+        ), patch.object(
+            sandlot_refresh.sandlot_db,
+            "score_recommendation_receipt_team_result",
+            score,
+        ):
+            sandlot_refresh._persist_recommendation_outcomes(
+                123, {"timestamp": "2026-07-20T12:00:00Z"}
+            )
+
+        score.assert_called_once_with(receipt_id="good", outcome=valid_outcome)
+
     def test_projection_logs_survive_snapshot_pruning(self):
         calls = []
 

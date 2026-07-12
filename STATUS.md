@@ -275,10 +275,12 @@
    disabled until #63's executor safety can accept a lineup-only proposal with
    named OUT/IN players, trusted slot provenance, trusted movability, a
    preflight refresh, Zach confirmation, and post-write verification.
-2. **Score recommendation outcomes** — join accepted/rejected receipts to the
-   completed scoring week, record actual baseline/value/gain with a versioned
-   scorer, and report calibration/decision lift before considering selective
-   autopilot.
+2. **Finish counterfactual recommendation outcomes** — `team_result_v1` now
+   joins receipts to an exact completed scoring week and records the observed
+   team total plus forecast residual with explicit unverified-adherence and
+   no-counterfactual labels. Next archive per-player period points and lineup
+   participation for `counterfactual_lineup_v1`; only that version may record
+   actual baseline/gain or contribute to selective-autopilot graduation.
 3. **Finish #67 real-slot proof archival** — the production gate is now clear
    via raw `posId`, but keep `diagnose_slot_provenance.py` available for DOM
    slot proof if Fantrax changes raw roster semantics.

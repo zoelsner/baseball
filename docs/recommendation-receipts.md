@@ -52,7 +52,39 @@ receipt decision to the loopback owner bridge, which retains the bearer token
 locally and revalidates the upstream identity and no-write boundary. Mobile or
 bridge-offline sessions remain useful and read-only instead of showing dead
 controls. Accepting means “I intend to use this plan”; it does not claim the
-lineup was changed. Outcome scoring remains a separate future slice.
+lineup was changed.
+
+## Outcome telemetry
+
+`team_result_v1` scores a receipt only when a later successful snapshot
+contains a completed Fantrax matchup for the same league, team, and exact
+period start/end. It copies the final observed team score and normalized source
+identity into the receipt, then records the projected-total residual and
+absolute error. Identical retries are no-ops; changed evidence conflicts
+instead of silently rewriting history.
+
+Missing evidence remains retryable through an eight-day finalization grace
+window. Only after Fantrax exposes a newer authoritative completed period does
+Sandlot terminalize the missed receipt as `unavailable`; one failed refresh or
+one incomplete response never does so.
+
+This first scorer is forecast telemetry, not decision uplift. Because Sandlot
+does not yet archive per-player period scoring and active/reserve participation,
+it always records:
+
+- `measurement_scope: observed_team_total`
+- `adherence_state: unverified`
+- `counterfactual_state: unavailable`
+- `actual_baseline: null`
+- `actual_gain: null`
+- `autopilot_eligible: false`
+
+`GET /api/recommendation-outcomes/recent` exposes those labels with recent
+scored receipts. Neither an accepted intent nor a small team-total error proves
+that the proposed lineup was used. `counterfactual_lineup_v1` must first archive
+complete player-period scoring, roster ownership, and slot participation before
+Sandlot may calculate realized lineup gain or use outcomes to graduate an
+action toward autopilot.
 
 ## Safety boundary
 

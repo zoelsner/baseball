@@ -231,6 +231,34 @@ def latest_recommendation_receipt(source: Literal["monday_lineup"] = "monday_lin
     return jsonable_encoder(_public_recommendation_receipt(row))
 
 
+@app.get("/api/recommendation-outcomes/recent")
+def recent_recommendation_outcomes(
+    source: Literal["monday_lineup"] = "monday_lineup",
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Expose labeled forecast telemetry without claiming realized lineup gain."""
+    try:
+        rows = sandlot_db.recent_scored_recommendation_receipts(source=source, limit=limit)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Recommendation outcomes unavailable: {exc}") from exc
+    return jsonable_encoder({
+        "scoring_version": "team_result_v1",
+        "measurement_scope": "observed_team_total",
+        "counterfactual_gain_available": False,
+        "autopilot_eligible": False,
+        "items": [
+            {
+                "receipt_id": row.get("receipt_id"),
+                "period": {"start": row.get("period_start"), "end": row.get("period_end")},
+                "decision_state": row.get("decision_state"),
+                "projected_team_total": row.get("projected_value"),
+                "outcome": _public_recommendation_outcome(row),
+            }
+            for row in rows
+        ],
+    })
+
+
 @app.post("/api/recommendation-receipts/{receipt_id}/decision")
 def decide_recommendation_receipt(
     receipt_id: str,
@@ -1122,11 +1150,32 @@ def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
         "decision_reason": row.get("decision_reason"),
         "decided_at": row.get("decided_at"),
         "outcome_state": row.get("outcome_state"),
+        "outcome": _public_recommendation_outcome(row),
         "generated_at": row.get("generated_at"),
         "expires_at": row.get("expires_at"),
         "read_only": True,
         "fantrax_changed": False,
         "writes_enabled": False,
+    }
+
+
+def _public_recommendation_outcome(row: dict[str, Any]) -> dict[str, Any] | None:
+    if row.get("outcome_state") != "scored":
+        return None
+    evidence = row.get("outcome_evidence") if isinstance(row.get("outcome_evidence"), dict) else {}
+    return {
+        "scoring_version": row.get("scoring_version"),
+        "measurement_scope": evidence.get("measurement_scope"),
+        "actual_team_total": row.get("actual_value"),
+        "actual_baseline": None,
+        "actual_gain": None,
+        "team_total_residual": evidence.get("team_total_residual"),
+        "absolute_error": evidence.get("absolute_error"),
+        "adherence_state": evidence.get("adherence_state"),
+        "counterfactual_state": evidence.get("counterfactual_state"),
+        "counterfactual_reason": evidence.get("counterfactual_reason"),
+        "evaluated_at": row.get("evaluated_at"),
+        "autopilot_eligible": False,
     }
 
 

@@ -57,6 +57,11 @@ browser never receives the owner bearer. Recording accept/reject intent is a
 terminal ledger update, not a Fantrax mutation; the bridge and API both assert
 `fantrax_changed=false` and `writes_enabled=false`.
 
+Completed-period refreshes also feed the versioned outcome scorer. The current
+`team_result_v1` contract records exact-period observed team totals and forecast
+residuals only. Counterfactual baseline/gain fields remain null and the outcome
+is never autopilot-eligible until player-period lineup evidence exists.
+
 The receipt ledger is not an execution log. `execution_requests` remains the
 separate dry-run control plane, and any future link between them must preserve
 exact confirmation, visible live preflight, protected-player enforcement, and
