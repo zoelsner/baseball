@@ -22,6 +22,9 @@ from typing import Any
 
 import requests
 from fantraxapi import FantraxAPI
+
+import mlb_stats
+import sandlot_trade_evidence
 try:
     from fantraxapi import api as _fantrax_api
 except Exception:  # fantraxapi 0.2.x exposes raw calls through FantraxAPI._request.
@@ -1511,9 +1514,11 @@ def extract_matchup_contexts(
         periods = api.scoring_period_results(season=True, playoffs=False)
     except Exception as e:
         log.error("matchup schedule failed: %s", e)
-        return {"matchup": None, "editable_matchup": None}
+        return {"matchup": None, "editable_matchup": None, "regular_season_periods": []}
     if not periods:
-        return {"matchup": None, "editable_matchup": None}
+        return {"matchup": None, "editable_matchup": None, "regular_season_periods": []}
+
+    regular_season_periods = _regular_season_periods(periods)
 
     today = datetime.now(timezone.utc).date()
     current = next(
@@ -1554,7 +1559,81 @@ def extract_matchup_contexts(
         and editable_payload.get("period_number") == current_payload.get("period_number")
     ):
         editable_payload = None
-    return {"matchup": current_payload, "editable_matchup": editable_payload}
+    return {
+        "matchup": current_payload,
+        "editable_matchup": editable_payload,
+        "regular_season_periods": regular_season_periods,
+    }
+
+
+def _regular_season_periods(periods: dict[Any, Any]) -> list[dict[str, Any]]:
+    out = []
+    for key, period in periods.items():
+        start = getattr(period, "start", None)
+        end = getattr(period, "end", None)
+        number = getattr(getattr(period, "period", None), "number", None)
+        out.append({
+            "period_number": str(number if number not in (None, "") else key),
+            "period_name": str(getattr(period, "name", "") or "").strip() or None,
+            "start": start.isoformat() if hasattr(start, "isoformat") else str(start or ""),
+            "end": end.isoformat() if hasattr(end, "isoformat") else str(end or ""),
+            "regular_season": True,
+        })
+    return sorted(out, key=lambda item: (item["start"], item["end"], item["period_number"]))
+
+
+def extract_trade_horizon_calendar(
+    *, league_id: str, periods: list[dict[str, Any]], captured_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Fetch one minimal MLB schedule and bind exact first events to Fantrax periods."""
+    dated = [
+        item for item in periods
+        if isinstance(item, dict) and item.get("start") and item.get("end")
+    ]
+    if not dated:
+        return sandlot_trade_evidence.unavailable_period_calendar(
+            league_id=league_id, captured_at=captured_at or datetime.now(timezone.utc), reason="fantrax_periods_missing"
+        )
+    try:
+        start = min(str(item["start"]) for item in dated)
+        end = max(str(item["end"]) for item in dated)
+        response = requests.get(
+            f"{mlb_stats.BASE_URL}/schedule",
+            params={
+                "sportId": 1, "gameType": "R", "startDate": start, "endDate": end,
+                "fields": "dates,games,gamePk,gameDate,status,detailedState",
+            },
+            timeout=mlb_stats.DEFAULT_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        log.warning("Trade horizon MLB schedule fetch failed", exc_info=True)
+        return sandlot_trade_evidence.unavailable_period_calendar(
+            league_id=league_id, captured_at=captured_at or datetime.now(timezone.utc), reason="mlb_schedule_fetch_failed"
+        )
+    try:
+        return sandlot_trade_evidence.build_period_calendar(
+            league_id=league_id, periods=periods, schedule_payload=payload,
+            captured_at=captured_at or datetime.now(timezone.utc),
+        )
+    except Exception:
+        log.warning("Trade horizon calendar normalization failed", exc_info=True)
+        return sandlot_trade_evidence.unavailable_period_calendar(
+            league_id=league_id, captured_at=captured_at or datetime.now(timezone.utc),
+            reason="calendar_normalization_failed",
+        )
+
+
+def extract_trade_player_identities(
+    *, snapshot: dict[str, Any], season: int | None, observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    return sandlot_trade_evidence.build_player_identity_index(
+        snapshot=snapshot,
+        observed_at=observed_at,
+        resolver=mlb_stats.resolve_player_identity,
+        season=season,
+    )
 
 
 def _period_by_number(periods: dict[Any, Any], number: Any) -> Any:
@@ -2092,8 +2171,10 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
     """Build the daily snapshot. Each section is independently wrapped."""
     api = FantraxAPI(league_id, session=session)
 
+    collection_started_at = datetime.now(timezone.utc)
     snapshot = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": None,
+        "collection_started_at": collection_started_at.isoformat(),
         "league_id": league_id,
         "team_id": team_id,
         "team_name": None,
@@ -2103,6 +2184,9 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
         "standings": None,
         "matchup": None,
         "editable_matchup": None,
+        "regular_season_periods": [],
+        "trade_horizon_calendar": None,
+        "trade_player_identities": None,
         "completed_lineup_evidence": None,
         "transactions": None,
         "pending_trades": None,
@@ -2153,7 +2237,29 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
     if isinstance(matchup_contexts, dict):
         snapshot["matchup"] = matchup_contexts.get("matchup")
         snapshot["editable_matchup"] = matchup_contexts.get("editable_matchup")
+        snapshot["regular_season_periods"] = matchup_contexts.get("regular_season_periods") or []
+
+    snapshot["trade_horizon_calendar"] = extract_trade_horizon_calendar(
+        league_id=league_id,
+        periods=snapshot.get("regular_season_periods") or [],
+    )
+    try:
+        snapshot["trade_player_identities"] = extract_trade_player_identities(
+            snapshot=snapshot,
+            season=(snapshot.get("trade_horizon_calendar") or {}).get("season"),
+        )
+    except Exception:
+        log.warning("Trade player identity capture failed", exc_info=True)
 
     _promote_roster_lineup_policy(snapshot)
 
+    _complete_snapshot_observation(snapshot)
+
     return snapshot
+
+
+def _complete_snapshot_observation(
+    snapshot: dict[str, Any], *, completed_at: datetime | None = None,
+) -> None:
+    """Make snapshot taken_at mean all included feature sources are available."""
+    snapshot["timestamp"] = (completed_at or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()

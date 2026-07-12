@@ -91,12 +91,30 @@ future production horizons for trades; and multi-season keeper/prospect
 outcomes for dynasty analysis. Reusing this weekly label for those questions
 would be a modeling error.
 
-The trade path now preserves exact incoming Fantrax offer identity in
-`trade_assessment_v2`, while keeping manual packages explicitly unbound. This
-is lineage groundwork, not a trade model. Before training, Sandlot still needs
-a predeclared first-complete-period horizon, stable MLB identity and scoring
-role per asset, and append-only league-scored player-period evidence. Owner
+The trade path preserves exact incoming Fantrax offer identity and now freezes
+a predeclared, first-complete-period measurement contract in
+`trade_assessment_v3`. The contract binds assessment time, a decision-time
+Fantrax/MLB calendar hash, a strict first-scoring-event deadline, verified
+league scoring weights, an offer cluster, and exact Fantrax player-role scoring
+entities. It can be explicitly ineligible without blocking the useful trade
+review. This is measurement groundwork, not a trade model. Before training,
+Sandlot still needs append-only league-scored player-period evidence. Owner
 intent, observed ownership transfer, and verified Fantrax execution must remain
 three different facts. The future asset-production label must be calculated for
 accepted, rejected, and undecided assessments alike so selection by owner intent
 does not masquerade as recommendation quality.
+
+The eventual first label is named `static_package_asset_points_delta`. Package
+sizes and each scorer-role contribution must remain visible because a raw
+two-for-one package total does not account for the open roster slot,
+replacement level, lineup usage, or opportunity cost. It must never be
+presented as accept/reject value, weekly lineup impact, or dynasty value.
+
+This evidence is structurally selected. V3 receipts exist only for packages
+Zach chose to review, and today's deterministic grader admits player-only,
+adult, current-rate-gradeable offers while routing draft picks, protected or
+minor-league assets, players age 24 or younger, and missing age/FP/G evidence
+to manual review. Results therefore cannot be generalized to all observed
+offers or dynasty trades. Before any quality claim, report the full funnel:
+incoming offers observed → reviewed → receipted → contract eligible → mature →
+scored, with bounded exclusion reasons at every transition.
