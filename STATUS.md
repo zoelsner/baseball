@@ -1,9 +1,22 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-12** (counterfactual outcome evaluation in progress).
+> Last updated: **2026-07-12** (recommendation learning report in progress).
 
 ## Where things stand
+
+- **Recommendation learning report in progress (#133):** a sanitized public
+  report now aggregates the append-only `counterfactual_lineup_v1` ledger into
+  scored/unavailable counts, accepted-and-observed decisions, actual lineup
+  matches, average hindsight edge, and recent period summaries. It exposes no
+  player-level archive rows or evidence hashes. Today renders a compact mobile
+  learning card directly below the weekly receipt with explicit 0/8 scored and
+  0/4 accepted-and-observed sample gates. The card always says `Autopilot
+  locked`; reaching those sample counts still does not grant Fantrax write
+  authority. Current verification: 461 Python tests pass (2 disposable-
+  Postgres tests skipped), 43 deterministic mobile browser tests pass (2
+  environment-specific tests skipped), and the populated card received a
+  visual screenshot check.
 
 - **Counterfactual recommendation evaluation in progress (#130):** completed
   single-window Fantrax lineup evidence can now score the immutable Monday

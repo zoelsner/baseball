@@ -1787,6 +1787,125 @@ function V2RecommendationReceipt({ sync, onAskSkipper }) {
   );
 }
 
+function V2RecommendationLearning({ snapshotId }) {
+  const [report, setReport] = React.useState(null);
+  const [state, setState] = React.useState('loading');
+
+  React.useEffect(() => {
+    if (!snapshotId) return undefined;
+    let cancelled = false;
+    if (!report) setState('loading');
+    fetch('/api/recommendation-learning', { cache:'no-store' })
+      .then(async response => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body?.detail || `Learning report failed (${response.status})`);
+        return body;
+      })
+      .then(body => {
+        if (cancelled) return;
+        setReport(body);
+        setState('ready');
+      })
+      .catch(() => {
+        if (!cancelled) setState(report ? 'stale' : 'error');
+      });
+    return () => { cancelled = true; };
+  }, [snapshotId]);
+
+  if (state === 'loading') return null;
+  if (state === 'error') {
+    return <div role="alert"><V2Caution eyebrow="Learning report unavailable" tone="warn">The lineup evidence ledger could not be read. No automation state changed.</V2Caution></div>;
+  }
+
+  const summary = report?.summary || {};
+  const requirements = Array.isArray(report?.evidence_checkpoint?.requirements)
+    ? report.evidence_checkpoint.requirements
+    : [];
+  const scored = Number(summary.scored || 0);
+  const aligned = Number(summary.accepted_and_observed || 0);
+  const rawAverage = summary.average_counterfactual_gain;
+  const hasAverage = typeof rawAverage === 'number' && Number.isFinite(rawAverage);
+  const average = hasAverage ? rawAverage : null;
+  const scoredRequirement = requirements.find(item => item?.key === 'scored_evaluations') || { current:scored, required:8 };
+  const alignedRequirement = requirements.find(item => item?.key === 'accepted_and_observed') || { current:aligned, required:4 };
+  const progressRows = [
+    { label:'Scored weeks', ...scoredRequirement },
+    { label:'Accepted + observed', ...alignedRequirement },
+  ];
+  const cardShadow = '0 0 0 1px rgba(15,23,42,0.055), 0 1px 2px -1px rgba(15,23,42,0.07), 0 8px 22px rgba(31,20,12,0.045)';
+
+  return (
+    <section aria-labelledby="recommendation-learning-title" style={{ background:V2.surface, borderRadius:24, padding:'16px 18px', boxShadow:cardShadow }}>
+      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
+        <div style={{ minWidth:0 }}>
+          <V2Eyebrow color={V2.inLineup}>Learning loop</V2Eyebrow>
+          <h2 id="recommendation-learning-title" style={{ margin:'7px 0 0', color:V2.ink, fontFamily:V2.fontDisplay, fontSize:21, lineHeight:1.08, letterSpacing:'-0.025em', textWrap:'balance' }}>
+            {scored ? 'Early lineup evidence' : 'Learning from completed weeks'}
+          </h2>
+        </div>
+        <span style={{ flexShrink:0, background:V2.warnSoft, color:V2.warn, borderRadius:999, padding:'6px 9px', fontSize:9.5, lineHeight:1, fontWeight:900, letterSpacing:'0.06em', textTransform:'uppercase', whiteSpace:'nowrap' }}>
+          Autopilot locked
+        </span>
+      </div>
+
+      {state === 'stale' ? (
+        <div role="status" style={{ marginTop:11, background:V2.warnSoft, color:V2.warn, borderRadius:12, padding:'9px 10px', fontSize:10.5, lineHeight:1.4, fontWeight:800, textWrap:'pretty' }}>
+          Couldn’t update — showing previous evidence.
+        </div>
+      ) : null}
+
+      {scored ? (
+        <div style={{ marginTop:13, display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:7 }}>
+          {[
+            { value:scored, label:'scored weeks' },
+            { value:hasAverage ? v2Signed(average, 1) : '—', label:'avg hindsight edge' },
+            { value:aligned, label:'accepted + observed' },
+          ].map(item => (
+            <div key={item.label} style={{ minWidth:0, background:V2.surface2, borderRadius:12, padding:'10px 7px', textAlign:'center' }}>
+              <div style={{ color:V2.ink, fontFamily:V2.fontMono, fontSize:17, lineHeight:1, fontWeight:900, fontVariantNumeric:'tabular-nums' }}>{item.value}</div>
+              <div style={{ marginTop:5, color:V2.muted, fontSize:9.5, lineHeight:1.2, fontWeight:800, textWrap:'balance' }}>{item.label}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p style={{ margin:'12px 0 0', color:V2.body, fontSize:12.2, lineHeight:1.5, fontWeight:700, textWrap:'pretty' }}>
+          No eligible completed lineup receipts yet. Sandlot is collecting evidence before automation can even be reviewed.
+        </p>
+      )}
+
+      <div style={{ marginTop:13, display:'flex', flexDirection:'column', gap:9 }}>
+        {progressRows.map(item => {
+          const current = Math.max(0, Number(item.current || 0));
+          const required = Math.max(1, Number(item.required || 1));
+          const percent = Math.min(100, current / required * 100);
+          return (
+            <div key={item.label}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, color:V2.muted, fontSize:10.5, lineHeight:1.2, fontWeight:800 }}>
+                <span>{item.label}</span>
+                <span style={{ fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums' }}>{current}/{required}</span>
+              </div>
+              <div style={{ marginTop:5, height:5, borderRadius:999, background:V2.hairline2, overflow:'hidden' }}>
+                <div
+                  role="progressbar"
+                  aria-label={`${item.label} evidence progress`}
+                  aria-valuemin={0}
+                  aria-valuemax={required}
+                  aria-valuenow={Math.min(current, required)}
+                  style={{ width:`${percent}%`, height:'100%', borderRadius:999, background:item.passed ? V2.ok : V2.inLineup }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop:12, paddingTop:10, borderTop:`1px solid ${V2.hairline2}`, color:V2.muted, fontSize:10.5, lineHeight:1.45, fontWeight:700, textWrap:'pretty' }}>
+        Counterfactual only — this measures a static lineup in hindsight. It does not prove causality, execute Fantrax moves, or grant write authority.
+      </div>
+    </section>
+  );
+}
+
 function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
   const health = v2RosterHealth(model);
   const dataQuality = model.dataQuality || null;
@@ -1859,6 +1978,8 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
       />
 
       <V2RecommendationReceipt sync={sync} onAskSkipper={onAskSkipper}/>
+
+      <V2RecommendationLearning snapshotId={model.snapshotId}/>
 
       <V2HotSwapsPanel
         items={hotSwapItems}
