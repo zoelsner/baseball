@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 
 BRIEF_TYPE_GRADE = "trade_grade"
 BRIEF_TYPE_COUNTER = "trade_counter"
+TRADE_ELIGIBILITY_POLICY_VERSION = "trade_eligibility_v1"
 MIN_COUNTER_ADD_FPPG = 0.75
 MIN_VALID_DYNASTY_AGE = 16
 MAX_VALID_DYNASTY_AGE = 50
@@ -152,6 +153,7 @@ def grade_offer(
         "my_get_fppg": deltas["my_get_fppg"],
         "my_give": [_slim_player(p) for p in give_players],
         "my_get": [_slim_player(p) for p in get_players],
+        "eligibility_evidence": _trade_eligibility_evidence(give_players, get_players),
         "rationale": rationale,
         "counters": counter_result["counters"],
         "my_weakest_position": counter_result["my_weakest_position"],
@@ -159,6 +161,32 @@ def grade_offer(
         "analysis": analysis,
         "model": model,
         "cached": cached,
+    }
+
+
+def _trade_eligibility_evidence(
+    give_players: list[dict[str, Any]],
+    get_players: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Retain normalized, non-secret facts behind the fail-closed participant gate."""
+    participants = []
+    for side, players in (("give", give_players), ("get", get_players)):
+        for row in players:
+            participants.append({
+                "side": side,
+                "player_id": str(row.get("id") or ""),
+                "slot": str(row.get("slot") or "").strip() or None,
+                "age": _number(row.get("age")),
+                "age_source": str(row.get("age_source") or "").strip() or None,
+                "protected_trade_player": _is_protected_trade_player(row),
+                "requires_manual_dynasty_review": (_age(row) or 0) <= DYNASTY_MANUAL_REVIEW_MAX_AGE,
+                "fppg_valid": _number(row.get("fppg")) is not None,
+            })
+    return {
+        "policy_version": TRADE_ELIGIBILITY_POLICY_VERSION,
+        "maximum_auto_graded_age_floor": DYNASTY_MANUAL_REVIEW_MAX_AGE,
+        "participants": sorted(participants, key=lambda item: (item["side"], item["player_id"])),
+        "all_checks_passed": True,
     }
 
 

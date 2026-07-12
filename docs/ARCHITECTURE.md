@@ -45,8 +45,9 @@ If these disagree, resolve the conflict before implementation.
 ## Recommendation Evidence
 
 `recommendation_receipts` preserves immutable decision-time evidence beyond the
-short snapshot retention window. The first writer is the deterministic Monday
-lineup optimizer. Receipts are versioned, scoped to an exact league/team/week,
+short snapshot retention window. The deterministic Monday lineup optimizer and
+trade cockpit write receipts. Receipts are versioned and scoped to an exact
+league/team/opportunity,
 and superseded rather than overwritten when inputs change. See
 `docs/recommendation-receipts.md` for identity, lifecycle, and execution
 boundaries.
@@ -109,6 +110,10 @@ horizon today. Weekly and rest-of-season cards are explicitly unavailable, and
 average age is labeled as a limited dynasty signal. The frontend must preserve
 those evidence states and must never turn a trade recommendation into an
 automatic Fantrax write.
+
+Each grade also records an immutable, snapshot-scoped `trade_assessment`
+receipt. Owner intent may be recorded through the same loopback bridge used by
+lineup receipts, but the receipt cannot authorize or imply a trade mutation.
 
 ### Skipper
 

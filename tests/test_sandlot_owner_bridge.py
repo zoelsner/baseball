@@ -170,6 +170,26 @@ class OwnerBridgeTests(unittest.TestCase):
         self.assertEqual(kwargs["json"], payload)
         self.assertFalse(kwargs["allow_redirects"])
 
+    def test_trade_decision_proxy_accepts_trade_receipt_and_sanitizes_evidence(self):
+        receipt_id = f"trade-assessment:{'b' * 64}"
+        payload = {"decision": "rejected", "input_hash": "b" * 64}
+        upstream = {
+            "receipt_id": receipt_id, "input_hash": "b" * 64,
+            "source": "trade_cockpit", "action_type": "trade_assessment",
+            "lifecycle_state": "active", "decision_state": "rejected",
+            "trade": {"guardrails": {"manual_execution_only": True, "fantrax_write_authorized": False}},
+            "fantrax_changed": False, "writes_enabled": False, "changed": True,
+            "recommendation": {"private": True},
+        }
+        bridge = self.make_bridge(FakeHttp([FakeResponse(200, upstream)]))
+
+        status, body = bridge.decide(receipt_id, payload)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action_type"], "trade_assessment")
+        self.assertTrue(body["trade"]["guardrails"]["manual_execution_only"])
+        self.assertNotIn("recommendation", body)
+
     def test_decision_proxy_rejects_malformed_input_and_mismatched_upstream(self):
         receipt_id = f"monday-lineup:{'a' * 64}"
         http = FakeHttp()

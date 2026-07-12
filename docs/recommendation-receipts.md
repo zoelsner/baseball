@@ -21,6 +21,18 @@ Dictionary and assignment order do not change the hash. Material projection,
 assignment, provenance, or target-week changes do. Wall-clock generation time
 and presentation prose are not decision inputs and are not hashed.
 
+Trade assessment V1 uses the same ledger and hashes the exact league, team,
+snapshot, give/get player identities and decision-time player facts,
+deterministic current-rate grade, explicitly supported or unavailable horizon
+states, and the manual-execution guardrail. Trade scopes include the snapshot
+ID and both offer sides, so a refresh produces new evidence without
+superseding or rewriting a decision recorded against an older snapshot. AI
+rationale is presentation and is intentionally excluded from the identity.
+The receipt also retains versioned, normalized eligibility evidence for every
+participant: side, slot, age and provenance, protected-player classification,
+manual-dynasty-review classification, and FP/G validity. Raw snapshot blobs
+and credentials are not copied into the receipt.
+
 `scope_key` identifies one logical opportunity, including the target week.
 Only one receipt can be active for a scope. A changed rerun supersedes the prior
 pending receipt atomically; it never overwrites its evidence. A receipt with a
@@ -53,6 +65,13 @@ locally and revalidates the upstream identity and no-write boundary. Mobile or
 bridge-offline sessions remain useful and read-only instead of showing dead
 controls. Accepting means “I intend to use this plan”; it does not claim the
 lineup was changed.
+
+The League trade cockpit creates a sanitized `trade_assessment` receipt when an
+exact offer is graded. With the local owner bridge, Zach can record “intent to
+accept” or “pass” against that receipt. These are terminal decision labels for
+future calibration, not Fantrax actions: the API and bridge require
+`fantrax_changed=false` and `writes_enabled=false`, and trade acceptance remains
+manual in Fantrax.
 
 ## Outcome telemetry
 
