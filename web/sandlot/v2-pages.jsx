@@ -1368,7 +1368,7 @@ function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
 
   React.useEffect(() => {
     let cancelled = false;
-    fetch(`${V2_OWNER_BRIDGE_URL}/health`, { cache:'no-store' })
+    fetch(`${V2_OWNER_BRIDGE_URL}/health`, { cache:'no-store', targetAddressSpace:'local' })
       .then(async response => {
         const body = await response.json().catch(() => ({}));
         if (!response.ok || body?.ok !== true || body?.mode !== 'dry_run' || !body?.nonce || body?.writes_enabled !== false) {
@@ -1390,6 +1390,7 @@ function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
       try {
         const response = await fetch(`${V2_OWNER_BRIDGE_URL}/execution-requests/${encodeURIComponent(requestId)}`, {
           cache:'no-store',
+          targetAddressSpace:'local',
           headers:{ 'X-Sandlot-Bridge-Nonce':bridge.nonce },
         });
         const body = await response.json().catch(() => ({}));
@@ -1413,6 +1414,7 @@ function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
     try {
       const response = await fetch(`${V2_OWNER_BRIDGE_URL}/execution-requests`, {
         method:'POST',
+        targetAddressSpace:'local',
         headers:{ 'content-type':'application/json', 'X-Sandlot-Bridge-Nonce':bridge.nonce },
         body:JSON.stringify({
           mode:'dry_run',
