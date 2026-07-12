@@ -286,6 +286,7 @@ def init_schema() -> None:
             """
         )
         _init_recommendation_receipts_schema(conn)
+        _init_lineup_period_evidence_schema(conn)
         conn.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS execution_requests_proposal_instance_key
@@ -373,6 +374,74 @@ def ensure_recommendation_receipts_schema() -> None:
     """Create only the ledger schema for standalone recommendation writers."""
     with connect() as conn:
         _init_recommendation_receipts_schema(conn)
+
+
+def _init_lineup_period_evidence_schema(conn: Any) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lineup_period_evidence (
+          league_id TEXT NOT NULL,
+          team_id TEXT NOT NULL,
+          period_start DATE NOT NULL,
+          period_end DATE NOT NULL,
+          evidence_version TEXT NOT NULL,
+          period_number TEXT NOT NULL,
+          observed_team_total DOUBLE PRECISION NOT NULL,
+          evidence_hash TEXT NOT NULL CHECK (evidence_hash ~ '^[0-9a-f]{64}$'),
+          evidence JSONB NOT NULL,
+          source_snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL,
+          captured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (league_id, team_id, period_start, period_end, evidence_version),
+          CHECK (period_end >= period_start)
+        )
+        """
+    )
+
+
+def archive_lineup_period_evidence(*, evidence: dict[str, Any], snapshot_id: int) -> tuple[dict[str, Any], bool]:
+    """Insert immutable period evidence; identical refresh replay is a no-op."""
+    from fantrax_data import LINEUP_PERIOD_EVIDENCE_VERSION, lineup_period_evidence_hash
+
+    if evidence.get("evidence_version") != LINEUP_PERIOD_EVIDENCE_VERSION:
+        raise ValueError("unsupported lineup period evidence version")
+    evidence_hash = str(evidence.get("evidence_hash") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", evidence_hash):
+        raise ValueError("lineup period evidence hash must be lowercase SHA-256")
+    if evidence_hash != lineup_period_evidence_hash(evidence):
+        raise ValueError("lineup period evidence hash is invalid")
+    period = evidence.get("period") if isinstance(evidence.get("period"), dict) else {}
+    required = {
+        "league_id": evidence.get("league_id"), "team_id": evidence.get("team_id"),
+        "period_start": period.get("start"), "period_end": period.get("end"),
+        "period_number": period.get("number"), "observed_team_total": evidence.get("observed_team_total"),
+    }
+    if any(value in (None, "") for value in required.values()):
+        raise ValueError("lineup period evidence identity is incomplete")
+    values = (
+        evidence.get("league_id"), evidence.get("team_id"), period.get("start"), period.get("end"),
+        evidence.get("evidence_version"), period.get("number"), evidence.get("observed_team_total"),
+        evidence_hash, Jsonb(evidence), snapshot_id,
+    )
+    with connect() as conn:
+        row = conn.execute(
+            """INSERT INTO lineup_period_evidence
+               (league_id, team_id, period_start, period_end, evidence_version, period_number,
+                observed_team_total, evidence_hash, evidence, source_snapshot_id)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (league_id, team_id, period_start, period_end, evidence_version) DO NOTHING
+               RETURNING *""",
+            values,
+        ).fetchone()
+        if row:
+            return dict(row), True
+        existing = conn.execute(
+            """SELECT * FROM lineup_period_evidence
+               WHERE league_id=%s AND team_id=%s AND period_start=%s AND period_end=%s AND evidence_version=%s""",
+            values[:5],
+        ).fetchone()
+        if existing and existing.get("evidence_hash") == evidence_hash and existing.get("evidence") == evidence:
+            return dict(existing), False
+        raise ValueError("completed lineup period already has different immutable evidence")
 
 
 def _init_recommendation_receipts_schema(conn: Any) -> None:
