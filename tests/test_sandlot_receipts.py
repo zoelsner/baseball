@@ -221,6 +221,48 @@ class RecommendationReceiptBuilderTests(unittest.TestCase):
         self.assertFalse(receipt["recommendation"]["guardrails"]["fantrax_write_authorized"])
         self.assertFalse(receipt["recommendation"]["guardrails"]["dynasty_complete"])
         self.assertEqual(receipt["recommendation"]["guardrails"]["eligibility_policy_version"], "trade_eligibility_v1")
+        self.assertEqual(receipt["builder_version"], "trade_assessment_v2")
+        self.assertEqual(receipt["recommendation"]["origin"], {
+            "kind": "manual_entry",
+            "fantrax_trade_id": None,
+            "snapshot_id": 281,
+            "proposed_by_team_id": None,
+            "proposed_at_label": None,
+            "scheduled_execution_at_label": None,
+            "source_status": "manual_unbound",
+            "execution_verification": "unverified",
+        })
+
+        incoming = sandlot_receipts.build_trade_assessment_receipt(
+            snapshot=snapshot,
+            result=result,
+            generated_at=NOW,
+            origin={
+                "trade_id": "tx1",
+                "snapshot_id": 281,
+                "proposed_by_team_id": "other",
+                "proposed_at_label": "Jul 12",
+                "scheduled_execution_at_label": "Jul 13",
+            },
+        )
+        self.assertNotEqual(incoming["receipt_id"], receipt["receipt_id"])
+        self.assertEqual(incoming["recommendation"]["origin"], {
+            "kind": "incoming_fantrax_offer",
+            "fantrax_trade_id": "tx1",
+            "snapshot_id": 281,
+            "proposed_by_team_id": "other",
+            "proposed_at_label": "Jul 12",
+            "scheduled_execution_at_label": "Jul 13",
+            "source_status": "pending",
+            "execution_verification": "unverified",
+        })
+        with self.assertRaisesRegex(ValueError, "origin snapshot does not match"):
+            sandlot_receipts.build_trade_assessment_receipt(
+                snapshot=snapshot,
+                result=result,
+                generated_at=NOW,
+                origin={"trade_id": "tx1", "snapshot_id": 999, "proposed_by_team_id": "other"},
+            )
 
         newer = sandlot_receipts.build_trade_assessment_receipt(snapshot={**snapshot, "id": 282}, result={**result, "snapshot_id": 282}, generated_at=NOW)
         self.assertNotEqual(newer["scope_key"], receipt["scope_key"])
@@ -1441,6 +1483,7 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["receipt"]["action_type"], "trade_assessment")
         self.assertEqual(payload["receipt"]["trade"]["give"][0]["player_id"], "mine")
+        self.assertEqual(payload["receipt"]["trade"]["origin"]["kind"], "manual_entry")
         self.assertTrue(payload["receipt"]["trade"]["guardrails"]["manual_execution_only"])
         self.assertFalse(payload["receipt"]["fantrax_changed"])
         self.assertFalse(payload["receipt"]["writes_enabled"])
@@ -1490,6 +1533,9 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         offer = payload["offers"][0]
         self.assertEqual(offer["give"], [{"player_id": "p1", "player_name": "Mine"}])
         self.assertEqual(offer["get"], [{"player_id": "p2", "player_name": "Theirs"}])
+        self.assertEqual(offer["proposed_by_team_id"], "other")
+        self.assertEqual(offer["scheduled_execution_at_label"], "Jul 13")
+        self.assertNotIn("executes_at", offer)
         self.assertTrue(offer["gradeable"])
         self.assertTrue(offer["manual_only"])
         self.assertFalse(payload["fantrax_changed"])
@@ -1557,6 +1603,74 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         self.assertIn("snapshot changed", stale.json()["detail"])
         self.assertEqual(changed.status_code, 409)
         self.assertIn("changed or is no longer", changed.json()["detail"])
+
+    def test_incoming_trade_grade_binds_exact_fantrax_origin_to_receipt(self):
+        snapshot = {
+            "id": 281, "taken_at": NOW, "team_id": "mine", "league_id": "league",
+            "data": {"team_id": "mine", "pending_trades": [{
+                "trade_id": "tx1", "proposed_by_id": "other", "proposed": "Jul 12", "executed": "Jul 13",
+                "moves": [
+                    {"from_team_id": "mine", "to_team_id": "other", "player_id": "p1", "player": "Mine"},
+                    {"from_team_id": "other", "to_team_id": "mine", "player_id": "p2", "player": "Theirs"},
+                ],
+            }]},
+        }
+        stored = {
+            "receipt_id": "trade-assessment:" + "a" * 64,
+            "builder_version": "trade_assessment_v2",
+            "source": "trade_cockpit", "action_type": "trade_assessment",
+            "recommendation": {
+                "offer": {"give": [{"player_id": "p1"}], "get": [{"player_id": "p2"}]},
+                "origin": {
+                    "kind": "incoming_fantrax_offer",
+                    "fantrax_trade_id": "tx1",
+                    "snapshot_id": 281,
+                    "proposed_by_team_id": "other",
+                    "proposed_at_label": "Jul 12",
+                    "scheduled_execution_at_label": "Jul 13",
+                    "source_status": "pending",
+                    "execution_verification": "unverified",
+                    "private_raw": "do not expose",
+                },
+                "guardrails": {"manual_execution_only": True, "fantrax_write_authorized": False},
+            },
+        }
+        with (
+            patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot),
+            patch("sandlot_api.sandlot_trades.offer_validation_error", return_value=None),
+            patch("sandlot_api.sandlot_trades.grade_offer", return_value={"snapshot_id": 281}) as grade,
+            patch("sandlot_api.sandlot_receipts.build_trade_assessment_receipt", return_value=stored) as build,
+            patch("sandlot_api.sandlot_db.record_recommendation_receipt", return_value=(stored, True)),
+        ):
+            response = self.client.post("/api/trades/grade", json={
+                "give": ["p1"], "get": ["p2"], "incoming_trade_id": "tx1", "incoming_snapshot_id": 281,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        public_receipt = response.json()["receipt"]
+        self.assertEqual(public_receipt["trade"]["origin"], {
+            "kind": "incoming_fantrax_offer",
+            "fantrax_trade_id": "tx1",
+            "snapshot_id": 281,
+            "proposed_by_team_id": "other",
+            "proposed_at_label": "Jul 12",
+            "scheduled_execution_at_label": "Jul 13",
+            "source_status": "pending",
+            "execution_verification": "unverified",
+        })
+        self.assertTrue(public_receipt["trade"]["guardrails"]["manual_execution_only"])
+        self.assertFalse(public_receipt["fantrax_changed"])
+        self.assertFalse(public_receipt["writes_enabled"])
+        self.assertNotIn("private_raw", response.text)
+        self.assertNotIn('"executes_at"', response.text)
+        grade.assert_called_once_with(snapshot, ["p1"], ["p2"])
+        self.assertEqual(build.call_args.kwargs["origin"], {
+            "trade_id": "tx1",
+            "snapshot_id": 281,
+            "proposed_by_team_id": "other",
+            "proposed_at_label": "Jul 12",
+            "scheduled_execution_at_label": "Jul 13",
+        })
 
     def test_incoming_trade_surfaces_participant_policy_before_review(self):
         snapshot = {

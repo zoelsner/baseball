@@ -539,6 +539,7 @@ def grade_trade(payload: TradeGradeIn) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Trade analysis is temporarily unavailable") from exc
     if not snapshot_row:
         raise HTTPException(status_code=409, detail="No Fantrax snapshot yet — run a refresh first")
+    incoming_origin = None
     if payload.incoming_trade_id is not None or payload.incoming_snapshot_id is not None:
         if not payload.incoming_trade_id or payload.incoming_snapshot_id != snapshot_row.get("id"):
             raise HTTPException(status_code=409, detail="Incoming offer snapshot changed — refresh and review it again")
@@ -553,10 +554,19 @@ def grade_trade(payload: TradeGradeIn) -> dict[str, Any]:
             or sorted(payload.give) != exact_give or sorted(payload.get) != exact_get
         ):
             raise HTTPException(status_code=409, detail="Incoming offer changed or is no longer exactly gradeable")
+        incoming_origin = {
+            "trade_id": expected["trade_id"],
+            "snapshot_id": snapshot_row["id"],
+            "proposed_by_team_id": expected["proposed_by_team_id"],
+            "proposed_at_label": expected.get("proposed_at"),
+            "scheduled_execution_at_label": expected.get("scheduled_execution_at_label"),
+        }
     try:
         result = sandlot_trades.grade_offer(snapshot_row, payload.give, payload.get)
         receipt, _created = sandlot_db.record_recommendation_receipt(
-            sandlot_receipts.build_trade_assessment_receipt(snapshot=snapshot_row, result=result)
+            sandlot_receipts.build_trade_assessment_receipt(
+                snapshot=snapshot_row, result=result, origin=incoming_origin
+            )
         )
         result["receipt"] = _public_recommendation_receipt(receipt)
     except sandlot_trades.TradeGradeError as exc:
@@ -656,8 +666,9 @@ def _incoming_offers_from_snapshot(snapshot_row: dict[str, Any]) -> list[dict[st
         offers.append({
             "trade_id": str(raw.get("trade_id") or "").strip() or None,
             "proposed_by": str(raw.get("proposed_by") or "").strip() or "Another team",
+            "proposed_by_team_id": proposer_id,
             "proposed_at": raw.get("proposed"),
-            "executes_at": raw.get("executed"),
+            "scheduled_execution_at_label": raw.get("executed"),
             "status": "awaiting_execution" if raw.get("accepted") else "pending",
             "give": give,
             "get": get,
@@ -1260,6 +1271,7 @@ def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
     snapshot = recommendation.get("snapshot") if isinstance(recommendation.get("snapshot"), dict) else {}
     period = recommendation.get("period") if isinstance(recommendation.get("period"), dict) else {}
     trade = recommendation.get("offer") if isinstance(recommendation.get("offer"), dict) else None
+    trade_origin = recommendation.get("origin") if isinstance(recommendation.get("origin"), dict) else {}
     return {
         "receipt_id": row.get("receipt_id"),
         "builder_version": row.get("builder_version"),
@@ -1286,6 +1298,16 @@ def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
         "trade": ({
             "give": trade.get("give") or [],
             "get": trade.get("get") or [],
+            "origin": {
+                "kind": trade_origin.get("kind"),
+                "fantrax_trade_id": trade_origin.get("fantrax_trade_id"),
+                "snapshot_id": trade_origin.get("snapshot_id"),
+                "proposed_by_team_id": trade_origin.get("proposed_by_team_id"),
+                "proposed_at_label": trade_origin.get("proposed_at_label"),
+                "scheduled_execution_at_label": trade_origin.get("scheduled_execution_at_label"),
+                "source_status": trade_origin.get("source_status"),
+                "execution_verification": trade_origin.get("execution_verification"),
+            },
             "grade": recommendation.get("grade") or {},
             "horizons": recommendation.get("horizons") or [],
             "guardrails": recommendation.get("guardrails") or {},

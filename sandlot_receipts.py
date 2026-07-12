@@ -17,7 +17,7 @@ from sandlot_lineup import FULL_ACTIVE_TEMPLATE
 
 
 MONDAY_LINEUP_BUILDER_VERSION = "monday_lineup_v2"
-TRADE_ASSESSMENT_BUILDER_VERSION = "trade_assessment_v1"
+TRADE_ASSESSMENT_BUILDER_VERSION = "trade_assessment_v2"
 TEAM_RESULT_SCORING_VERSION = "team_result_v1"
 COUNTERFACTUAL_LINEUP_SCORING_VERSION = "counterfactual_lineup_v1"
 COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION = "fantrax_period_lineup_v2"
@@ -42,6 +42,7 @@ def build_trade_assessment_receipt(
     *,
     snapshot: dict[str, Any],
     result: dict[str, Any],
+    origin: dict[str, Any] | None = None,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build immutable, snapshot-scoped evidence for one manual-only trade assessment."""
@@ -55,6 +56,35 @@ def build_trade_assessment_receipt(
     league_id = _required_text(snapshot.get("league_id"), "snapshot.league_id")
     team_id = _required_text(snapshot.get("team_id"), "snapshot.team_id")
     snapshot_taken_at = _utc_datetime(snapshot.get("taken_at"))
+    if origin is None:
+        normalized_origin = {
+            "kind": "manual_entry",
+            "fantrax_trade_id": None,
+            "snapshot_id": snapshot_id,
+            "proposed_by_team_id": None,
+            "proposed_at_label": None,
+            "scheduled_execution_at_label": None,
+            "source_status": "manual_unbound",
+            "execution_verification": "unverified",
+        }
+    else:
+        origin_snapshot_id = _required_int(origin.get("snapshot_id"), "trade origin snapshot_id")
+        if origin_snapshot_id != snapshot_id:
+            raise ValueError("trade origin snapshot does not match receipt snapshot")
+        normalized_origin = {
+            "kind": "incoming_fantrax_offer",
+            "fantrax_trade_id": _required_text(origin.get("trade_id"), "trade origin trade_id"),
+            "snapshot_id": origin_snapshot_id,
+            "proposed_by_team_id": _required_text(
+                origin.get("proposed_by_team_id"), "trade origin proposed_by_team_id"
+            ),
+            "proposed_at_label": str(origin.get("proposed_at_label") or "").strip() or None,
+            "scheduled_execution_at_label": str(
+                origin.get("scheduled_execution_at_label") or ""
+            ).strip() or None,
+            "source_status": "pending",
+            "execution_verification": "unverified",
+        }
 
     def side(key: str) -> list[dict[str, Any]]:
         rows = result.get(key)
@@ -132,6 +162,7 @@ def build_trade_assessment_receipt(
         "snapshot": {"id": snapshot_id, "taken_at": snapshot_taken_at.isoformat()},
         "league_id": league_id,
         "team_id": team_id,
+        "origin": normalized_origin,
         "offer": {"give": give, "get": get},
         "grade": {
             "letter": _required_text(result.get("letter_grade"), "trade letter grade"),
@@ -155,7 +186,15 @@ def build_trade_assessment_receipt(
     }
     input_hash = _sha256(evidence)
     day = snapshot_taken_at.astimezone(ET).date()
-    scope_key = f"{league_id}:{team_id}:trade_assessment:{snapshot_id}:{','.join(give_ids)}:{','.join(get_ids)}"
+    origin_scope = (
+        f"fantrax:{normalized_origin['fantrax_trade_id']}"
+        if normalized_origin["kind"] == "incoming_fantrax_offer"
+        else "manual"
+    )
+    scope_key = (
+        f"{league_id}:{team_id}:trade_assessment:{snapshot_id}:{origin_scope}:"
+        f"{','.join(give_ids)}:{','.join(get_ids)}"
+    )
     proposal_id = f"trade:{input_hash[:24]}"
     projected_gain = evidence["grade"]["my_delta"]
     return {
