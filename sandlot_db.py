@@ -588,7 +588,7 @@ def decide_recommendation_receipt(
     with connect() as conn:
         row = conn.execute(
             """
-            SELECT *, expires_at <= clock_timestamp() AS is_expired
+            SELECT *
             FROM recommendation_receipts
             WHERE receipt_id = %s
             FOR UPDATE
@@ -600,13 +600,13 @@ def decide_recommendation_receipt(
         row = dict(row)
         if str(row.get("input_hash") or "") != input_hash:
             raise ValueError("Recommendation receipt hash is stale or mismatched")
-        if row.get("is_expired"):
+        clock_row = conn.execute("SELECT clock_timestamp() AS current_time").fetchone()
+        if row.get("expires_at") <= clock_row["current_time"]:
             raise ValueError("Recommendation receipt has expired")
         if row.get("lifecycle_state") != "active":
             raise ValueError("Recommendation receipt is no longer active")
         current = row.get("decision_state")
         if current == decision:
-            row.pop("is_expired", None)
             return row, False
         if current != "pending":
             raise ValueError(f"Recommendation receipt was already {current}")

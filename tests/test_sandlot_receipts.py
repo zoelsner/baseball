@@ -350,7 +350,6 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
             **receipt_fixture(),
             "lifecycle_state": "active",
             "decision_state": "pending",
-            "is_expired": False,
         }
         updated = {**receipt, "decision_state": "accepted"}
         calls = []
@@ -372,7 +371,7 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
 
         @contextmanager
         def deciding_connect():
-            yield FakeConn([receipt, updated])
+            yield FakeConn([receipt, {"current_time": NOW}, updated])
 
         with patch.object(sandlot_db, "connect", deciding_connect):
             row, changed = sandlot_db.decide_recommendation_receipt(
@@ -384,18 +383,18 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
             )
         self.assertTrue(changed)
         self.assertEqual(row["decision_state"], "accepted")
-        update_sql, update_params = calls[1]
+        update_sql, update_params = calls[2]
         self.assertIn("decision_state = 'pending'", update_sql)
         self.assertIn("expires_at > clock_timestamp()", update_sql)
-        self.assertIn("expires_at <= clock_timestamp() AS is_expired", calls[0][0])
+        self.assertEqual(calls[1][0], "SELECT clock_timestamp() AS current_time")
         self.assertIn("decided_at = clock_timestamp()", update_sql)
         self.assertEqual(update_params[:3], ("accepted", "owner_bridge", "Using it"))
 
-        replay = {**updated, "is_expired": False}
+        replay = dict(updated)
 
         @contextmanager
         def replay_connect():
-            yield FakeConn([replay])
+            yield FakeConn([replay, {"current_time": NOW}])
 
         with patch.object(sandlot_db, "connect", replay_connect):
             row, changed = sandlot_db.decide_recommendation_receipt(
@@ -405,14 +404,12 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
                 source="owner_bridge",
             )
         self.assertFalse(changed)
-        self.assertNotIn("is_expired", row)
 
     def test_decision_rejects_missing_stale_expired_superseded_and_conflicting_receipts(self):
         base = {
             **receipt_fixture(),
             "lifecycle_state": "active",
             "decision_state": "pending",
-            "is_expired": False,
         }
 
         class Result:
@@ -423,22 +420,26 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
                 return self.row
 
         @contextmanager
-        def fake_connect(row):
+        def fake_connect(row, current_time=NOW):
             class FakeConn:
+                def __init__(self):
+                    self.rows = [row, {"current_time": current_time}]
+
                 def execute(self, _sql, _params=None):
-                    return Result(row)
+                    return Result(self.rows.pop(0))
             yield FakeConn()
 
         cases = [
             (None, LookupError, "not found", base["input_hash"], "accepted"),
             (base, ValueError, "stale or mismatched", "f" * 64, "accepted"),
-            ({**base, "is_expired": True}, ValueError, "expired", base["input_hash"], "accepted"),
-            ({**base, "lifecycle_state": "superseded"}, ValueError, "no longer active", base["input_hash"], "accepted"),
-            ({**base, "decision_state": "rejected"}, ValueError, "already rejected", base["input_hash"], "accepted"),
+            (base, ValueError, "expired", base["input_hash"], "accepted", base["expires_at"] + timedelta(seconds=1)),
+            ({**base, "lifecycle_state": "superseded"}, ValueError, "no longer active", base["input_hash"], "accepted", NOW),
+            ({**base, "decision_state": "rejected"}, ValueError, "already rejected", base["input_hash"], "accepted", NOW),
         ]
-        for stored, exception, message, input_hash, decision in cases:
+        for case in cases:
+            stored, exception, message, input_hash, decision, *clock = case
             with self.subTest(message=message), patch.object(
-                sandlot_db, "connect", lambda stored=stored: fake_connect(stored)
+                sandlot_db, "connect", lambda stored=stored, clock=clock: fake_connect(stored, clock[0] if clock else NOW)
             ):
                 with self.assertRaisesRegex(exception, message):
                     sandlot_db.decide_recommendation_receipt(
