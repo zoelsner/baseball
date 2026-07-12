@@ -6,7 +6,7 @@ before later code records Zach's decision or evaluates the outcome.
 
 ## Identity
 
-Each builder has a versioned canonical evidence contract. The Monday lineup V1
+Each builder has a versioned canonical evidence contract. The Monday lineup V2
 builder hashes:
 
 - league, team, season, and target scoring week
@@ -16,6 +16,12 @@ builder hashes:
 - every normalized player projection used by the optimizer, including slot
   provenance and the deterministic projection basis
 - the comparable baseline, projected total, and projected gain
+- the exact earliest scheduled MLB game time for the period, used as the
+  versioned decision deadline; snapshot and receipt evidence must precede it
+
+Legacy `monday_lineup_v1` receipts remain immutable and lack this deadline.
+They can still be read as historical decisions, but cannot enter the v2
+decision-science feature dataset.
 
 Dictionary and assignment order do not change the hash. Material projection,
 assignment, provenance, or target-week changes do. Wall-clock generation time

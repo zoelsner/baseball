@@ -776,6 +776,53 @@ def recommendation_outcome_evaluation_report(
     }
 
 
+def list_lineup_decision_science_rows(*, limit: int | None = None) -> list[dict[str, Any]]:
+    """Return up to 10,000 internal receipt/evaluation rows for offline modeling."""
+    bounded_limit = max(1, min(int(limit), 10000)) if limit is not None else 10000
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            WITH ranked AS (
+              SELECT
+                r.receipt_id, r.builder_version, r.input_hash, r.generated_at, r.period_start, r.period_end,
+                r.baseline_value, r.projected_value, r.projected_gain,
+                r.recommendation, e.state, e.scoring_version, e.metrics, e.evaluated_at,
+                e.source_evidence_version, e.source_evidence_hash,
+                e.evidence_hash AS evaluation_evidence_hash,
+                e.evidence AS evaluation_evidence,
+                l.evidence->'counterfactual_capability' AS counterfactual_capability,
+                row_number() OVER (
+                  PARTITION BY r.league_id, r.team_id, r.period_start, r.period_end
+                  ORDER BY r.generated_at DESC, e.evaluated_at DESC, r.receipt_id DESC
+                ) AS sample_rank
+              FROM recommendation_receipts r
+              LEFT JOIN recommendation_outcome_evaluations e
+                ON e.receipt_id = r.receipt_id
+               AND e.scoring_version = 'counterfactual_lineup_v1'
+              LEFT JOIN lineup_period_evidence l
+                ON l.league_id = r.league_id
+               AND l.team_id = r.team_id
+               AND l.period_start = r.period_start
+               AND l.period_end = r.period_end
+               AND l.evidence_version = 'fantrax_period_lineup_v2'
+              WHERE r.source = 'monday_lineup'
+                AND r.lifecycle_state = 'active'
+            )
+            SELECT receipt_id, builder_version, input_hash, generated_at, period_start, period_end,
+                   baseline_value, projected_value, projected_gain,
+                   recommendation, state, scoring_version, metrics, evaluated_at,
+                   source_evidence_version, source_evidence_hash, evaluation_evidence_hash,
+                   evaluation_evidence, counterfactual_capability
+            FROM ranked
+            WHERE sample_rank = 1
+            ORDER BY generated_at ASC, receipt_id ASC
+            LIMIT %s
+            """,
+            (bounded_limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def receipts_missing_outcome_evaluation(
     *, source: str, scoring_version: str, evidence_version: str
 ) -> list[dict[str, Any]]:

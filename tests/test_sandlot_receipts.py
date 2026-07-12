@@ -31,7 +31,10 @@ DEFAULT_UNFILLED = (
 )
 
 
-def receipt_fixture(*, entries=None, result=None, week_start=date(2026, 7, 13)):
+def receipt_fixture(
+    *, entries=None, result=None, week_start=date(2026, 7, 13),
+    generated_at=NOW, decision_deadline_at=None,
+):
     entries = entries or [
         {
             "id": "bat",
@@ -85,7 +88,8 @@ def receipt_fixture(*, entries=None, result=None, week_start=date(2026, 7, 13)):
             },
         ],
         current_total=20.0,
-        generated_at=NOW,
+        decision_deadline_at=decision_deadline_at or datetime.combine(week_start, datetime.min.time(), tzinfo=timezone.utc) + timedelta(hours=23),
+        generated_at=generated_at,
     )
 
 
@@ -156,6 +160,29 @@ def period_evidence_fixture(receipt, *, actual="proposed", capability=True):
 
 
 class RecommendationReceiptBuilderTests(unittest.TestCase):
+    def test_receipt_binds_exact_first_game_deadline_and_rejects_late_generation(self):
+        receipt = receipt_fixture()
+        deadline = receipt["recommendation"]["period"]["decision_deadline_at"]
+
+        self.assertEqual(deadline, "2026-07-13T23:00:00+00:00")
+        self.assertEqual(receipt["recommendation"]["period"]["deadline_source"], "mlb_schedule_first_game_v1")
+        with self.assertRaisesRegex(ValueError, "before the first scoring deadline"):
+            receipt_fixture(
+                generated_at=datetime(2026, 7, 13, 23, 0, tzinfo=timezone.utc),
+                decision_deadline_at=datetime(2026, 7, 13, 23, 0, tzinfo=timezone.utc),
+            )
+
+    def test_first_scheduled_game_deadline_uses_earliest_timezone_aware_game(self):
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"dates": [{"games": [
+            {"gameDate": "2026-07-13T23:10:00Z"},
+            {"gameDate": "2026-07-13T17:05:00Z"},
+        ]}]}
+        with patch.object(run_monday_lineup.requests, "get", return_value=response):
+            deadline = run_monday_lineup.first_scheduled_game_at(date(2026, 7, 13), date(2026, 7, 19))
+
+        self.assertEqual(deadline.isoformat(), "2026-07-13T17:05:00+00:00")
     def test_trade_receipt_is_exact_snapshot_scoped_and_manual_only(self):
         result = {
             "snapshot_id": 281,

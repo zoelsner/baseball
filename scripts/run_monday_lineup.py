@@ -94,6 +94,33 @@ def team_game_counts(start: date, end: date) -> dict[str, int]:
     return dict(counts)
 
 
+def first_scheduled_game_at(start: date, end: date) -> datetime:
+    """Return the exact earliest MLB game time bounding decision evidence."""
+    resp = requests.get(
+        f"{mlb_stats.BASE_URL}/schedule",
+        params={
+            "sportId": 1,
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "fields": "dates,games,gameDate",
+        },
+        timeout=mlb_stats.DEFAULT_TIMEOUT,
+    )
+    resp.raise_for_status()
+    times = []
+    for day in resp.json().get("dates") or []:
+        for game in day.get("games") or []:
+            value = game.get("gameDate")
+            if value:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    raise RuntimeError("MLB schedule returned a timezone-naive first-game deadline")
+                times.append(parsed.astimezone(ZoneInfo("UTC")))
+    if not times:
+        raise RuntimeError("Monday lineup receipt paused: MLB schedule has no exact first-game deadline")
+    return min(times)
+
+
 def scored_game_log(mlb_id: int, tokens: set[str], season: int) -> list[dict]:
     """League-scored per-game rows, both stat groups for two-way players."""
     groups = []
@@ -171,6 +198,7 @@ def run():
     print(f"optimizing week {monday} .. {sunday}")
 
     games_next = team_game_counts(monday, sunday)
+    decision_deadline_at = first_scheduled_game_at(monday, sunday)
     games_recent_by_team = team_game_counts(recent_start, today)
     probable_counts = probable_start_counts(monday, sunday)
 
@@ -320,6 +348,7 @@ def run():
         entries=entries,
         current_active=receipt_current_active,
         current_total=current_total,
+        decision_deadline_at=decision_deadline_at,
     )
     sandlot_db.ensure_recommendation_receipts_schema()
     persisted_receipt, created = sandlot_db.record_recommendation_receipt(receipt)
