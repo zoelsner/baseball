@@ -198,6 +198,43 @@ def _persist_recommendation_outcomes(snapshot_id: int, snapshot: dict[str, Any])
     if not os.environ.get("DATABASE_URL"):
         return
     try:
+        counterfactual_receipts = sandlot_db.receipts_missing_outcome_evaluation(
+            source="monday_lineup",
+            scoring_version=sandlot_receipts.COUNTERFACTUAL_LINEUP_SCORING_VERSION,
+            evidence_version=sandlot_receipts.COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION,
+        )
+        for receipt in counterfactual_receipts:
+            try:
+                evaluation = sandlot_receipts.build_counterfactual_lineup_evaluation(
+                    receipt=receipt,
+                    period_evidence=receipt["period_evidence"],
+                )
+                sandlot_db.record_recommendation_outcome_evaluation(
+                    receipt_id=receipt["receipt_id"], evaluation=evaluation
+                )
+            except ValueError as exc:
+                try:
+                    unavailable = sandlot_receipts.build_counterfactual_lineup_unavailable(
+                        receipt=receipt,
+                        period_evidence=receipt["period_evidence"],
+                        detail=str(exc),
+                    )
+                    sandlot_db.record_recommendation_outcome_evaluation(
+                        receipt_id=receipt["receipt_id"], evaluation=unavailable
+                    )
+                except Exception:
+                    log.exception(
+                        "Counterfactual unavailable record failed for receipt_id=%s",
+                        receipt.get("receipt_id"),
+                    )
+            except Exception:
+                log.exception(
+                    "Counterfactual recommendation evaluation failed for receipt_id=%s",
+                    receipt.get("receipt_id"),
+                )
+    except Exception:
+        log.exception("Counterfactual recommendation evaluation batch failed for snapshot_id=%s", snapshot_id)
+    try:
         receipts = sandlot_db.pending_recommendation_receipts(source="monday_lineup")
         taken_at = snapshot.get("timestamp")
         if not taken_at:

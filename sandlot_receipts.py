@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import math
+from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -15,8 +16,23 @@ from sandlot_autopsy import PITCHER_TOKENS
 
 MONDAY_LINEUP_BUILDER_VERSION = "monday_lineup_v1"
 TEAM_RESULT_SCORING_VERSION = "team_result_v1"
+COUNTERFACTUAL_LINEUP_SCORING_VERSION = "counterfactual_lineup_v1"
+COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION = "fantrax_period_lineup_v2"
 TEAM_RESULT_FINALIZATION_GRACE_DAYS = 8
 ET = ZoneInfo("America/New_York")
+
+SLOT_POSITION_IDS = {
+    "C": {"001"},
+    "1B": {"002"},
+    "2B": {"003"},
+    "3B": {"004"},
+    "SS": {"005"},
+    "OF": {"012"},
+    "UT": {"014"},
+    "SP": {"015"},
+    "RP": {"016"},
+    "P": {"015", "016"},
+}
 
 
 def build_monday_lineup_receipt(
@@ -256,6 +272,286 @@ def team_result_evidence_hash(evidence: dict[str, Any]) -> str:
     """Return the canonical hash for stored team-result evidence."""
     canonical = {key: value for key, value in evidence.items() if key != "evidence_hash"}
     return _sha256(canonical)
+
+
+def build_counterfactual_lineup_evaluation(
+    *, receipt: dict[str, Any], period_evidence: dict[str, Any]
+) -> dict[str, Any]:
+    """Score the receipt's static baseline and proposal against realized player FPts.
+
+    This is a retrospective counterfactual, not causal lift and not proof that the
+    recommendation was executed. It is intentionally limited to one verified
+    weekly lineup window because Fantrax only exposes period-level player FPts.
+    """
+    from fantrax_data import lineup_period_evidence_hash
+
+    if period_evidence.get("evidence_version") != COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION:
+        raise ValueError("counterfactual requires exact v2 lineup period evidence")
+    evidence_hash = _required_text(period_evidence.get("evidence_hash"), "period evidence hash")
+    if evidence_hash != lineup_period_evidence_hash(period_evidence):
+        raise ValueError("lineup period evidence hash is invalid")
+    capability = period_evidence.get("counterfactual_capability")
+    if not isinstance(capability, dict) or capability.get("eligible") is not True:
+        reason = capability.get("reason") if isinstance(capability, dict) else "missing_capability"
+        raise ValueError(f"lineup period evidence is not counterfactual eligible: {reason}")
+    participation = period_evidence.get("participation")
+    if not isinstance(participation, dict) or participation.get("window_count") != 1:
+        raise ValueError("counterfactual requires exactly one stable lineup window")
+    if participation.get("stable_within_windows") is not True:
+        raise ValueError("counterfactual requires stable daily participation")
+
+    period = period_evidence.get("period") if isinstance(period_evidence.get("period"), dict) else {}
+    bindings = {
+        "league_id": _required_text(receipt.get("league_id"), "receipt league id"),
+        "team_id": _required_text(receipt.get("team_id"), "receipt team id"),
+        "period_start": _iso_date(receipt.get("period_start"), "receipt period start").isoformat(),
+        "period_end": _iso_date(receipt.get("period_end"), "receipt period end").isoformat(),
+    }
+    if (
+        period_evidence.get("league_id") != bindings["league_id"]
+        or period_evidence.get("team_id") != bindings["team_id"]
+        or str(period.get("start")) != bindings["period_start"]
+        or str(period.get("end")) != bindings["period_end"]
+    ):
+        raise ValueError("lineup period evidence does not match the receipt")
+
+    recommendation = receipt.get("recommendation")
+    if not isinstance(recommendation, dict):
+        raise ValueError("receipt recommendation is unavailable")
+    inputs = recommendation.get("projection_inputs")
+    if not isinstance(inputs, list):
+        raise ValueError("receipt projection inputs are unavailable")
+    input_by_id: dict[str, dict[str, Any]] = {}
+    for item in inputs:
+        if not isinstance(item, dict):
+            raise ValueError("receipt projection input is invalid")
+        player_id = _required_text(item.get("id"), "projection player id")
+        if player_id in input_by_id:
+            raise ValueError("receipt projection inputs contain duplicate player identity")
+        input_by_id[player_id] = item
+
+    archived_players = period_evidence.get("players")
+    if not isinstance(archived_players, list) or not archived_players:
+        raise ValueError("period player evidence is unavailable")
+    player_by_role: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in archived_players:
+        if not isinstance(item, dict):
+            raise ValueError("period player evidence is invalid")
+        key = (
+            _required_text(item.get("player_id"), "period player id"),
+            _required_text(item.get("scoring_role"), "period scoring role"),
+        )
+        if key in player_by_role:
+            raise ValueError("period evidence contains duplicate player role")
+        player_by_role[key] = item
+
+    baseline = _score_counterfactual_assignment(
+        recommendation.get("baseline_assignment"), input_by_id, player_by_role, label="baseline"
+    )
+    proposed = _score_counterfactual_assignment(
+        recommendation.get("proposed_assignment"), input_by_id, player_by_role, label="proposed"
+    )
+    unfilled = [str(slot).strip().upper() for slot in (recommendation.get("unfilled_slots") or [])]
+    if any(slot not in SLOT_POSITION_IDS for slot in unfilled):
+        raise ValueError("receipt unfilled slots are invalid")
+
+    days = participation.get("days")
+    if not isinstance(days, list) or not days:
+        raise ValueError("daily participation evidence is unavailable")
+    last_day = days[-1]
+    if not isinstance(last_day, dict) or not isinstance(last_day.get("players"), list):
+        raise ValueError("final daily participation evidence is invalid")
+    actual_active: set[tuple[str, str]] = set()
+    actual_slots: dict[tuple[str, str], str | None] = {}
+    for item in last_day["players"]:
+        if not isinstance(item, dict):
+            raise ValueError("daily player participation is invalid")
+        key = (_required_text(item.get("player_id"), "daily player id"), _required_text(item.get("scoring_role"), "daily scoring role"))
+        if key in actual_slots:
+            raise ValueError("daily participation contains duplicate player role")
+        actual_slots[key] = str(item.get("raw_pos_id") or "") or None
+        if item.get("state") == "active":
+            actual_active.add(key)
+        elif item.get("state") != "bench":
+            raise ValueError("daily participation contains an unknown state")
+    if set(actual_slots) != set(player_by_role):
+        raise ValueError("daily participation does not cover the exact period player roles")
+    active_player_ids = [player_id for player_id, _role in actual_active]
+    if len(active_player_ids) != len(set(active_player_ids)):
+        raise ValueError("daily participation has ambiguous active two-way scoring")
+
+    proposed_set = {(item["player_id"], item["scoring_role"]) for item in proposed["assignments"]}
+    baseline_set = {(item["player_id"], item["scoring_role"]) for item in baseline["assignments"]}
+    active_match = "proposed" if actual_active == proposed_set else "baseline" if actual_active == baseline_set else "other"
+    slot_match = _actual_slot_match(actual_active, actual_slots, proposed, baseline)
+    decision_state = str(receipt.get("decision_state") or "pending")
+    decision_alignment = (
+        "accepted_proposal_observed"
+        if decision_state == "accepted" and active_match == "proposed"
+        else "not_established"
+    )
+    observed_total = _decimal(period_evidence.get("observed_team_total"), "observed team total")
+    gain = proposed["total"] - baseline["total"]
+    metrics = {
+        "counterfactual_baseline_total": _decimal_number(baseline["total"]),
+        "counterfactual_proposed_total": _decimal_number(proposed["total"]),
+        "counterfactual_gain": _decimal_number(gain),
+        "observed_team_total": _decimal_number(observed_total),
+    }
+    evaluation_evidence = {
+        "receipt_id": _required_text(receipt.get("receipt_id"), "receipt id"),
+        "scoring_version": COUNTERFACTUAL_LINEUP_SCORING_VERSION,
+        "input_hash": _required_text(receipt.get("input_hash"), "receipt input hash"),
+        "league_id": bindings["league_id"],
+        "team_id": bindings["team_id"],
+        "period": {"start": bindings["period_start"], "end": bindings["period_end"], "number": str(period.get("number"))},
+        "source_evidence": {
+            "version": COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION,
+            "hash": evidence_hash,
+        },
+        "measurement_scope": "retrospective_static_lineup_counterfactual",
+        "causal_lift_claimed": False,
+        "plan_execution_claimed": False,
+        "autopilot_eligible": False,
+        "decision_state": decision_state,
+        "actual_assignment_match": active_match,
+        "actual_slot_match": slot_match,
+        "decision_alignment": decision_alignment,
+        "baseline_assignment": baseline["assignments"],
+        "proposed_assignment": proposed["assignments"],
+        "unfilled_slots": unfilled,
+        "metrics": metrics,
+    }
+    return {
+        "scoring_version": COUNTERFACTUAL_LINEUP_SCORING_VERSION,
+        "state": "scored",
+        "source_evidence_version": COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION,
+        "source_evidence_hash": evidence_hash,
+        "metrics": metrics,
+        "evidence": {**evaluation_evidence, "evidence_hash": _sha256(evaluation_evidence)},
+    }
+
+
+def counterfactual_evidence_hash(evidence: dict[str, Any]) -> str:
+    canonical = {key: value for key, value in evidence.items() if key != "evidence_hash"}
+    return _sha256(canonical)
+
+
+def build_counterfactual_lineup_unavailable(
+    *, receipt: dict[str, Any], period_evidence: dict[str, Any], detail: str
+) -> dict[str, Any]:
+    """Build one terminal, immutable record for incompatible archived inputs."""
+    source_hash = _required_text(period_evidence.get("evidence_hash"), "period evidence hash")
+    period = period_evidence.get("period") if isinstance(period_evidence.get("period"), dict) else {}
+    evidence = {
+        "receipt_id": _required_text(receipt.get("receipt_id"), "receipt id"),
+        "scoring_version": COUNTERFACTUAL_LINEUP_SCORING_VERSION,
+        "input_hash": _required_text(receipt.get("input_hash"), "receipt input hash"),
+        "league_id": _required_text(receipt.get("league_id"), "receipt league id"),
+        "team_id": _required_text(receipt.get("team_id"), "receipt team id"),
+        "period": {
+            "start": _iso_date(receipt.get("period_start"), "receipt period start").isoformat(),
+            "end": _iso_date(receipt.get("period_end"), "receipt period end").isoformat(),
+            "number": str(period.get("number")),
+        },
+        "source_evidence": {
+            "version": COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION,
+            "hash": source_hash,
+        },
+        "measurement_scope": "retrospective_static_lineup_counterfactual",
+        "reason": "immutable_receipt_or_archive_incompatible",
+        "detail": _required_text(detail, "counterfactual unavailable detail")[:500],
+        "retryable": False,
+        "autopilot_eligible": False,
+        "metrics": {},
+    }
+    return {
+        "scoring_version": COUNTERFACTUAL_LINEUP_SCORING_VERSION,
+        "state": "unavailable",
+        "source_evidence_version": COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION,
+        "source_evidence_hash": source_hash,
+        "metrics": {},
+        "evidence": {**evidence, "evidence_hash": _sha256(evidence)},
+    }
+
+
+def _score_counterfactual_assignment(value, input_by_id, player_by_role, *, label: str):
+    if not isinstance(value, list):
+        raise ValueError(f"receipt {label} assignment is unavailable")
+    assignments = []
+    seen_players: set[str] = set()
+    total = Decimal("0")
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise ValueError(f"receipt {label} assignment is invalid")
+        slot = _required_text(raw.get("slot"), f"{label} slot").upper()
+        player_id = _required_text(raw.get("player_id"), f"{label} player id")
+        if slot not in SLOT_POSITION_IDS:
+            raise ValueError(f"unsupported {label} lineup slot: {slot}")
+        if player_id in seen_players:
+            raise ValueError(f"receipt {label} assignment repeats a player")
+        seen_players.add(player_id)
+        projection_input = input_by_id.get(player_id)
+        if not projection_input:
+            raise ValueError(f"{label} player is absent from decision-time inputs")
+        tokens = {_canonical_token(token) for token in (projection_input.get("tokens") or [])}
+        if not _decision_time_slot_eligible(slot, tokens):
+            raise ValueError(f"{label} player was not decision-time eligible for {slot}")
+        role = "pitcher" if slot in PITCHER_TOKENS else "hitter"
+        archived = player_by_role.get((player_id, role))
+        if not archived:
+            raise ValueError(f"{label} player role is absent from archived period evidence")
+        eligible_ids = {str(value) for value in (archived.get("eligibility_pos_ids") or [])}
+        if not eligible_ids or not (eligible_ids & SLOT_POSITION_IDS[slot]):
+            raise ValueError(f"{label} player was not archive-eligible for {slot}")
+        points = _decimal(archived.get("period_fpts"), f"{label} player period FPts")
+        total += points
+        assignments.append({
+            "slot": slot,
+            "player_id": player_id,
+            "scoring_role": role,
+            "period_fpts": _decimal_number(points),
+        })
+    return {"assignments": sorted(assignments, key=lambda item: (item["slot"], item["player_id"])), "total": total}
+
+
+def _actual_slot_match(actual_active, actual_slots, proposed, baseline):
+    def exact(candidate):
+        assignments = candidate["assignments"]
+        identities = {(item["player_id"], item["scoring_role"]) for item in assignments}
+        if identities != actual_active:
+            return False
+        return all(actual_slots.get((item["player_id"], item["scoring_role"])) in SLOT_POSITION_IDS[item["slot"]] for item in assignments)
+    if exact(proposed):
+        return "proposed"
+    if exact(baseline):
+        return "baseline"
+    return "other"
+
+
+def _canonical_token(value: Any) -> str:
+    token = str(value or "").strip().upper()
+    return {"UTIL": "UT", "LF": "OF", "CF": "OF", "RF": "OF"}.get(token, token)
+
+
+def _decision_time_slot_eligible(slot: str, tokens: set[str]) -> bool:
+    if slot == "P":
+        return bool(tokens & PITCHER_TOKENS)
+    return slot in tokens
+
+
+def _decimal(value: Any, label: str) -> Decimal:
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be numeric") from exc
+    if not number.is_finite():
+        raise ValueError(f"{label} must be finite")
+    return number
+
+
+def _decimal_number(value: Decimal) -> float:
+    return round(float(value), 4)
 
 
 def build_team_result_unavailable(

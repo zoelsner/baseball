@@ -1,9 +1,24 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-12** (recommendation decision surface in progress).
+> Last updated: **2026-07-12** (counterfactual outcome evaluation in progress).
 
 ## Where things stand
+
+- **Counterfactual recommendation evaluation in progress (#130):** completed
+  single-window Fantrax lineup evidence can now score the immutable Monday
+  receipt's baseline and proposed assignments with role-specific realized
+  player FPts. Results append to a versioned child ledger, so
+  `counterfactual_lineup_v1` coexists with and never overwrites the earlier
+  `team_result_v1` observed-total record. The scorer binds league, team,
+  period, receipt hash, source evidence version/hash, decision-time and
+  archived slot eligibility, and exact player-role identity. It labels actual
+  participation as proposed/baseline/other, but only an accepted proposal that
+  matches the verified active set is decision-aligned. Multi-window periods,
+  missing players, ambiguous two-way usage, illegal slots, or changed evidence
+  fail closed. This telemetry is retrospective, not causal lift, does not prove
+  execution, and is explicitly ineligible for autopilot. Current verification:
+  453 Python tests pass with 2 disposable-Postgres tests skipped.
 
 - **Recommendation decisions in progress (#92):** the durable Monday lineup
   receipt foundation is merged. The current focused slice adds a sanitized
