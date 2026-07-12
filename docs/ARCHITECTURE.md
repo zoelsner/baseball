@@ -127,6 +127,14 @@ without AI work, so protected, missing-data, or age-24-and-younger dynasty
 assets are labeled for manual review before the user clicks. This is a
 temporary honest limitation until a richer dynasty/prospect model ships.
 
+Trade assessment receipt v2 distinguishes manually entered packages from
+reviewed incoming Fantrax offers. Incoming receipts retain a sanitized upstream
+trade ID, counterparty team ID, source snapshot, and unparsed source schedule labels inside
+their immutable evidence. This supports later exact transaction correlation;
+it does not turn local owner intent into execution proof. Trade outcome data
+will use its own append-only player-period evidence and scoring versions rather
+than reuse lineup counterfactual labels.
+
 ### Skipper
 
 Skipper is an explainer and Q&A layer over real snapshot context. It must not be

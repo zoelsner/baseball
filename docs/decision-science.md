@@ -90,3 +90,13 @@ availability and realized roster value for waivers; decision-time market and
 future production horizons for trades; and multi-season keeper/prospect
 outcomes for dynasty analysis. Reusing this weekly label for those questions
 would be a modeling error.
+
+The trade path now preserves exact incoming Fantrax offer identity in
+`trade_assessment_v2`, while keeping manual packages explicitly unbound. This
+is lineage groundwork, not a trade model. Before training, Sandlot still needs
+a predeclared first-complete-period horizon, stable MLB identity and scoring
+role per asset, and append-only league-scored player-period evidence. Owner
+intent, observed ownership transfer, and verified Fantrax execution must remain
+three different facts. The future asset-production label must be calculated for
+accepted, rejected, and undecided assessments alike so selection by owner intent
+does not masquerade as recommendation quality.

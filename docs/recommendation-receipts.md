@@ -27,13 +27,14 @@ Dictionary and assignment order do not change the hash. Material projection,
 assignment, provenance, or target-week changes do. Wall-clock generation time
 and presentation prose are not decision inputs and are not hashed.
 
-Trade assessment V1 uses the same ledger and hashes the exact league, team,
+Trade assessment v2 uses the same ledger and hashes the exact league, team,
 snapshot, give/get player identities and decision-time player facts,
 deterministic current-rate grade, explicitly supported or unavailable horizon
 states, and the manual-execution guardrail. Trade scopes include the snapshot
 ID and both offer sides, so a refresh produces new evidence without
 superseding or rewriting a decision recorded against an older snapshot. AI
 rationale is presentation and is intentionally excluded from the identity.
+Legacy v1 receipts remain readable but do not contain upstream offer lineage.
 The receipt also retains versioned, normalized eligibility evidence for every
 participant: side, slot, age and provenance, protected-player classification,
 manual-dynasty-review classification, and FP/G validity. Raw snapshot blobs
@@ -79,12 +80,29 @@ future calibration, not Fantrax actions: the API and bridge require
 `fantrax_changed=false` and `writes_enabled=false`, and trade acceptance remains
 manual in Fantrax.
 
+`trade_assessment_v2` also freezes how the offer entered Sandlot. Manually
+entered packages are labeled `manual_entry` with no transaction identity.
+Reviewed incoming offers are labeled `incoming_fantrax_offer` and bind the
+sanitized Fantrax trade ID, counterparty team ID, source snapshot ID, and the
+available proposed/scheduled-execution display labels inside the receipt hash.
+The latter is explicitly unverified and is not an execution timestamp. A later
+outcome scorer may use that identity as lineage, but it must not infer that the
+trade executed merely because the owner recorded intent to accept.
+
 Incoming Fantrax offers remain snapshot data, not receipts, until Zach reviews
 one. The public incoming-offers projection excludes raw Fantrax payloads and
 only marks a player-only offer gradeable when every player has an exact ID on
 both sides. The resulting grade then creates the normal immutable trade
 assessment receipt. Draft picks and incomplete identities require manual
 review rather than a partial or guessed receipt.
+
+Trade outcome modeling remains blocked until a later receipt/evidence version
+also freezes stable MLB identities, scoring roles, exact future league periods,
+and an immutable arbitrary-player scoring archive. The first honest target is
+the give/get packages' league-scored asset production in the first complete
+future scoring period. It is not lineup lift, causal value, or proof of a
+completed trade. Rest-of-season evidence must remain separate, and no numeric
+dynasty label is authorized by the current age/current-rate inputs.
 
 ## Outcome telemetry
 
