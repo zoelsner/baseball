@@ -595,7 +595,7 @@ function V2App({ initial }) {
       ? <V2TeamRoster teamId={leagueTeam.id} teamMeta={leagueTeam} onBack={()=>setLeagueTeam(null)} onPlayer={setDetail}/>
       : <V2League model={model} onOpenTeam={setLeagueTeam} onOpenTrade={()=>setPage('trade')}/>,
     fa:      <V2FreeAgents onOpenPlayer={openPlayer} onAskSkipper={continueInSkipper}/>,
-    trade:   <V2TradeGrader model={model}/>,
+    trade:   <V2TradeGrader model={model} onAskSkipper={continueInSkipper}/>,
     skipper: <V2Skipper model={model} sync={syncState} onOpenPlayer={openPlayer} draft={skipperDraft}/>,
     settings:<V2Settings model={model} sync={syncState} onRefresh={refreshSnapshot} onSignOut={()=>setAuthed(false)}/>,
   };
@@ -3078,7 +3078,86 @@ function V2PlayerPicker({ label, source, model, value, onChange }) {
   );
 }
 
-function V2TradeGradeCard({ result }) {
+function v2TradeHorizonValue(item) {
+  if (!item || item.value == null) return item && item.status === 'limited' ? 'Limited' : 'Not modeled';
+  const value = Number(item.value);
+  if (!Number.isFinite(value)) return String(item.value);
+  const formatted = `${value >= 0 ? '+' : ''}${value.toFixed(item.key === 'current_rate' ? 2 : 1)}`;
+  return item.unit ? `${formatted} ${item.unit}` : formatted;
+}
+
+function V2TradeAnalysisSummary({ result, onAskSkipper }) {
+  const analysis = result && result.analysis;
+  if (!analysis) return null;
+  const recommendation = analysis.recommendation || {};
+  const counter = analysis.recommended_counter;
+  const fit = analysis.roster_fit || {};
+  const horizons = analysis.horizons || [];
+  const scrollToCounters = () => {
+    const target = document.getElementById('trade-counters');
+    if (target) target.scrollIntoView({ behavior:'smooth', block:'start' });
+  };
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
+      <div>
+        <V2Eyebrow color={recommendation.action === 'counter' ? V2.accent : V2.warn}>Trade analysis</V2Eyebrow>
+        <h2 style={{ margin:'7px 0 0', fontFamily:V2.fontDisplay, fontSize:22, lineHeight:1.08, letterSpacing:'-0.025em' }}>
+          {recommendation.title || 'Review this offer'}
+        </h2>
+        <div style={{ marginTop:7, color:V2.body, fontSize:12.5, lineHeight:1.5, fontWeight:600 }}>
+          {recommendation.detail || 'Compare the evidence below before answering.'}
+        </div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:8 }}>
+        {horizons.map(item => {
+          const modeled = item.status === 'modeled';
+          const limited = item.status === 'limited';
+          const value = Number(item.value);
+          const tone = modeled && Number.isFinite(value) ? (value >= 0 ? V2.ok : V2.injured) : limited ? V2.warn : V2.muted;
+          return (
+            <div key={item.key} style={{
+              minWidth:0, background:V2.surface2, border:`1px solid ${V2.hairline2}`,
+              borderRadius:13, padding:'11px 12px',
+            }}>
+              <div style={{ color:V2.muted, fontSize:9.5, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>{item.label}</div>
+              <div style={{ marginTop:6, color:tone, fontSize:modeled || limited ? 17 : 13, fontWeight:850, lineHeight:1.1, fontFamily:modeled || limited ? V2.fontMono : V2.font }}>
+                {v2TradeHorizonValue(item)}
+              </div>
+              <div style={{ marginTop:6, color:V2.muted, fontSize:10.5, lineHeight:1.35 }}>{item.detail}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ background:fit.fills_weakest_position ? V2.okSoft : V2.accentSoft, borderRadius:13, padding:'11px 12px' }}>
+        <V2Eyebrow color={fit.fills_weakest_position ? V2.ok : V2.accent}>Roster fit</V2Eyebrow>
+        <div style={{ marginTop:6, color:V2.ink, fontSize:13.5, fontWeight:800 }}>{fit.label || 'Manual roster-fit review'}</div>
+        <div style={{ marginTop:4, color:V2.body, fontSize:11.5, lineHeight:1.45 }}>{fit.detail}</div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:counter ? '1fr 1fr' : '1fr', gap:8 }}>
+        {counter ? (
+          <button onClick={scrollToCounters} style={{
+            minHeight:44, border:'none', borderRadius:999, background:V2.ink, color:'#fff',
+            fontFamily:'inherit', fontSize:12, fontWeight:850, cursor:'pointer', padding:'10px 12px',
+          }}>Review recommended counter</button>
+        ) : null}
+        <button onClick={()=>onAskSkipper && onAskSkipper(analysis.skipper_prompt)} disabled={!onAskSkipper} style={{
+          minHeight:44, border:`1px solid ${V2.hairline}`, borderRadius:999, background:V2.surface,
+          color:V2.body, fontFamily:'inherit', fontSize:12, fontWeight:850,
+          cursor:onAskSkipper ? 'pointer' : 'not-allowed', padding:'10px 12px', opacity:onAskSkipper ? 1 : 0.6,
+        }}>Ask Skipper</button>
+      </div>
+
+      <div style={{ textAlign:'center', color:V2.muted, fontSize:10.5, lineHeight:1.4 }}>
+        Analysis only · never auto-accepts · complete any trade manually in Fantrax
+      </div>
+    </div>
+  );
+}
+
+function V2TradeGradeCard({ result, onAskSkipper }) {
   const fairness = Math.max(0, Math.min(1, Number(result.fairness) || 0));
   const fairnessPct = (fairness * 100).toFixed(0);
   const dash = (fairness * 188.5).toFixed(1);
@@ -3090,6 +3169,8 @@ function V2TradeGradeCard({ result }) {
   const fmt = (n) => `${n >= 0 ? '+' : ''}${Number(n).toFixed(1)}`;
   return (
     <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16 }}>
+      <V2TradeAnalysisSummary result={result} onAskSkipper={onAskSkipper}/>
+      <div style={{ margin:'16px 0', borderTop:`1px solid ${V2.hairline2}` }}/>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:14 }}>
         <div style={{ flex:1, minWidth:0 }}>
           <V2Eyebrow color={color}>Current-rate grade</V2Eyebrow>
@@ -3155,7 +3236,7 @@ function V2TradeGradeCard({ result }) {
       ) : null}
 
       {(result.counters || []).length ? (
-        <div style={{ marginTop:14, paddingTop:14, borderTop:`1px solid ${V2.hairline2}`, display:'flex', flexDirection:'column', gap:8 }}>
+        <div id="trade-counters" style={{ marginTop:14, paddingTop:14, borderTop:`1px solid ${V2.hairline2}`, display:'flex', flexDirection:'column', gap:8, scrollMarginTop:12 }}>
           <V2Eyebrow color={V2.accent}>Counters</V2Eyebrow>
           {(result.counters || []).map(counter => <V2TradeCounterCard key={counter.tier} counter={counter}/>)}
         </div>
@@ -3202,12 +3283,13 @@ function V2TradeCounterCard({ counter }) {
   );
 }
 
-function V2TradeGrader({ model }) {
+function V2TradeGrader({ model, onAskSkipper }) {
   const [give, setGive] = React.useState([]);
   const [get, setGet] = React.useState([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState(null);
   const [result, setResult] = React.useState(null);
+  const [editing, setEditing] = React.useState(true);
 
   const ready = give.length > 0 && get.length > 0 && !loading;
 
@@ -3227,6 +3309,7 @@ function V2TradeGrader({ model }) {
         throw new Error(detail);
       }
       setResult(body);
+      setEditing(false);
     } catch (e) {
       setError(e && e.message ? e.message : String(e));
     } finally {
@@ -3236,14 +3319,34 @@ function V2TradeGrader({ model }) {
 
   return (
     <div style={{ padding:'4px 16px 32px', display:'flex', flexDirection:'column', gap:14 }}>
-      <V2PlayerPicker label="You give" source="mine" model={model} value={give} onChange={setGive}/>
-      <V2PlayerPicker label="You get" source="league" model={model} value={get} onChange={setGet}/>
-
-      <div>
-        <V2Primary onClick={grade} disabled={!ready} sub={ready ? 'Snapshot · cached on repeat' : 'Pick at least one player on each side'}>
-          {Icons.sparkle('#fff', 14)} {loading ? 'Grading…' : (result ? 'Re-grade' : 'Grade')}
-        </V2Primary>
-      </div>
+      {editing || !result ? (
+        <>
+          <V2PlayerPicker label="You give" source="mine" model={model} value={give} onChange={setGive}/>
+          <V2PlayerPicker label="You get" source="league" model={model} value={get} onChange={setGet}/>
+          <div>
+            <V2Primary onClick={grade} disabled={!ready} sub={ready ? 'Snapshot · cached on repeat' : 'Pick at least one player on each side'}>
+              {Icons.sparkle('#fff', 14)} {loading ? 'Grading…' : (result ? 'Re-grade' : 'Grade')}
+            </V2Primary>
+          </div>
+        </>
+      ) : (
+        <div style={{ background:V2.surface2, border:`1px solid ${V2.hairline}`, borderRadius:15, padding:'11px 12px', display:'flex', alignItems:'center', gap:10 }}>
+          <div style={{ flex:1, minWidth:0 }}>
+            <V2Eyebrow color={V2.accent}>Offer reviewed</V2Eyebrow>
+            <div style={{ marginTop:5, color:V2.ink, fontSize:12.5, fontWeight:750, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+              Give {give.map(p=>p.name).join(', ')}
+            </div>
+            <div style={{ marginTop:2, color:V2.muted, fontSize:11.5, fontWeight:650, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+              Get {get.map(p=>p.name).join(', ')}
+            </div>
+          </div>
+          <button onClick={()=>{ setEditing(true); setResult(null); setError(null); }} style={{
+            flexShrink:0, minHeight:40, border:`1px solid ${V2.hairline}`, borderRadius:999,
+            background:V2.surface, color:V2.body, fontFamily:'inherit', fontSize:11.5,
+            fontWeight:800, cursor:'pointer', padding:'8px 11px',
+          }}>Edit offer</button>
+        </div>
+      )}
 
       {error ? (
         <div role="alert" style={{
@@ -3253,7 +3356,7 @@ function V2TradeGrader({ model }) {
       ) : null}
 
       <div aria-live="polite">
-        {result ? <V2TradeGradeCard result={result}/> : null}
+        {result ? <V2TradeGradeCard result={result} onAskSkipper={onAskSkipper}/> : null}
       </div>
     </div>
   );

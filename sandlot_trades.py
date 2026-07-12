@@ -128,6 +128,13 @@ def grade_offer(
         context=context,
     )
 
+    analysis = _build_trade_analysis(
+        give_players=give_players,
+        get_players=get_players,
+        deltas=deltas,
+        counter_result=counter_result,
+    )
+
     return {
         "snapshot_id": snapshot_id,
         "grade_scope": "current_rate_only",
@@ -149,8 +156,151 @@ def grade_offer(
         "counters": counter_result["counters"],
         "my_weakest_position": counter_result["my_weakest_position"],
         "no_counter_reason": counter_result["no_counter_reason"],
+        "analysis": analysis,
         "model": model,
         "cached": cached,
+    }
+
+
+def _build_trade_analysis(
+    *,
+    give_players: list[dict[str, Any]],
+    get_players: list[dict[str, Any]],
+    deltas: dict[str, Any],
+    counter_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Package the grader's evidence without inventing unsupported horizons."""
+    my_delta = float(deltas["my_delta"])
+    weakest = counter_result.get("my_weakest_position")
+    acquired_positions = sorted(set().union(*(_position_tokens(p) for p in get_players)))
+    fills_weakest = bool(weakest and weakest in acquired_positions)
+    fit_label = (
+        f"Adds {weakest} help"
+        if fills_weakest
+        else f"Does not directly fill {weakest}"
+        if weakest
+        else "Roster fit needs manual review"
+    )
+    fit_detail = (
+        f"The get side includes {weakest}, your weakest current-rate position."
+        if fills_weakest
+        else f"Your weakest current-rate position is {weakest}; the get side covers {', '.join(acquired_positions) or 'no verified position'}."
+        if weakest
+        else "The snapshot could not identify a weakest position confidently."
+    )
+
+    counters = counter_result.get("counters") or []
+    recommended_counter = next((c for c in counters if c.get("tier") == "balanced"), None)
+    if recommended_counter is None and counters:
+        recommended_counter = counters[0]
+
+    if recommended_counter:
+        recommendation = {
+            "action": "counter",
+            "title": "Counter before accepting",
+            "detail": recommended_counter.get("rationale")
+            or "A deterministic counter improves the current-rate package.",
+        }
+    elif my_delta >= 0.5:
+        recommendation = {
+            "action": "review",
+            "title": "Current rate favors you; check the dynasty cost",
+            "detail": counter_result.get("no_counter_reason")
+            or "No counter is needed on current snapshot rate, but long-term value is not fully modeled.",
+        }
+    elif my_delta <= -0.5:
+        recommendation = {
+            "action": "review",
+            "title": "Hold — the current rate is against you",
+            "detail": counter_result.get("no_counter_reason")
+            or "The current snapshot rate is negative and no safe counter is available.",
+        }
+    else:
+        recommendation = {
+            "action": "review",
+            "title": "Near-even rate; decide on roster fit",
+            "detail": counter_result.get("no_counter_reason")
+            or "The rate gap is small enough that role, fit, and long-term value should decide it.",
+        }
+
+    age_delta = deltas.get("age_delta")
+    age_value = None if age_delta is None else round(float(age_delta), 1)
+    age_detail = (
+        "Average age is only a directional signal; prospects, contracts, and market value are not modeled."
+        if age_value is not None
+        else "The snapshot does not have enough trusted age data for a directional signal."
+    )
+    horizons = [
+        {
+            "key": "current_rate",
+            "label": "Current rate",
+            "status": "modeled",
+            "value": round(my_delta, 2),
+            "unit": "FP/G",
+            "detail": "Net change from current snapshot scoring rates.",
+        },
+        {
+            "key": "this_week",
+            "label": "This week",
+            "status": "unavailable",
+            "value": None,
+            "unit": None,
+            "detail": "Weekly games, probable starts, and lineup usage are not modeled in this grade yet.",
+        },
+        {
+            "key": "rest_of_season",
+            "label": "Rest of season",
+            "status": "unavailable",
+            "value": None,
+            "unit": None,
+            "detail": "Rest-of-season playing time and projection changes are not modeled yet.",
+        },
+        {
+            "key": "dynasty",
+            "label": "Dynasty",
+            "status": "limited" if age_value is not None else "unavailable",
+            "value": age_value,
+            "unit": "yr avg age" if age_value is not None else None,
+            "detail": age_detail,
+        },
+    ]
+
+    give_names = ", ".join(str(p.get("name") or "Unknown") for p in give_players)
+    get_names = ", ".join(str(p.get("name") or "Unknown") for p in get_players)
+    counter_prompt = ""
+    if recommended_counter:
+        counter_give = ", ".join(
+            str(p.get("name") or "Unknown") for p in (recommended_counter.get("give") or [])
+        )
+        counter_get = ", ".join(
+            str(p.get("name") or "Unknown") for p in (recommended_counter.get("get") or [])
+        )
+        counter_prompt = (
+            f" The recommended {recommended_counter.get('tier') or 'balanced'} counter is: "
+            f"give {counter_give}; get {counter_get}; current-rate delta "
+            f"{float(recommended_counter.get('my_delta') or 0):+.2f} FP/G."
+        )
+    skipper_prompt = (
+        f"Sandlot trade-analysis evidence: I give {give_names}; I get {get_names}. "
+        f"The deterministic snapshot-rate delta is {my_delta:+.2f} FP/G. "
+        f"Sandlot's current recommendation is: {recommendation['title']}.{counter_prompt} "
+        "Challenge the assumptions, explain this-week, rest-of-season, and dynasty implications, "
+        "and compare the best counter. Do not claim unsupported certainty."
+    )
+
+    return {
+        "recommendation": recommendation,
+        "horizons": horizons,
+        "roster_fit": {
+            "weakest_position": weakest,
+            "acquired_positions": acquired_positions,
+            "fills_weakest_position": fills_weakest,
+            "label": fit_label,
+            "detail": fit_detail,
+        },
+        "recommended_counter": recommended_counter,
+        "skipper_prompt": skipper_prompt,
+        "manual_only": True,
     }
 
 

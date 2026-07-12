@@ -69,6 +69,14 @@ an attention item implies replacement review.
 League owns other-team context and trade workflows. Trade should live here until
 the workflow proves frequent enough to justify a primary tab.
 
+The trade grader returns a structured `analysis` alongside the legacy grade:
+recommendation, evidence by time horizon, roster fit, recommended counter, and
+an exact Skipper handoff prompt. Current snapshot FP/G is the only fully modeled
+horizon today. Weekly and rest-of-season cards are explicitly unavailable, and
+average age is labeled as a limited dynasty signal. The frontend must preserve
+those evidence states and must never turn a trade recommendation into an
+automatic Fantrax write.
+
 ### Skipper
 
 Skipper is an explainer and Q&A layer over real snapshot context. It must not be

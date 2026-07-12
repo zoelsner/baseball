@@ -28,6 +28,13 @@ Success means Zach can read the morning brief or open Today and quickly know:
 - whether a league/team/trade context needs inspection
 - what is real data, what is a deterministic recommendation, and what is AI explanation
 
+For a proposed trade, success means Zach can see the current-rate evidence,
+market fairness, roster fit, dynasty limitations, and the best deterministic
+counter separately. Unsupported weekly or rest-of-season horizons must say so
+plainly rather than borrowing confidence from the current FP/G comparison.
+Skipper may challenge the assumptions and explain the exact offer, but trade
+acceptance remains manual in Fantrax.
+
 ## Brand Personality
 
 Calm, sharp, grounded.
