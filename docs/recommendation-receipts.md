@@ -73,6 +73,13 @@ future calibration, not Fantrax actions: the API and bridge require
 `fantrax_changed=false` and `writes_enabled=false`, and trade acceptance remains
 manual in Fantrax.
 
+Incoming Fantrax offers remain snapshot data, not receipts, until Zach reviews
+one. The public incoming-offers projection excludes raw Fantrax payloads and
+only marks a player-only offer gradeable when every player has an exact ID on
+both sides. The resulting grade then creates the normal immutable trade
+assessment receipt. Draft picks and incomplete identities require manual
+review rather than a partial or guessed receipt.
+
 ## Outcome telemetry
 
 `team_result_v1` scores a receipt only when a later successful snapshot

@@ -527,6 +527,8 @@ def latest_waiver_swaps() -> dict[str, Any]:
 class TradeGradeIn(BaseModel):
     give: list[str] = Field(..., min_length=1, max_length=5)
     get: list[str] = Field(..., min_length=1, max_length=5)
+    incoming_trade_id: str | None = Field(default=None, max_length=160)
+    incoming_snapshot_id: int | None = None
 
 
 @app.post("/api/trades/grade")
@@ -534,9 +536,23 @@ def grade_trade(payload: TradeGradeIn) -> dict[str, Any]:
     try:
         snapshot_row = sandlot_db.latest_successful_snapshot()
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
+        raise HTTPException(status_code=503, detail="Trade analysis is temporarily unavailable") from exc
     if not snapshot_row:
         raise HTTPException(status_code=409, detail="No Fantrax snapshot yet — run a refresh first")
+    if payload.incoming_trade_id is not None or payload.incoming_snapshot_id is not None:
+        if not payload.incoming_trade_id or payload.incoming_snapshot_id != snapshot_row.get("id"):
+            raise HTTPException(status_code=409, detail="Incoming offer snapshot changed — refresh and review it again")
+        expected = next(
+            (offer for offer in _incoming_offers_from_snapshot(snapshot_row) if offer.get("trade_id") == payload.incoming_trade_id),
+            None,
+        )
+        exact_give = sorted(item["player_id"] for item in (expected or {}).get("give", []) if item.get("player_id"))
+        exact_get = sorted(item["player_id"] for item in (expected or {}).get("get", []) if item.get("player_id"))
+        if (
+            not expected or expected.get("gradeable") is not True
+            or sorted(payload.give) != exact_give or sorted(payload.get) != exact_get
+        ):
+            raise HTTPException(status_code=409, detail="Incoming offer changed or is no longer exactly gradeable")
     try:
         result = sandlot_trades.grade_offer(snapshot_row, payload.give, payload.get)
         receipt, _created = sandlot_db.record_recommendation_receipt(
@@ -549,6 +565,98 @@ def grade_trade(payload: TradeGradeIn) -> dict[str, Any]:
         log.exception("Trade grade failed")
         raise HTTPException(status_code=503, detail="Trade analysis is temporarily unavailable") from exc
     return jsonable_encoder(result)
+
+
+@app.get("/api/trades/incoming")
+def incoming_trades() -> dict[str, Any]:
+    """Return sanitized incoming Fantrax offers; reviewing remains read-only and manual."""
+    try:
+        snapshot_row = sandlot_db.latest_successful_snapshot()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Incoming trades are temporarily unavailable") from exc
+    if not snapshot_row:
+        raise HTTPException(status_code=409, detail="No Fantrax snapshot yet — run a refresh first")
+    offers = _incoming_offers_from_snapshot(snapshot_row)
+    return jsonable_encoder({
+        "snapshot_id": snapshot_row.get("id"),
+        "taken_at": snapshot_row.get("taken_at"),
+        "freshness": _freshness(snapshot_row.get("taken_at")),
+        "offers": offers,
+        "read_only": True,
+        "fantrax_changed": False,
+        "writes_enabled": False,
+    })
+
+
+def _incoming_offers_from_snapshot(snapshot_row: dict[str, Any]) -> list[dict[str, Any]]:
+    data = _persisted_snapshot_data(snapshot_row)
+    my_team_id = str(data.get("team_id") or snapshot_row.get("team_id") or "").strip()
+    freshness = _freshness(snapshot_row.get("taken_at"))
+    raw_trades = data.get("pending_trades") if isinstance(data.get("pending_trades"), list) else []
+    offers = []
+    for raw in raw_trades:
+        proposer_id = str(raw.get("proposed_by_id") or "").strip() if isinstance(raw, dict) else ""
+        if not isinstance(raw, dict) or raw.get("error") or not proposer_id or proposer_id == my_team_id:
+            continue
+        give, get, unsupported, counterparties = [], [], [], set()
+        for move in raw.get("moves") or []:
+            if not isinstance(move, dict):
+                unsupported.append("invalid_move")
+                continue
+            if move.get("draft_pick"):
+                unsupported.append("draft_pick")
+                continue
+            from_team_id = str(move.get("from_team_id") or "")
+            to_team_id = str(move.get("to_team_id") or "")
+            if my_team_id not in {from_team_id, to_team_id}:
+                unsupported.append("third_party_move")
+                continue
+            player_id = str(move.get("player_id") or "").strip()
+            player_name = str(move.get("player") or "").strip()
+            item = {"player_id": player_id or None, "player_name": player_name or None}
+            if not player_id or not player_name:
+                unsupported.append("missing_player_identity")
+            if from_team_id == my_team_id:
+                give.append(item)
+                if to_team_id:
+                    counterparties.add(to_team_id)
+            elif to_team_id == my_team_id:
+                get.append(item)
+                if from_team_id:
+                    counterparties.add(from_team_id)
+        if len(counterparties) != 1:
+            unsupported.append("multi_team_offer")
+        elif proposer_id not in counterparties:
+            unsupported.append("proposer_mismatch")
+        if not str(raw.get("trade_id") or "").strip():
+            unsupported.append("missing_trade_identity")
+        if raw.get("accepted"):
+            unsupported.append("already_accepted")
+        give_ids = [item["player_id"] for item in give if item.get("player_id")]
+        get_ids = [item["player_id"] for item in get if item.get("player_id")]
+        if len(give_ids) != len(set(give_ids)) or len(get_ids) != len(set(get_ids)):
+            unsupported.append("duplicate_player_identity")
+        if set(give_ids) & set(get_ids):
+            unsupported.append("overlapping_player_identity")
+        if freshness.get("state") == "old":
+            unsupported.append("old_snapshot")
+        give.sort(key=lambda item: str(item.get("player_id") or ""))
+        get.sort(key=lambda item: str(item.get("player_id") or ""))
+        gradeable = bool(give and get and not unsupported)
+        offers.append({
+            "trade_id": str(raw.get("trade_id") or "").strip() or None,
+            "proposed_by": str(raw.get("proposed_by") or "").strip() or "Another team",
+            "proposed_at": raw.get("proposed"),
+            "executes_at": raw.get("executed"),
+            "status": "awaiting_execution" if raw.get("accepted") else "pending",
+            "give": give,
+            "get": get,
+            "gradeable": gradeable,
+            "blocked_reasons": sorted(set(unsupported + ([] if give else ["missing_give_side"]) + ([] if get else ["missing_get_side"]))),
+            "includes_draft_pick": "draft_pick" in unsupported,
+            "manual_only": True,
+        })
+    return offers
 
 
 class SkipperMessageIn(BaseModel):

@@ -1672,6 +1672,7 @@ def extract_pending_trades(api: FantraxAPI, my_team_id: str) -> list[dict]:
                     "to_team_id": getattr(to_team, "id", None),
                     "to_team": getattr(to_team, "name", None),
                     "player": getattr(player, "name", None) if player else None,
+                    "player_id": getattr(player, "id", None) if player else None,
                     "draft_pick": _to_jsonable(getattr(m, "draft_pick", None)) if hasattr(m, "draft_pick") else None,
                 })
 
@@ -1684,15 +1685,22 @@ def extract_pending_trades(api: FantraxAPI, my_team_id: str) -> list[dict]:
                     "trade_id": getattr(t, "trade_id", None),
                     "proposed_by_id": getattr(proposed_by, "id", None),
                     "proposed_by": getattr(proposed_by, "name", None),
-                    "proposed": str(getattr(t, "proposed", "")) or None,
-                    "accepted": str(getattr(t, "accepted", "")) or None,
-                    "executed": str(getattr(t, "executed", "")) or None,
+                    "proposed": _optional_text(getattr(t, "proposed", None)),
+                    "accepted": _optional_text(getattr(t, "accepted", None)),
+                    "executed": _optional_text(getattr(t, "executed", None)),
                     "moves": moves,
                 })
         except Exception as e:
             log.warning("Failed to parse trade: %s", e)
             out.append({"error": str(e), "raw": _to_jsonable(t)})
     return out
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _extract_pending_trades_raw(api: FantraxAPI, my_team_id: str) -> list[dict]:

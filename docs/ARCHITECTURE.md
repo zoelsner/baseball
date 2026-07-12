@@ -115,6 +115,14 @@ Each grade also records an immutable, snapshot-scoped `trade_assessment`
 receipt. Owner intent may be recorded through the same loopback bridge used by
 lineup receipts, but the receipt cannot authorize or imply a trade mutation.
 
+The refresh collector also stores pending trades involving Zach's team. `GET
+/api/trades/incoming` exposes only incoming player identities, offer-side
+direction, proposer/timing labels, and gradeability from the latest stored
+snapshot. Outbound and unrelated offers are filtered. Draft-pick or incomplete
+player offers fail closed to manual review. The League card can submit a fully
+identified player-only offer to the existing grader in one click; reading or
+reviewing an offer never answers it in Fantrax.
+
 ### Skipper
 
 Skipper is an explainer and Q&A layer over real snapshot context. It must not be

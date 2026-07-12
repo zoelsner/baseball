@@ -24,6 +24,24 @@ class DummyAPI:
 
 
 class FantraxPendingTradeTests(unittest.TestCase):
+    def test_object_parser_retains_exact_player_id(self):
+        class Ref:
+            pass
+        mine, other, player, move, trade = Ref(), Ref(), Ref(), Ref(), Ref()
+        mine.id, mine.name = "mine", "My Team"
+        other.id, other.name = "other", "Other Team"
+        player.id, player.name = "p1", "Useful Player"
+        move.from_team, move.to_team, move.player = mine, other, player
+        trade.proposed_by, trade.moves, trade.trade_id = other, [move], "tx-object"
+        trade.proposed, trade.accepted, trade.executed = None, None, None
+        api = DummyAPI()
+        api.pending_trades = lambda: [trade]
+
+        trades = fantrax_data.extract_pending_trades(api, "mine")
+
+        self.assertEqual(trades[0]["moves"][0]["player_id"], "p1")
+        self.assertIsNone(trades[0]["accepted"])
+
     def test_raw_fallback_allows_missing_accepted_timestamp(self):
         raw = {
             "tradeInfoList": [
