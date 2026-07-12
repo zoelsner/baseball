@@ -545,6 +545,9 @@ class RecommendationReceiptPostgresConcurrencyTests(unittest.TestCase):
     def test_waiting_decision_rechecks_wall_clock_expiry_after_row_lock(self):
         database_url = os.environ["SANDLOT_TEST_DATABASE_URL"]
         receipt = receipt_fixture(week_start=date(2099, 1, 5))
+        generated_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+        receipt["generated_at"] = generated_at
+        receipt["expires_at"] = generated_at + timedelta(seconds=5)
         outcome = []
         waiting_transaction_started = threading.Event()
         snapshot_id = None
