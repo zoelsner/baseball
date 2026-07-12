@@ -259,6 +259,13 @@ inside the one-time lease window. The request then becomes terminal as
 The database stores only credential and lease digests, never their plaintext,
 and preflight evidence rejects cookie, token, session, password, or auth fields.
 
+Request creation now enforces the contract's five-minute snapshot-age ceiling.
+A cookie-free runner adapter may combine a fresh server-bound eligibility
+snapshot with roster period, membership, and slots read from an already
+signed-in visible browser. Headshotless rows resolve only through a unique
+initial/surname/team join; any ambiguity or count drift fails closed. No browser
+cookies or storage cross into Sandlot.
+
 See `docs/sandlot-execution-dry-run.md` for the API, state machine, kill
 switches, and local runner procedure.
 

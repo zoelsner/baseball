@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any
@@ -37,7 +38,14 @@ LINEUP_SLOT_VALUES = {
     "MIN",
 }
 PLAYER_ID_ATTRS = {"data-player-id", "data-scorer-id", "data-playerid", "data-scorerid"}
-HEADSHOT_RE = re.compile(r"\bhs([A-Za-z0-9_-]+)_")
+HEADSHOT_RE = re.compile(
+    r"\bhs([A-Za-z0-9_-]+?)_(?=(?:\d+|large|small)(?:_\d+)?\.(?:png|jpe?g|webp)\b)",
+    re.IGNORECASE,
+)
+
+
+class VisibleRosterIdentityError(ValueError):
+    """Visible roster rows cannot be joined to the exact expected roster."""
 
 
 def roster_url(league_id: str, team_id: str, *, override: str | None = None) -> str:
@@ -175,8 +183,100 @@ def lineup_slots_from_html(html: str) -> dict[str, dict[str, Any]]:
                 "slot": slot,
                 "slot_source": "dom.lineup-btn",
                 "text": raw_text,
+                "lineup_control_enabled": _control_enabled(slot_node),
             }
     return slots
+
+
+def visible_roster_rows_from_html(html: str) -> list[dict[str, Any]]:
+    """Extract visible roster identity evidence without clicking Fantrax.
+
+    A row may lack a player id when Fantrax has no headshot.  Call
+    `reconcile_visible_roster_rows` with the server-derived roster to resolve
+    those rows only when a unique name-initial/surname/team match exists.
+    """
+    parser = _RosterHtmlParser()
+    parser.feed(html or "")
+    rows: list[dict[str, Any]] = []
+    for row in _walk(parser.root):
+        if row.tag != "tr" and not _class_has(row, ("i-table__row", "player-row", "roster-row")):
+            continue
+        name = _visible_player_name(row)
+        slot_node = _find_lineup_button(row)
+        slot = _slot_from_node(slot_node) if slot_node is not None else None
+        if not name or not slot:
+            continue
+        ids: list[str] = []
+        for node in _walk(row):
+            ids.extend(_player_ids(node))
+        unique_ids = list(dict.fromkeys(ids))
+        rows.append({
+            "player_id": unique_ids[0] if len(unique_ids) == 1 else None,
+            "name": name,
+            "team": _visible_player_team(row),
+            "slot": slot,
+            "lineup_control_enabled": _control_enabled(slot_node),
+            "identity_source": "visible_headshot_or_attribute" if len(unique_ids) == 1 else "visible_identity_missing",
+            "identity_conflict": unique_ids if len(unique_ids) > 1 else [],
+        })
+    return rows
+
+
+def reconcile_visible_roster_rows(
+    visible_rows: list[dict[str, Any]],
+    expected_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Fail closed unless every visible row maps one-to-one to expected ids."""
+    expected_by_id = {
+        str(row.get("id")): row
+        for row in expected_rows
+        if isinstance(row, dict) and row.get("id") and row.get("name")
+    }
+    if not expected_by_id or len(visible_rows) != len(expected_by_id):
+        raise VisibleRosterIdentityError(
+            f"Visible roster count {len(visible_rows)} does not match expected count {len(expected_by_id)}"
+        )
+
+    reconciled: list[dict[str, Any]] = []
+    matched: set[str] = set()
+    unresolved: list[dict[str, Any]] = []
+    for visible in visible_rows:
+        if visible.get("identity_conflict"):
+            raise VisibleRosterIdentityError(f"Visible row has conflicting player ids: {visible['identity_conflict']}")
+        player_id = str(visible.get("player_id") or "")
+        if not player_id:
+            unresolved.append(visible)
+            continue
+        expected = expected_by_id.get(player_id)
+        if not expected or player_id in matched:
+            raise VisibleRosterIdentityError(f"Visible player id {player_id!r} is missing or duplicated")
+        if not _visible_identity_matches(visible, expected):
+            raise VisibleRosterIdentityError(f"Visible identity does not match expected player id {player_id}")
+        matched.add(player_id)
+        reconciled.append({**visible, "player_id": player_id, "identity_source": "visible_player_id"})
+
+    for visible in unresolved:
+        candidates = [
+            player_id
+            for player_id, expected in expected_by_id.items()
+            if player_id not in matched and _visible_identity_matches(visible, expected)
+        ]
+        if len(candidates) != 1:
+            raise VisibleRosterIdentityError(
+                f"Visible row {visible.get('name')!r} / {visible.get('team')!r} has {len(candidates)} safe matches"
+            )
+        player_id = candidates[0]
+        matched.add(player_id)
+        reconciled.append({
+            **visible,
+            "player_id": player_id,
+            "identity_source": "visible_initial_surname_team_unique",
+        })
+
+    if matched != set(expected_by_id):
+        missing = sorted(set(expected_by_id) - matched)
+        raise VisibleRosterIdentityError(f"Visible roster is missing expected player ids: {missing}")
+    return sorted(reconciled, key=lambda row: str(row["player_id"]))
 
 
 def _walk(node: _Node):
@@ -217,16 +317,81 @@ def _nearest_row(node: _Node) -> _Node | None:
 
 
 def _find_lineup_button(row: _Node) -> _Node | None:
+    known: list[_Node] = []
     for node in _walk(row):
         if _class_has(node, ("lineup-btn",)):
-            return node
+            known.append(node)
+            continue
         if not _is_buttonish(node):
             continue
         for key in ("data-testid", "aria-label", "title"):
             value = node.attrs.get(key, "")
             if "lineup" in value.lower():
-                return node
+                known.append(node)
+                break
+    unique_known: list[_Node] = []
+    seen_known: set[int] = set()
+    for node in known:
+        if id(node) in seen_known:
+            continue
+        seen_known.add(id(node))
+        unique_known.append(node)
+    known = unique_known
+    if len(known) == 1:
+        return known[0]
+    if len(known) > 1:
+        return None
+
+    # Current Fantrax rows put the selected-slot button in the sticky player
+    # cell before the <scorer> identity component.  Treat this as evidence only
+    # when exactly one slot-like button exists in that bounded prefix.  A
+    # position/action chip plus an unmarked slot control is ambiguous and fails.
+    structural: list[_Node] = []
+    for cell in _walk(row):
+        if str(cell.attrs.get("itablecell") or "").casefold() != "player":
+            continue
+        for node in _walk(cell):
+            if node.tag == "scorer":
+                break
+            if _is_buttonish(node) and _slot_from_node(node) in LINEUP_SLOT_VALUES:
+                structural.append(node)
+    return structural[0] if len(structural) == 1 else None
+
+
+def _visible_player_name(row: _Node) -> str | None:
+    for node in _walk(row):
+        if _class_has(node, ("scorer__info__name",)):
+            name = _text_content(node).strip()
+            return name or None
     return None
+
+
+def _visible_player_team(row: _Node) -> str | None:
+    for node in _walk(row):
+        if not _class_has(node, ("scorer__info__positions",)):
+            continue
+        match = re.search(r"-\s*([A-Za-z]{2,4})\b", _text_content(node))
+        if match:
+            return match.group(1).upper()
+    return None
+
+
+def _visible_identity_matches(visible: dict[str, Any], expected: dict[str, Any]) -> bool:
+    visible_team = str(visible.get("team") or "").strip().upper()
+    expected_team = str(expected.get("team") or "").strip().upper()
+    if not visible_team or visible_team != expected_team:
+        return False
+    return _abbreviated_name_key(visible.get("name")) == _abbreviated_name_key(expected.get("name"))
+
+
+def _abbreviated_name_key(value: Any) -> tuple[str, str] | None:
+    ascii_name = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    tokens = re.findall(r"[A-Za-z0-9]+", ascii_name.casefold())
+    if len(tokens) < 2:
+        return None
+    suffixes = {"jr", "sr", "ii", "iii", "iv"}
+    surname_index = -2 if tokens[-1] in suffixes and len(tokens) >= 3 else -1
+    return tokens[0][0], tokens[surname_index]
 
 
 def _slot_from_node(node: _Node) -> str | None:
@@ -279,3 +444,18 @@ def _class_has(node: _Node, needles: tuple[str, ...]) -> bool:
 
 def _is_buttonish(node: _Node) -> bool:
     return node.tag in {"button", "a"} or node.attrs.get("role", "").lower() == "button"
+
+
+def _control_enabled(node: _Node) -> bool:
+    current: _Node | None = node
+    while current is not None:
+        if "disabled" in current.attrs:
+            return False
+        for attribute in ("aria-disabled", "data-disabled", "ng-reflect-disabled", "data-locked"):
+            if current.attrs.get(attribute, "").strip().casefold() in {"true", "1", "yes"}:
+                return False
+        classes = {token.casefold() for token in current.attrs.get("class", "").split()}
+        if any(marker in token for token in classes for marker in ("disabled", "unavailable", "locked")):
+            return False
+        current = current.parent
+    return True

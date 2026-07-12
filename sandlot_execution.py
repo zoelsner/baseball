@@ -38,8 +38,13 @@ ALLOWED_EVIDENCE_KEYS = {
     "participant_ids",
     "participant_slots",
     "eligible_destinations",
+    "lineup_control_enabled",
     "fantrax_click_count",
     "fantrax_write_count",
+}
+PREFLIGHT_EVIDENCE_SOURCES = {
+    "visible_fantrax_dom+authenticated_read_api",
+    "visible_fantrax_dom+fresh_server_snapshot",
 }
 
 
@@ -144,6 +149,22 @@ def prepare_dry_run_request(
     if contract.get("target_period") != expected.get("target_period"):
         raise ExecutionContractError("Proposal target period is internally inconsistent")
 
+    freshness = contract.get("freshness_policy") if isinstance(contract.get("freshness_policy"), dict) else {}
+    try:
+        max_snapshot_age_minutes = int(freshness.get("preflight_snapshot_max_age_minutes"))
+    except (TypeError, ValueError):
+        max_snapshot_age_minutes = 0
+    if freshness.get("requires_live_preflight") is not True or not 1 <= max_snapshot_age_minutes <= 15:
+        raise ExecutionContractError("Proposal has no trusted live-preflight freshness policy")
+    snapshot_taken_at = _parse_datetime(snapshot_row.get("taken_at") or contract.get("snapshot_taken_at"))
+    if snapshot_taken_at is None:
+        raise ExecutionContractError("Proposal snapshot time is missing")
+    snapshot_age = now - snapshot_taken_at
+    if snapshot_age < timedelta(seconds=-60):
+        raise ExecutionContractError("Proposal snapshot time is implausibly in the future")
+    if snapshot_age > timedelta(minutes=max_snapshot_age_minutes):
+        raise ExecutionContractError("Proposal snapshot is too old for execution preflight")
+
     snapshot_id = int(snapshot_row.get("id") or 0)
     if snapshot_id != int(expected.get("snapshot_id") or 0):
         raise ExecutionContractError("Latest snapshot no longer matches the confirmed proposal")
@@ -151,6 +172,10 @@ def prepare_dry_run_request(
     participant_ids = {str(move.get("player_id") or "") for move in slot_moves}
     if not roster_ids or not participant_ids.issubset(set(roster_ids)):
         raise ExecutionContractError("Proposal participants are not all present on the latest roster")
+    roster_identities = _roster_identities(snapshot_row)
+    if [row["id"] for row in roster_identities] != roster_ids:
+        raise ExecutionContractError("Latest roster lacks complete browser-safe identity fields")
+    participant_destinations = _participant_destinations(snapshot_row, slot_moves)
 
     deadline = _parse_datetime(((contract.get("movability") or {}).get("deadline") or {}).get("at"))
     if deadline is None:
@@ -158,7 +183,8 @@ def prepare_dry_run_request(
     if deadline <= now:
         raise ExecutionContractError("Proposal deadline has passed")
 
-    request_expires_at = min(now + timedelta(seconds=REQUEST_TTL_SECONDS), deadline)
+    eligibility_deadline = snapshot_taken_at + timedelta(minutes=max_snapshot_age_minutes)
+    request_expires_at = min(now + timedelta(seconds=REQUEST_TTL_SECONDS), deadline, eligibility_deadline)
     if request_expires_at <= now:
         raise ExecutionContractError("Proposal cannot be claimed before its deadline")
 
@@ -182,6 +208,10 @@ def prepare_dry_run_request(
             "visible_runner_required": True,
             "fantrax_clicks_allowed": False,
             "expected_roster_ids_sha256": expected_roster_digest,
+            "expected_roster": roster_identities,
+            "participant_destinations": participant_destinations,
+            "eligibility_snapshot_taken_at": snapshot_taken_at.isoformat(),
+            "eligibility_snapshot_max_age_minutes": max_snapshot_age_minutes,
         },
     }
 
@@ -235,7 +265,7 @@ def validate_preflight_report(
         raise ExecutionContractError("Unsupported preflight evidence fields: " + ", ".join(unknown_evidence))
     if evidence.get("fantrax_click_count") != 0 or evidence.get("fantrax_write_count") != 0:
         raise ExecutionContractError("Dry-run evidence must prove zero Fantrax clicks and writes")
-    if evidence.get("source") != "visible_fantrax_dom+authenticated_read_api":
+    if evidence.get("source") not in PREFLIGHT_EVIDENCE_SOURCES:
         raise ExecutionContractError("Preflight evidence source is not the visible read-only runner")
     read_failure = keys == ["live_read"] and normalized_checks[0]["state"] == "failed"
     if read_failure:
@@ -279,10 +309,15 @@ def validate_preflight_report(
                 raise ExecutionContractError("Passing preflight roster membership does not match the claimed contract")
             observed_slots = evidence.get("participant_slots")
             eligible_destinations = evidence.get("eligible_destinations")
+            lineup_control_enabled = evidence.get("lineup_control_enabled")
             if not isinstance(observed_slots, dict) or set(observed_slots) != set(expected_participants):
                 raise ExecutionContractError("Passing preflight participant slots are incomplete")
             if not isinstance(eligible_destinations, dict) or set(eligible_destinations) != set(expected_participants):
                 raise ExecutionContractError("Passing preflight destination evidence is incomplete")
+            if not isinstance(lineup_control_enabled, dict) or set(lineup_control_enabled) != set(expected_participants):
+                raise ExecutionContractError("Passing preflight lineup-control evidence is incomplete")
+            if any(lineup_control_enabled.get(player_id) is not True for player_id in expected_participants):
+                raise ExecutionContractError("Passing preflight must prove every lineup control is enabled")
             for move in contract.get("slot_moves") or []:
                 player_id = str(move.get("player_id") or "")
                 if _normalized_slot(observed_slots.get(player_id)) != _normalized_slot(move.get("from_slot")):
@@ -298,7 +333,7 @@ def validate_preflight_report(
     if outcome == "failed" and not any_failed:
         raise ExecutionContractError("Failed preflight must contain a failed check")
     if request_row is not None:
-        _validate_observed_at(report.get("observed_at"), request_row)
+        _validate_observed_at(report.get("observed_at"), request_row, evidence_source=evidence.get("source"))
     evidence = {key: value for key, value in evidence.items() if key in ALLOWED_EVIDENCE_KEYS}
     if len(json.dumps(evidence, sort_keys=True, default=str)) > 32_000:
         raise ExecutionContractError("Preflight evidence is too large")
@@ -328,6 +363,7 @@ def required_preflight_check_keys(request_row: dict[str, Any]) -> set[str]:
             f"player_present:{player_id}",
             f"from_slot:{player_id}",
             f"destination:{player_id}",
+            f"lineup_control:{player_id}",
         })
     return keys
 
@@ -396,6 +432,49 @@ def _roster_ids(snapshot_row: dict[str, Any]) -> list[str]:
     return sorted(ids)
 
 
+def _roster_identities(snapshot_row: dict[str, Any]) -> list[dict[str, str]]:
+    data = snapshot_row.get("data") if isinstance(snapshot_row.get("data"), dict) else {}
+    roster = data.get("roster") if isinstance(data.get("roster"), dict) else {}
+    rows = roster.get("rows") if isinstance(roster.get("rows"), list) else []
+    identities = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("id") or not row.get("name") or not row.get("team"):
+            continue
+        identities.append({
+            "id": str(row["id"]),
+            "name": str(row["name"]),
+            "team": str(row["team"]).upper(),
+        })
+    return sorted(identities, key=lambda row: row["id"])
+
+
+def _participant_destinations(
+    snapshot_row: dict[str, Any],
+    slot_moves: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    data = snapshot_row.get("data") if isinstance(snapshot_row.get("data"), dict) else {}
+    roster = data.get("roster") if isinstance(data.get("roster"), dict) else {}
+    rows = roster.get("rows") if isinstance(roster.get("rows"), list) else []
+    by_id = {str(row.get("id")): row for row in rows if isinstance(row, dict) and row.get("id")}
+    result: dict[str, list[str]] = {}
+    for move in slot_moves:
+        player_id = str(move.get("player_id") or "")
+        row = by_id.get(player_id) or {}
+        eligibility = row.get("lineup_eligibility") if isinstance(row.get("lineup_eligibility"), dict) else {}
+        positions = {_normalized_slot(value) for value in eligibility.get("eligible_positions") or []}
+        statuses = {_normalized_slot(value) for value in eligibility.get("eligible_statuses") or []}
+        destinations = {value for value in positions if value}
+        if statuses & BENCH_SLOTS:
+            destinations.add("RES")
+        target = _normalized_slot(move.get("to_slot"))
+        if not target or target not in destinations:
+            raise ExecutionContractError(
+                f"Latest snapshot does not prove destination {target or '?'} for participant {player_id}"
+            )
+        result[player_id] = sorted(destinations)
+    return result
+
+
 def _reject_sensitive_evidence(value: Any, *, path: tuple[str, ...] = ()) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -421,7 +500,7 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
-def _validate_observed_at(value: Any, request_row: dict[str, Any]) -> None:
+def _validate_observed_at(value: Any, request_row: dict[str, Any], *, evidence_source: str | None = None) -> None:
     observed = _parse_datetime(value)
     claimed_at = _parse_datetime(request_row.get("claimed_at"))
     lease_expires_at = _parse_datetime(request_row.get("lease_expires_at"))
@@ -432,6 +511,15 @@ def _validate_observed_at(value: Any, request_row: dict[str, Any]) -> None:
     terminal = min(lease_expires_at, request_expires_at)
     if observed < claimed_at - skew or observed > terminal + skew:
         raise ExecutionContractError("Preflight observation is outside the live claim window")
+    safety = request_row.get("safety") if isinstance(request_row.get("safety"), dict) else {}
+    if evidence_source == "visible_fantrax_dom+fresh_server_snapshot":
+        snapshot_at = _parse_datetime(safety.get("eligibility_snapshot_taken_at"))
+        try:
+            max_age = int(safety.get("eligibility_snapshot_max_age_minutes"))
+        except (TypeError, ValueError):
+            max_age = 0
+        if not snapshot_at or max_age < 1 or observed > snapshot_at + timedelta(minutes=max_age):
+            raise ExecutionContractError("Browser preflight outlived its eligibility snapshot")
 
 
 def _json_default(value: Any) -> str:

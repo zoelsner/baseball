@@ -1,5 +1,7 @@
 import hashlib
+import json
 import os
+import tempfile
 import unittest
 from contextlib import contextmanager
 from copy import deepcopy
@@ -11,6 +13,7 @@ from fastapi.testclient import TestClient
 import sandlot_api
 import sandlot_db
 import sandlot_execution
+import fantrax_dom
 from scripts import sandlot_execution_runner
 
 
@@ -63,6 +66,11 @@ def valid_fixture():
         "target_period": target,
         "slot_moves": moves,
         "requires_multi_step": False,
+        "freshness_policy": {
+            "requires_live_preflight": True,
+            "preflight_snapshot_max_age_minutes": 5,
+            "confirmation_max_age_seconds": 120,
+        },
         "movability": {
             "deadline": {
                 "state": "known",
@@ -96,9 +104,33 @@ def valid_fixture():
             "team_id": "team",
             "roster": {
                 "rows": [
-                    {"id": "bench", "name": "Bench Bat"},
-                    {"id": "starter", "name": "Current Starter"},
-                    {"id": "judge", "name": "Aaron Judge"},
+                    {
+                        "id": "bench",
+                        "name": "Bench Bat",
+                        "team": "NYY",
+                        "lineup_eligibility": {
+                            "eligible_statuses": ["ACTIVE", "RES"],
+                            "eligible_positions": ["OF", "UT"],
+                        },
+                    },
+                    {
+                        "id": "starter",
+                        "name": "Current Starter",
+                        "team": "BOS",
+                        "lineup_eligibility": {
+                            "eligible_statuses": ["ACTIVE", "RES"],
+                            "eligible_positions": ["OF", "UT"],
+                        },
+                    },
+                    {
+                        "id": "judge",
+                        "name": "Aaron Judge",
+                        "team": "NYY",
+                        "lineup_eligibility": {
+                            "eligible_statuses": ["ACTIVE", "RES"],
+                            "eligible_positions": ["OF", "UT"],
+                        },
+                    },
                 ],
             },
         },
@@ -150,9 +182,9 @@ def live_fixture():
             },
         },
         "dom_slots": {
-            "bench": {"slot": "RES", "slot_source": "dom.lineup-btn"},
-            "starter": {"slot": "OF", "slot_source": "dom.lineup-btn"},
-            "judge": {"slot": "OF", "slot_source": "dom.lineup-btn"},
+            "bench": {"slot": "RES", "slot_source": "dom.lineup-btn", "lineup_control_enabled": True},
+            "starter": {"slot": "OF", "slot_source": "dom.lineup-btn", "lineup_control_enabled": True},
+            "judge": {"slot": "OF", "slot_source": "dom.lineup-btn", "lineup_control_enabled": True},
         },
     }
 
@@ -175,6 +207,15 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertEqual(request["safety"]["roster_departures"], [])
         self.assertFalse(request["safety"]["protected_players_may_leave_roster"])
         self.assertLessEqual(request["expires_at"], NOW + timedelta(seconds=120))
+
+    def test_request_expiry_is_capped_at_eligibility_snapshot_deadline(self):
+        snapshot, action, submitted = valid_fixture()
+        snapshot["taken_at"] = NOW - timedelta(minutes=4, seconds=59)
+        action["review"]["contract"]["snapshot_taken_at"] = snapshot["taken_at"]
+        request = sandlot_execution.prepare_dry_run_request(
+            snapshot_row=snapshot, action=action, submitted=submitted, now=NOW
+        )
+        self.assertEqual(request["expires_at"], NOW + timedelta(seconds=1))
 
     def test_exact_confirmation_mismatch_is_rejected(self):
         snapshot, action, submitted = valid_fixture()
@@ -205,6 +246,27 @@ class ExecutionContractTests(unittest.TestCase):
         action["review"]["contract"]["movability"]["deadline"]["at"] = (NOW - timedelta(seconds=1)).isoformat()
 
         with self.assertRaisesRegex(sandlot_execution.ExecutionContractError, "deadline has passed"):
+            sandlot_execution.prepare_dry_run_request(
+                snapshot_row=snapshot,
+                action=action,
+                submitted=submitted,
+                now=NOW,
+            )
+
+    def test_stale_or_unbounded_snapshot_is_rejected_before_request_creation(self):
+        snapshot, action, submitted = valid_fixture()
+        snapshot["taken_at"] = NOW - timedelta(minutes=6)
+        with self.assertRaisesRegex(sandlot_execution.ExecutionContractError, "too old"):
+            sandlot_execution.prepare_dry_run_request(
+                snapshot_row=snapshot,
+                action=action,
+                submitted=submitted,
+                now=NOW,
+            )
+
+        snapshot, action, submitted = valid_fixture()
+        action["review"]["contract"].pop("freshness_policy")
+        with self.assertRaisesRegex(sandlot_execution.ExecutionContractError, "freshness policy"):
             sandlot_execution.prepare_dry_run_request(
                 snapshot_row=snapshot,
                 action=action,
@@ -411,6 +473,7 @@ class ExecutionPersistenceTests(unittest.TestCase):
             now=NOW,
         )
         claimed.update({
+            "request_id": "xreq_browser",
             "claimed_at": NOW - timedelta(seconds=1),
             "lease_expires_at": NOW + timedelta(seconds=30),
         })
@@ -467,6 +530,7 @@ class VisibleRunnerTests(unittest.TestCase):
         self.assertTrue(all(check["state"] == "passed" for check in result["checks"]))
         claimed = self.claimed_request()
         claimed.update({
+            "request_id": "xreq_browser",
             "claimed_at": NOW - timedelta(seconds=1),
             "lease_expires_at": NOW + timedelta(seconds=30),
         })
@@ -489,6 +553,101 @@ class VisibleRunnerTests(unittest.TestCase):
         session.assert_called_once()
         parse.assert_called_once_with("<html></html>")
         collect.assert_called_once_with("read-session", "league", "team")
+
+    def test_cookie_free_browser_evidence_builds_a_complete_live_preflight(self):
+        claimed = self.claimed_request()
+        claimed.update({
+            "request_id": "xreq_browser",
+            "claimed_at": NOW - timedelta(seconds=1),
+            "lease_expires_at": NOW + timedelta(seconds=30),
+        })
+        browser_evidence = {
+            "request_id": "xreq_browser",
+            "snapshot_id": 274,
+            "proposal_id": "lineup-swap:starter:bench:OF",
+            "input_hash": "a" * 64,
+            "league_id": "league",
+            "team_id": "team",
+            "captured_at": NOW.isoformat(),
+            "period_number": 17,
+            "rows": [
+                {
+                    "player_id": "bench",
+                    "name": "B. Bat",
+                    "team": "NYY",
+                    "slot": "RES",
+                    "identity_conflict": [],
+                    "lineup_control_enabled": True,
+                },
+                {
+                    "player_id": "starter",
+                    "name": "C. Starter",
+                    "team": "BOS",
+                    "slot": "OF",
+                    "identity_conflict": [],
+                    "lineup_control_enabled": True,
+                },
+                {
+                    "player_id": None,
+                    "name": "A. Judge",
+                    "team": "NYY",
+                    "slot": "RES",
+                    "identity_conflict": [],
+                    "lineup_control_enabled": True,
+                },
+            ],
+        }
+
+        live = sandlot_execution_runner.live_from_visible_browser(
+            claimed,
+            browser_evidence,
+            now=NOW,
+        )
+        report = sandlot_execution_runner.evaluate_preflight(claimed, live, now=NOW)
+        validated = sandlot_execution.validate_preflight_report(report, request_row=claimed)
+
+        self.assertEqual(validated["outcome"], "passed")
+        self.assertEqual(
+            validated["evidence"]["source"],
+            "visible_fantrax_dom+fresh_server_snapshot",
+        )
+        self.assertEqual(validated["evidence"]["fantrax_click_count"], 0)
+        self.assertEqual(validated["evidence"]["fantrax_write_count"], 0)
+        self.assertEqual(set(live["dom_slots"]), {"bench", "starter", "judge"})
+        self.assertEqual(
+            live["dom_slots"]["judge"]["identity_source"],
+            "visible_initial_surname_team_unique",
+        )
+
+    def test_cookie_free_browser_evidence_fails_when_stale_or_ambiguous(self):
+        claimed = self.claimed_request()
+        claimed["request_id"] = "xreq_browser"
+        claimed["claimed_at"] = NOW - timedelta(seconds=1)
+        evidence = {
+            "request_id": "xreq_browser", "snapshot_id": 274,
+            "proposal_id": "lineup-swap:starter:bench:OF", "input_hash": "a" * 64,
+            "league_id": "league", "team_id": "team",
+            "captured_at": (NOW - timedelta(minutes=1)).isoformat(),
+            "period_number": 17,
+            "rows": [],
+        }
+        with self.assertRaisesRegex(RuntimeError, "predates|not fresh"):
+            sandlot_execution_runner.live_from_visible_browser(claimed, evidence, now=NOW)
+
+        evidence = {
+            "request_id": "xreq_browser", "snapshot_id": 274,
+            "proposal_id": "lineup-swap:starter:bench:OF", "input_hash": "a" * 64,
+            "league_id": "league", "team_id": "team",
+            "captured_at": NOW.isoformat(),
+            "period_number": 17,
+            "rows": [
+                {"player_id": None, "name": "A. Judge", "team": "NYY", "slot": "RES", "identity_conflict": []},
+                {"player_id": None, "name": "A. Judge", "team": "NYY", "slot": "RES", "identity_conflict": []},
+                {"player_id": "starter", "name": "C. Starter", "team": "BOS", "slot": "OF", "identity_conflict": []},
+            ],
+        }
+        with self.assertRaisesRegex(fantrax_dom.VisibleRosterIdentityError, "safe matches|duplicated"):
+            sandlot_execution_runner.live_from_visible_browser(claimed, evidence, now=NOW)
 
     def test_roster_change_fails_closed_and_protects_aaron_judge(self):
         live = live_fixture()
@@ -525,6 +684,28 @@ class VisibleRunnerTests(unittest.TestCase):
                 failed = {check["key"] for check in result["checks"] if check["state"] == "failed"}
                 self.assertEqual(result["outcome"], "failed")
                 self.assertIn(expected_key, failed)
+
+    def test_disabled_participant_lineup_control_fails_closed(self):
+        live = live_fixture()
+        live["dom_slots"]["bench"]["lineup_control_enabled"] = False
+        result = sandlot_execution_runner.evaluate_preflight(self.claimed_request(), live, now=NOW)
+        failed = {check["key"] for check in result["checks"] if check["state"] == "failed"}
+        self.assertEqual(result["outcome"], "failed")
+        self.assertIn("lineup_control:bench", failed)
+
+    def test_browser_reader_writes_non_secret_request_sidecar_before_timeout(self):
+        claimed = self.claimed_request()
+        claimed.update({"request_id": "xreq_sidecar", "claimed_at": NOW.isoformat()})
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = os.path.join(directory, "evidence.json")
+            reader = sandlot_execution_runner.BrowserEvidenceReader(artifact, wait_seconds=0)
+            with self.assertRaisesRegex(RuntimeError, "Timed out"):
+                reader.read(claimed)
+            with open(artifact + ".request.json", encoding="utf-8") as sidecar_file:
+                sidecar = json.loads(sidecar_file.read())
+        self.assertEqual(sidecar["request_id"], "xreq_sidecar")
+        self.assertNotIn("lease_token", sidecar)
+        self.assertNotIn("authorization", sidecar)
 
     def test_failed_drift_report_can_reach_terminal_validation(self):
         claimed = self.claimed_request()
