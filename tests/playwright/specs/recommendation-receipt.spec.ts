@@ -41,9 +41,31 @@ function receipt(decisionState = 'pending', overrides: Record<string, any> = {})
   };
 }
 
+const emptyLearningReport = {
+  scoring_version:'counterfactual_lineup_v1',
+  measurement_scope:'retrospective_static_lineup_counterfactual',
+  counterfactual_gain_available:false,
+  sample_state:'collecting',
+  summary:{
+    evaluated:0, scored:0, unavailable:0, accepted_and_observed:0,
+    actual_assignment_matches:{ proposed:0, baseline:0, other:0 },
+    average_counterfactual_gain:null,
+    positive_counterfactual_gain_rate:null,
+  },
+  evidence_checkpoint:{
+    state:'collecting', minimum_sample_reached:false,
+    requirements:[
+      { key:'scored_evaluations', current:0, required:8, passed:false },
+      { key:'accepted_and_observed', current:0, required:4, passed:false },
+    ],
+  },
+  items:[], read_only:true, fantrax_changed:false, autopilot_eligible:false,
+};
+
 async function mockBase(page: Page) {
   await page.route('**/api/snapshot/latest', route => route.fulfill({ status:200, contentType:'application/json', body:JSON.stringify(snapshot) }));
   await page.route('**/api/recommendation-receipts/latest', route => route.fulfill({ status:200, contentType:'application/json', body:JSON.stringify(receipt()) }));
+  await page.route('**/api/recommendation-learning', route => route.fulfill({ status:200, contentType:'application/json', body:JSON.stringify(emptyLearningReport) }));
 }
 
 test.describe('Today recommendation receipt', () => {
@@ -64,6 +86,173 @@ test.describe('Today recommendation receipt', () => {
     await expect(card.getByText(/Open Sandlot on your Mac with the local owner bridge/)).toBeVisible();
     await expect(card.getByRole('button', { name:'I’ll use this lineup' })).toHaveCount(0);
     await expect(card.getByRole('button', { name:'Ask Skipper about this plan' })).toBeVisible();
+  });
+
+  test('shows the empty learning gate without implying that autopilot is available', async ({ page }) => {
+    await page.route('http://127.0.0.1:8765/health', route => route.abort());
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const card = page.getByRole('region', { name:'Learning from completed weeks' });
+    await expect(card.getByText('Autopilot locked', { exact:true })).toBeVisible();
+    await expect(card.getByText('No eligible completed lineup receipts yet.')).toBeVisible();
+    await expect(card.getByText('0/8', { exact:true })).toBeVisible();
+    await expect(card.getByText('0/4', { exact:true })).toBeVisible();
+    await expect(card.getByRole('progressbar', { name:'Scored weeks evidence progress' })).toHaveAttribute('aria-valuenow', '0');
+    await expect(card.getByRole('progressbar', { name:'Accepted + observed evidence progress' })).toHaveAttribute('aria-valuemax', '4');
+    await expect(card.getByText(/does not prove causality, execute Fantrax moves, or grant write authority/)).toBeVisible();
+  });
+
+  test('shows sanitized early evidence as hindsight rather than realized lift', async ({ page }) => {
+    await page.unroute('**/api/recommendation-learning');
+    await page.route('**/api/recommendation-learning', route => route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({
+        ...emptyLearningReport,
+        counterfactual_gain_available:true,
+        summary:{
+          ...emptyLearningReport.summary,
+          evaluated:3, scored:2, unavailable:1, accepted_and_observed:1,
+          actual_assignment_matches:{ proposed:1, baseline:1, other:0 },
+          average_counterfactual_gain:5.5,
+          positive_counterfactual_gain_rate:0.5,
+        },
+        evidence_checkpoint:{
+          ...emptyLearningReport.evidence_checkpoint,
+          requirements:[
+            { key:'scored_evaluations', current:2, required:8, passed:false },
+            { key:'accepted_and_observed', current:1, required:4, passed:false },
+          ],
+        },
+      }),
+    }));
+    await page.route('http://127.0.0.1:8765/health', route => route.abort());
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const card = page.getByRole('region', { name:'Early lineup evidence' });
+    await expect(card.getByText('+5.5', { exact:true })).toBeVisible();
+    await expect(card.getByText('avg hindsight edge', { exact:true })).toBeVisible();
+    await expect(card.getByText('2/8', { exact:true })).toBeVisible();
+    await expect(card.getByText('1/4', { exact:true })).toBeVisible();
+    await expect(card.getByText('Autopilot locked', { exact:true })).toBeVisible();
+  });
+
+  test('announces a learning-report failure without changing automation state', async ({ page }) => {
+    await page.unroute('**/api/recommendation-learning');
+    await page.route('**/api/recommendation-learning', route => route.fulfill({
+      status:503, contentType:'application/json', body:JSON.stringify({ detail:'temporarily unavailable' }),
+    }));
+    await page.route('http://127.0.0.1:8765/health', route => route.abort());
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const alert = page.getByRole('alert');
+    await expect(alert).toContainText('Learning report unavailable');
+    await expect(alert).toContainText('No automation state changed');
+  });
+
+  test('retains the newest learning report when snapshot refresh responses overlap', async ({ page }) => {
+    let reads = 0;
+    await page.unroute('**/api/recommendation-learning');
+    await page.route('**/api/recommendation-learning', async route => {
+      reads += 1;
+      const average = reads === 1 ? 1.0 : 9.0;
+      if (reads === 1) await new Promise(resolve => setTimeout(resolve, 450));
+      await route.fulfill({
+        status:200,
+        contentType:'application/json',
+        body:JSON.stringify({
+          ...emptyLearningReport,
+          summary:{ ...emptyLearningReport.summary, scored:2, accepted_and_observed:1, average_counterfactual_gain:average },
+          evidence_checkpoint:{
+            ...emptyLearningReport.evidence_checkpoint,
+            requirements:[
+              { key:'scored_evaluations', current:2, required:8, passed:false },
+              { key:'accepted_and_observed', current:1, required:4, passed:false },
+            ],
+          },
+        }),
+      });
+    });
+    await page.route('**/api/refresh', route => route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({ snapshot:{ ...snapshot, snapshot_id:278, freshness:{ state:'fresh', age_minutes:1 } } }),
+    }));
+    await page.route('http://127.0.0.1:8765/health', route => route.abort());
+    await page.goto('/');
+    await waitForAppMount(page);
+    await page.getByRole('button', { name:'Refresh Fantrax data' }).click();
+
+    const card = page.getByRole('region', { name:'Early lineup evidence' });
+    await expect(card.getByText('+9.0', { exact:true })).toBeVisible();
+    await page.waitForTimeout(550);
+    await expect(card.getByText('+9.0', { exact:true })).toBeVisible();
+    expect(reads).toBe(2);
+  });
+
+  test('does not refetch learning evidence when only the freshness label changes', async ({ page }) => {
+    let reads = 0;
+    await page.unroute('**/api/recommendation-learning');
+    await page.route('**/api/recommendation-learning', route => {
+      reads += 1;
+      return route.fulfill({ status:200, contentType:'application/json', body:JSON.stringify(emptyLearningReport) });
+    });
+    await page.route('**/api/refresh', route => route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({ snapshot:{ ...snapshot, freshness:{ state:'fresh', age_minutes:1 } } }),
+    }));
+    await page.route('http://127.0.0.1:8765/health', route => route.abort());
+    await page.goto('/');
+    await waitForAppMount(page);
+    await expect(page.getByRole('region', { name:'Learning from completed weeks' })).toBeVisible();
+    await page.getByRole('button', { name:'Refresh Fantrax data' }).click();
+    await expect(page.getByRole('region', { name:'Learning from completed weeks' })).toBeVisible();
+    expect(reads).toBe(1);
+  });
+
+  test('keeps prior evidence visible and labels a failed snapshot revalidation', async ({ page }) => {
+    let reads = 0;
+    await page.unroute('**/api/recommendation-learning');
+    await page.route('**/api/recommendation-learning', route => {
+      reads += 1;
+      if (reads > 1) {
+        return route.fulfill({ status:503, contentType:'application/json', body:JSON.stringify({ detail:'temporarily unavailable' }) });
+      }
+      return route.fulfill({
+        status:200,
+        contentType:'application/json',
+        body:JSON.stringify({
+          ...emptyLearningReport,
+          summary:{ ...emptyLearningReport.summary, scored:2, accepted_and_observed:1, average_counterfactual_gain:5.5 },
+          evidence_checkpoint:{
+            ...emptyLearningReport.evidence_checkpoint,
+            requirements:[
+              { key:'scored_evaluations', current:2, required:8, passed:false },
+              { key:'accepted_and_observed', current:1, required:4, passed:false },
+            ],
+          },
+        }),
+      });
+    });
+    await page.route('**/api/refresh', route => route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({ snapshot:{ ...snapshot, snapshot_id:278, freshness:{ state:'fresh', age_minutes:1 } } }),
+    }));
+    await page.route('http://127.0.0.1:8765/health', route => route.abort());
+    await page.goto('/');
+    await waitForAppMount(page);
+    const card = page.getByRole('region', { name:'Early lineup evidence' });
+    await expect(card.getByText('+5.5', { exact:true })).toBeVisible();
+    await page.getByRole('button', { name:'Refresh Fantrax data' }).click();
+
+    await expect(card.getByText('+5.5', { exact:true })).toBeVisible();
+    await expect(card.getByRole('status')).toHaveText(/Couldn’t update — showing previous evidence/);
+    expect(reads).toBe(2);
   });
 
   test('records the exact accepted decision through the local bridge without a Fantrax write', async ({ page }) => {

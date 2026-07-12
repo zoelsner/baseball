@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import hashlib
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ import sandlot_data_quality
 import sandlot_db
 import sandlot_execution
 import sandlot_matchup
+import sandlot_receipts
 import sandlot_skipper
 import sandlot_trades
 import sandlot_waivers
@@ -257,6 +259,23 @@ def recent_recommendation_outcomes(
             for row in rows
         ],
     })
+
+
+@app.get("/api/recommendation-learning")
+def recommendation_learning(
+    source: Literal["monday_lineup"] = "monday_lineup",
+) -> dict[str, Any]:
+    """Expose sanitized counterfactual learning without authorizing automation."""
+    try:
+        report = sandlot_db.recommendation_outcome_evaluation_report(
+            source=source,
+            scoring_version=sandlot_receipts.COUNTERFACTUAL_LINEUP_SCORING_VERSION,
+            detail_limit=8,
+        )
+    except Exception as exc:
+        log.exception("Recommendation learning report failed")
+        raise HTTPException(status_code=503, detail="Recommendation learning is temporarily unavailable") from exc
+    return jsonable_encoder(_public_recommendation_learning(report))
 
 
 @app.post("/api/recommendation-receipts/{receipt_id}/decision")
@@ -1177,6 +1196,102 @@ def _public_recommendation_outcome(row: dict[str, Any]) -> dict[str, Any] | None
         "evaluated_at": row.get("evaluated_at"),
         "autopilot_eligible": False,
     }
+
+
+def _public_recommendation_learning(report: dict[str, Any]) -> dict[str, Any]:
+    """Aggregate immutable evaluations into a conservative public report."""
+    raw_summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    rows = report.get("items") if isinstance(report.get("items"), list) else []
+    evaluated = max(0, int(raw_summary.get("evaluated") or 0))
+    scored = max(0, int(raw_summary.get("scored") or 0))
+    unavailable = max(0, int(raw_summary.get("unavailable") or 0))
+    aligned = max(0, int(raw_summary.get("accepted_and_observed") or 0))
+    assignment_counts = {
+        "proposed": max(0, int(raw_summary.get("proposed_matches") or 0)),
+        "baseline": max(0, int(raw_summary.get("baseline_matches") or 0)),
+        "other": max(0, int(raw_summary.get("other_matches") or 0)),
+    }
+    average_gain = _finite_public_metric(raw_summary.get("average_counterfactual_gain"))
+    positive_rate = _finite_public_metric(raw_summary.get("positive_counterfactual_gain_rate"))
+
+    required_scored = 8
+    required_aligned = 4
+    minimum_sample_reached = scored >= required_scored and aligned >= required_aligned
+    return {
+        "scoring_version": sandlot_receipts.COUNTERFACTUAL_LINEUP_SCORING_VERSION,
+        "measurement_scope": "retrospective_static_lineup_counterfactual",
+        "sample_definition": "one_latest_active_receipt_per_league_team_period",
+        "counterfactual_gain_available": average_gain is not None,
+        "sample_state": "minimum_sample_reached" if minimum_sample_reached else "collecting",
+        "summary": {
+            "evaluated": evaluated,
+            "scored": scored,
+            "unavailable": unavailable,
+            "accepted_and_observed": aligned,
+            "actual_assignment_matches": assignment_counts,
+            "average_counterfactual_gain": round(average_gain, 4) if average_gain is not None else None,
+            "positive_counterfactual_gain_rate": round(positive_rate, 4) if positive_rate is not None else None,
+        },
+        "evidence_checkpoint": {
+            "state": "minimum_sample_reached" if minimum_sample_reached else "collecting",
+            "minimum_sample_reached": minimum_sample_reached,
+            "requirements": [
+                {
+                    "key": "scored_evaluations",
+                    "current": scored,
+                    "required": required_scored,
+                    "passed": scored >= required_scored,
+                },
+                {
+                    "key": "accepted_and_observed",
+                    "current": aligned,
+                    "required": required_aligned,
+                    "passed": aligned >= required_aligned,
+                },
+            ],
+        },
+        "autopilot": {
+            "state": "locked",
+            "eligible": False,
+            "reason": "Evidence quantity alone never grants Fantrax write authority; quality, safety, and verified execution require separate review.",
+        },
+        "items": [
+            {
+                "period": {"start": row.get("period_start"), "end": row.get("period_end")},
+                "state": row.get("state"),
+                "decision_state": row.get("decision_state"),
+                "counterfactual": (
+                    {
+                        "baseline_total": _finite_public_metric(row.get("counterfactual_baseline_total")),
+                        "proposed_total": _finite_public_metric(row.get("counterfactual_proposed_total")),
+                        "gain": _finite_public_metric(row.get("counterfactual_gain")),
+                    }
+                    if row.get("state") == "scored"
+                    else None
+                ),
+                "observed_team_total": (
+                    _finite_public_metric(row.get("observed_team_total"))
+                    if row.get("state") == "scored"
+                    else None
+                ),
+                "actual_assignment_match": row.get("actual_assignment_match"),
+                "decision_alignment": row.get("decision_alignment"),
+                "evaluated_at": row.get("evaluated_at"),
+            }
+            for row in rows
+            if isinstance(row, dict)
+        ],
+        "read_only": True,
+        "fantrax_changed": False,
+        "autopilot_eligible": False,
+    }
+
+
+def _finite_public_metric(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _require_refresh_token(request: Request) -> None:

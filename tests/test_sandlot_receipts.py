@@ -650,6 +650,48 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
             sandlot_db.receipts_missing_outcome_evaluation
         ))
 
+    def test_learning_report_deduplicates_periods_and_selects_only_scalar_details(self):
+        calls = []
+
+        class Result:
+            def __init__(self, *, one=None, many=None):
+                self.one = one
+                self.many = many or []
+            def fetchone(self):
+                return self.one
+            def fetchall(self):
+                return self.many
+
+        class FakeConn:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                if "count(*) AS evaluated" in sql:
+                    return Result(one={"evaluated": 1, "scored": 1})
+                return Result(many=[{
+                    "state": "scored", "counterfactual_gain": 3.0,
+                    "actual_assignment_match": "proposed",
+                }])
+
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            report = sandlot_db.recommendation_outcome_evaluation_report(
+                source="monday_lineup", scoring_version="counterfactual_lineup_v1", detail_limit=8
+            )
+
+        self.assertEqual(report["summary"]["evaluated"], 1)
+        self.assertEqual(report["items"][0]["counterfactual_gain"], 3.0)
+        combined_sql = "\n".join(sql for sql, _params in calls)
+        self.assertIn(
+            "PARTITION BY r.league_id, r.team_id, r.period_start, r.period_end",
+            combined_sql,
+        )
+        self.assertNotIn("SELECT e.*", combined_sql)
+        self.assertNotIn("SELECT * FROM samples", calls[1][0])
+        self.assertEqual(calls[1][1], ("monday_lineup", "counterfactual_lineup_v1", 8))
+
     def test_counterfactual_evaluation_appends_without_touching_legacy_outcome(self):
         receipt = {
             **receipt_fixture(),
@@ -1333,6 +1375,124 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         self.assertIsNone(outcome["actual_gain"])
         self.assertEqual(outcome["adherence_state"], "unverified")
         self.assertFalse(outcome["autopilot_eligible"])
+
+    def test_recommendation_learning_reports_counterfactuals_without_unlocking_autopilot(self):
+        report = {
+            "summary": {
+                "evaluated": 3, "scored": 2, "unavailable": 1,
+                "accepted_and_observed": 1,
+                "proposed_matches": 1, "baseline_matches": 1, "other_matches": 0,
+                "average_counterfactual_gain": 5.5,
+                "positive_counterfactual_gain_rate": 0.5,
+            },
+            "items": [{
+                "period_start": date(2026, 6, 29),
+                "period_end": date(2026, 7, 5), "state": "scored",
+                "decision_state": "accepted", "evaluated_at": "2026-07-06T12:00:00Z",
+                "counterfactual_baseline_total": 21.0,
+                "counterfactual_proposed_total": 34.0,
+                "counterfactual_gain": 13.0,
+                "observed_team_total": 34.0,
+                "actual_assignment_match": "proposed",
+                "decision_alignment": "accepted_proposal_observed",
+            },
+            {
+                "period_start": date(2026, 6, 22),
+                "period_end": date(2026, 6, 28), "state": "scored",
+                "decision_state": "rejected", "evaluated_at": "2026-06-29T12:00:00Z",
+                "counterfactual_baseline_total": 40.0,
+                "counterfactual_proposed_total": 38.0,
+                "counterfactual_gain": -2.0,
+                "observed_team_total": 40.0,
+                "actual_assignment_match": "baseline",
+                "decision_alignment": "not_established",
+            },
+            {
+                "period_start": date(2026, 6, 15),
+                "period_end": date(2026, 6, 21), "state": "unavailable",
+                "decision_state": "pending", "evaluated_at": "2026-06-22T12:00:00Z",
+            }],
+        }
+        with patch(
+            "sandlot_api.sandlot_db.recommendation_outcome_evaluation_report",
+            return_value=report,
+        ) as recent:
+            response = self.client.get("/api/recommendation-learning")
+
+        self.assertEqual(response.status_code, 200)
+        recent.assert_called_once_with(
+            source="monday_lineup", scoring_version="counterfactual_lineup_v1", detail_limit=8
+        )
+        payload = response.json()
+        self.assertEqual(payload["summary"]["evaluated"], 3)
+        self.assertEqual(payload["summary"]["scored"], 2)
+        self.assertEqual(payload["summary"]["unavailable"], 1)
+        self.assertEqual(payload["summary"]["accepted_and_observed"], 1)
+        self.assertEqual(payload["summary"]["actual_assignment_matches"], {
+            "proposed": 1, "baseline": 1, "other": 0,
+        })
+        self.assertEqual(payload["summary"]["average_counterfactual_gain"], 5.5)
+        self.assertEqual(payload["summary"]["positive_counterfactual_gain_rate"], 0.5)
+        self.assertEqual(
+            payload["sample_definition"], "one_latest_active_receipt_per_league_team_period"
+        )
+        self.assertEqual(payload["evidence_checkpoint"]["state"], "collecting")
+        self.assertEqual(payload["autopilot"]["state"], "locked")
+        self.assertFalse(payload["autopilot"]["eligible"])
+        self.assertFalse(payload["autopilot_eligible"])
+        self.assertNotIn("evidence_hash", json.dumps(payload))
+        self.assertNotIn("judge", json.dumps(payload).lower())
+
+    def test_recommendation_learning_empty_state_is_explicitly_collecting(self):
+        with patch(
+            "sandlot_api.sandlot_db.recommendation_outcome_evaluation_report",
+            return_value={"summary": {}, "items": []},
+        ):
+            response = self.client.get("/api/recommendation-learning")
+
+        payload = response.json()
+        self.assertEqual(payload["sample_state"], "collecting")
+        self.assertEqual(payload["summary"]["scored"], 0)
+        self.assertIsNone(payload["summary"]["average_counterfactual_gain"])
+        self.assertEqual(payload["items"], [])
+        self.assertFalse(payload["autopilot_eligible"])
+
+    def test_recommendation_learning_failure_does_not_expose_database_details(self):
+        with patch(
+            "sandlot_api.sandlot_db.recommendation_outcome_evaluation_report",
+            side_effect=RuntimeError("postgres secret host internal.example"),
+        ):
+            response = self.client.get("/api/recommendation-learning")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "Recommendation learning is temporarily unavailable")
+        self.assertNotIn("internal.example", response.text)
+
+    def test_recommendation_learning_filters_nonfinite_metrics_and_never_quantity_unlocks(self):
+        report = {
+            "summary": {
+                "evaluated": 8, "scored": 8, "unavailable": 0,
+                "accepted_and_observed": 4,
+                "proposed_matches": 4, "baseline_matches": 4, "other_matches": 0,
+                "average_counterfactual_gain": float("nan"),
+                "positive_counterfactual_gain_rate": float("inf"),
+            },
+            "items": [{
+                "period_start": date(2026, 6, 29), "period_end": date(2026, 7, 5),
+                "state": "scored", "counterfactual_gain": float("inf"),
+                "observed_team_total": float("nan"),
+            }],
+        }
+        payload = sandlot_api._public_recommendation_learning(report)
+
+        self.assertTrue(payload["evidence_checkpoint"]["minimum_sample_reached"])
+        self.assertFalse(payload["autopilot"]["eligible"])
+        self.assertFalse(payload["autopilot_eligible"])
+        self.assertFalse(payload["counterfactual_gain_available"])
+        self.assertIsNone(payload["summary"]["average_counterfactual_gain"])
+        self.assertIsNone(payload["summary"]["positive_counterfactual_gain_rate"])
+        self.assertIsNone(payload["items"][0]["counterfactual"]["gain"])
+        self.assertIsNone(payload["items"][0]["observed_team_total"])
 
     def test_decision_requires_owner_auth_and_records_intent_only(self):
         body = {

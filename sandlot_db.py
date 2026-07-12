@@ -688,6 +688,94 @@ def recent_scored_recommendation_receipts(*, source: str, limit: int = 20) -> li
     return [dict(row) for row in rows]
 
 
+def recommendation_outcome_evaluation_report(
+    *, source: str, scoring_version: str, detail_limit: int = 8
+) -> dict[str, Any]:
+    """Aggregate independent active periods and return scalar-only recent details."""
+    detail_limit = max(1, min(int(detail_limit), 50))
+    samples_cte = """
+        WITH ranked AS (
+          SELECT
+            e.state, e.metrics, e.evidence, e.evaluated_at,
+            r.period_start, r.period_end, r.decision_state,
+            row_number() OVER (
+              PARTITION BY r.league_id, r.team_id, r.period_start, r.period_end
+              ORDER BY r.generated_at DESC, e.evaluated_at DESC, e.receipt_id DESC
+            ) AS sample_rank
+          FROM recommendation_outcome_evaluations e
+          JOIN recommendation_receipts r ON r.receipt_id = e.receipt_id
+          WHERE r.source = %s
+            AND r.lifecycle_state = 'active'
+            AND e.scoring_version = %s
+        ), samples AS (
+          SELECT * FROM ranked WHERE sample_rank = 1
+        )
+    """
+    with connect() as conn:
+        summary = conn.execute(
+            samples_cte + """
+            SELECT
+              count(*) AS evaluated,
+              count(*) FILTER (WHERE state = 'scored') AS scored,
+              count(*) FILTER (WHERE state = 'unavailable') AS unavailable,
+              count(*) FILTER (
+                WHERE state = 'scored'
+                  AND evidence->>'decision_alignment' = 'accepted_proposal_observed'
+              ) AS accepted_and_observed,
+              count(*) FILTER (
+                WHERE state = 'scored' AND evidence->>'actual_assignment_match' = 'proposed'
+              ) AS proposed_matches,
+              count(*) FILTER (
+                WHERE state = 'scored' AND evidence->>'actual_assignment_match' = 'baseline'
+              ) AS baseline_matches,
+              count(*) FILTER (
+                WHERE state = 'scored' AND evidence->>'actual_assignment_match' = 'other'
+              ) AS other_matches,
+              avg(
+                CASE WHEN state = 'scored'
+                  AND jsonb_typeof(metrics->'counterfactual_gain') = 'number'
+                THEN (metrics->>'counterfactual_gain')::double precision END
+              ) AS average_counterfactual_gain,
+              avg(
+                CASE WHEN state = 'scored'
+                  AND jsonb_typeof(metrics->'counterfactual_gain') = 'number'
+                THEN CASE WHEN (metrics->>'counterfactual_gain')::double precision > 0
+                  THEN 1.0 ELSE 0.0 END END
+              ) AS positive_counterfactual_gain_rate
+            FROM samples
+            """,
+            (source, scoring_version),
+        ).fetchone()
+        details = conn.execute(
+            samples_cte + """
+            SELECT
+              state, period_start, period_end, decision_state, evaluated_at,
+              evidence->>'actual_assignment_match' AS actual_assignment_match,
+              evidence->>'decision_alignment' AS decision_alignment,
+              CASE WHEN jsonb_typeof(metrics->'counterfactual_baseline_total') = 'number'
+                THEN (metrics->>'counterfactual_baseline_total')::double precision END
+                AS counterfactual_baseline_total,
+              CASE WHEN jsonb_typeof(metrics->'counterfactual_proposed_total') = 'number'
+                THEN (metrics->>'counterfactual_proposed_total')::double precision END
+                AS counterfactual_proposed_total,
+              CASE WHEN jsonb_typeof(metrics->'counterfactual_gain') = 'number'
+                THEN (metrics->>'counterfactual_gain')::double precision END
+                AS counterfactual_gain,
+              CASE WHEN jsonb_typeof(metrics->'observed_team_total') = 'number'
+                THEN (metrics->>'observed_team_total')::double precision END
+                AS observed_team_total
+            FROM samples
+            ORDER BY evaluated_at DESC, period_end DESC, period_start DESC
+            LIMIT %s
+            """,
+            (source, scoring_version, detail_limit),
+        ).fetchall()
+    return {
+        "summary": dict(summary or {}),
+        "items": [dict(row) for row in details],
+    }
+
+
 def receipts_missing_outcome_evaluation(
     *, source: str, scoring_version: str, evidence_version: str
 ) -> list[dict[str, Any]]:

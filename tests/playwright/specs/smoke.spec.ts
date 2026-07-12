@@ -27,6 +27,11 @@ test.describe('app boot', () => {
       });
     });
     await page.route('**/api/recommendation-receipts/latest', route => route.fulfill({ status:204 }));
+    await page.route('**/api/recommendation-learning', route => route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({ summary:{ scored:0, accepted_and_observed:0 }, evidence_checkpoint:{ requirements:[] }, autopilot_eligible:false }),
+    }));
 
     await page.goto('/');
     await waitForAppMount(page);
