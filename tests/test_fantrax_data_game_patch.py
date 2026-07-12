@@ -97,6 +97,52 @@ class FantraxGamePatchTests(unittest.TestCase):
         self.assertEqual(result["latest_completed"]["my_score"], 12)
         self.assertEqual(result["latest_completed"]["opponent_score"], 10)
 
+    def test_returns_future_editable_matchup_separately_with_proven_zero_scores(self):
+        today = datetime.now(timezone.utc).date()
+        me = SimpleNamespace(id="me", name="My Team")
+        current_opp = SimpleNamespace(id="current-opp", name="Current Opponent")
+        future_opp = SimpleNamespace(id="future-opp", name="Future Opponent")
+        current = SimpleNamespace(
+            period=SimpleNamespace(number=5), name="Period 5",
+            start=today - timedelta(days=1), end=today + timedelta(days=1),
+            days=3, complete=False, current=True,
+            matchups=[SimpleNamespace(away=me, home=current_opp, away_score=4, home_score=3, matchup_key="current")],
+        )
+        future = SimpleNamespace(
+            period=SimpleNamespace(number=6), name="Period 6",
+            start=today + timedelta(days=2), end=today + timedelta(days=8),
+            days=7, complete=False, current=False,
+            matchups=[SimpleNamespace(away=me, home=future_opp, away_score=0, home_score=0, matchup_key="future")],
+        )
+        api = Mock()
+        api.scoring_period_results.return_value = {5: current, "6": future}
+
+        contexts = fantrax_data.extract_matchup_contexts(api, "me", editable_period_number=6)
+
+        self.assertEqual(contexts["matchup"]["period_number"], 5)
+        self.assertEqual(contexts["editable_matchup"]["period_number"], 6)
+        self.assertEqual(contexts["editable_matchup"]["score_state"], "not_started")
+        self.assertEqual(contexts["editable_matchup"]["my_score"], 0)
+        self.assertEqual(contexts["editable_matchup"]["opponent_score"], 0)
+
+    def test_off_week_does_not_relabel_future_editable_matchup_as_current(self):
+        today = datetime.now(timezone.utc).date()
+        me = SimpleNamespace(id="me", name="My Team")
+        opponent = SimpleNamespace(id="opp", name="Opponent")
+        future = SimpleNamespace(
+            period=SimpleNamespace(number=6), name="Period 6",
+            start=today + timedelta(days=2), end=today + timedelta(days=8),
+            days=7, complete=False, current=True,
+            matchups=[SimpleNamespace(away=me, home=opponent, away_score=None, home_score=None, matchup_key="future")],
+        )
+        api = Mock()
+        api.scoring_period_results.return_value = {6: future}
+
+        contexts = fantrax_data.extract_matchup_contexts(api, "me", editable_period_number="6")
+
+        self.assertIsNone(contexts["matchup"])
+        self.assertEqual(contexts["editable_matchup"]["period_number"], 6)
+
 
 if __name__ == "__main__":
     unittest.main()

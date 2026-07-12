@@ -563,10 +563,26 @@ def _matchup_decisions(row: dict[str, Any]) -> dict[str, Any]:
     matchup = None
     lineup_recommendations = None
     if isinstance(matchup_block, dict) and matchup_block:
-        lineup_recommendations = sandlot_matchup.rank_matchup_improvement_actions(snapshot_data, data_quality)
+        current_period_aligned = (
+            (data_quality.get("current_period") or {}).get("state") != "mismatch"
+        )
+        lineup_recommendations = (
+            sandlot_matchup.rank_matchup_improvement_actions(snapshot_data, data_quality)
+            if current_period_aligned
+            else {
+                "recommendations": [],
+                "no_action": {
+                    "reason": "Current-period lineup slots are not the editable Fantrax lineup."
+                },
+            }
+        )
         matchup = {
             **matchup_block,
-            "projection": sandlot_matchup.compute_projection(snapshot_data, data_quality),
+            "projection": (
+                sandlot_matchup.compute_projection(snapshot_data, data_quality)
+                if current_period_aligned
+                else None
+            ),
             "recommendations": lineup_recommendations,
         }
     return {

@@ -16,7 +16,6 @@ import sys
 import types
 from datetime import date as date_cls, datetime, time as time_cls, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import requests
 from fantraxapi import FantraxAPI
@@ -126,23 +125,26 @@ class _RawRoster:
         self.injured_max = _status_total_from_data(self._data, {"IR", "IL", "INJ", "INJURED"}, "max")
         displayed = self._data.get("displayedSelections")
         displayed = displayed if isinstance(displayed, dict) else {}
-        self.period_number = _raw_period_value(
-            displayed,
-            "displayedPeriod",
-            "displayedScoringPeriod",
+        displayed_period = _raw_period_value(displayed, "displayedPeriod")
+        displayed_scoring_period = _raw_period_value(displayed, "displayedScoringPeriod")
+        self.period_conflict = bool(
+            displayed_period not in (None, "")
+            and displayed_scoring_period not in (None, "")
+            and str(displayed_period) != str(displayed_scoring_period)
         )
-        self.period_start = _raw_period_date(displayed, "displayedStartDate")
-        self.period_end = _raw_period_date(displayed, "displayedEndDate")
-        self.period_date = self.period_start
-        has_displayed_period = any(
-            displayed.get(key) not in (None, "")
-            for key in (
-                "displayedPeriod",
-                "displayedScoringPeriod",
-                "displayedStartDate",
-                "displayedEndDate",
-            )
+        self.period_number = (
+            None
+            if self.period_conflict
+            else displayed_period if displayed_period not in (None, "") else displayed_scoring_period
         )
+        # Production proved displayedStartDate/displayedEndDate are view bounds,
+        # not the scoring-period window shown in Fantrax's period selector.
+        # Keep the canonical period number and source; derive dates from the
+        # schedule response instead of publishing misleading roster dates.
+        self.period_start = None
+        self.period_end = None
+        self.period_date = None
+        has_displayed_period = self.period_number not in (None, "")
         self.period_source = (
             "fantrax.getTeamRosterInfo.displayedSelections"
             if has_displayed_period
@@ -530,23 +532,6 @@ def _raw_scalar_period_value(value: Any) -> Any:
                 return nested
         return None
     return value
-
-
-def _raw_period_date(data: dict[str, Any], *keys: str) -> str | None:
-    value = _raw_period_value(data, *keys)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        seconds = float(value) / 1000.0 if abs(float(value)) >= 10_000_000_000 else float(value)
-        try:
-            return datetime.fromtimestamp(seconds, tz=ZoneInfo("America/New_York")).date().isoformat()
-        except (OverflowError, OSError, ValueError):
-            return None
-    text = str(value or "").strip()
-    if not text or text.casefold() == "none":
-        return None
-    try:
-        return date_cls.fromisoformat(text[:10]).isoformat()
-    except ValueError:
-        return None
 
 
 def _status_lookup(roster: Any) -> dict[str, str]:
@@ -1031,12 +1016,11 @@ def extract_roster(
         "period_start": getattr(roster, "period_start", None) or getattr(roster, "period_date", None) or None,
         "period_end": getattr(roster, "period_end", None) or None,
         "period_source": getattr(roster, "period_source", None) or None,
+        "period_conflict": getattr(roster, "period_conflict", False) is True,
     }
     if roster_data["period_source"]:
         roster_data["period_selection"] = {
             "period": roster_data["period_number"],
-            "start": roster_data["period_start"],
-            "end": roster_data["period_end"],
             "source": roster_data["period_source"],
         }
     if capture_lineup_policy and isinstance(roster, _RawRoster):
@@ -1082,46 +1066,60 @@ def extract_standings(api: FantraxAPI, my_team_id: str) -> dict | None:
     return {"records": records, "my_record": my_record}
 
 
-def extract_matchup(api: FantraxAPI, my_team_id: str) -> dict | None:
+def extract_matchup(
+    api: FantraxAPI,
+    my_team_id: str,
+    *,
+    editable_period_number: Any = None,
+) -> dict | None:
     """Return the current weekly matchup from Fantrax's schedule view.
 
     This is the data Skipper needs for "how is my matchup going?" questions.
     Fantrax exposes it through the standings SCHEDULE view, wrapped by
     fantraxapi as scoring_period_results().
     """
+    return extract_matchup_contexts(
+        api,
+        my_team_id,
+        editable_period_number=editable_period_number,
+    ).get("matchup")
+
+
+def extract_matchup_contexts(
+    api: FantraxAPI,
+    my_team_id: str,
+    *,
+    editable_period_number: Any = None,
+) -> dict[str, Any]:
+    """Return chronological-current and roster-editable matchups independently."""
     try:
         periods = api.scoring_period_results(season=True, playoffs=False)
     except Exception as e:
         log.error("matchup schedule failed: %s", e)
-        return None
-
+        return {"matchup": None, "editable_matchup": None}
     if not periods:
-        return None
+        return {"matchup": None, "editable_matchup": None}
 
     today = datetime.now(timezone.utc).date()
-    current = None
-    for period in periods.values():
-        start = getattr(period, "start", None)
-        end = getattr(period, "end", None)
-        if start and end and start <= today <= end:
-            current = period
-            break
-    if current is None:
-        current = next((p for p in periods.values() if getattr(p, "current", False)), None)
-    if current is None:
-        roster_period = None
+    current = next(
+        (
+            period
+            for period in periods.values()
+            if getattr(period, "start", None)
+            and getattr(period, "end", None)
+            and getattr(period, "start") <= today <= getattr(period, "end")
+        ),
+        None,
+    )
+    if editable_period_number is None:
         try:
-            roster_period = _team_roster(api, my_team_id).period_number
+            editable_period_number = _team_roster(api, my_team_id).period_number
         except Exception:
             pass
-        if roster_period is not None:
-            current = periods.get(roster_period)
-    if current is None:
-        return None
+    editable_period = _period_by_number(periods, editable_period_number)
 
-    current_payload = _matchup_payload(current, my_team_id)
-    if current_payload is None:
-        return None
+    current_payload = _matchup_payload(current, my_team_id) if current is not None else None
+    editable_payload = _matchup_payload(editable_period, my_team_id) if editable_period is not None else None
 
     completed_periods = [
         period
@@ -1132,10 +1130,26 @@ def extract_matchup(api: FantraxAPI, my_team_id: str) -> dict | None:
         completed_payload = _matchup_payload(period, my_team_id, complete=True)
         if completed_payload is None:
             continue
-        if completed_payload.get("period_number") != current_payload.get("period_number"):
+        if current_payload and completed_payload.get("period_number") != current_payload.get("period_number"):
             current_payload["latest_completed"] = completed_payload
         break
-    return current_payload
+    if (
+        editable_payload
+        and current_payload
+        and editable_payload.get("period_number") == current_payload.get("period_number")
+    ):
+        editable_payload = None
+    return {"matchup": current_payload, "editable_matchup": editable_payload}
+
+
+def _period_by_number(periods: dict[Any, Any], number: Any) -> Any:
+    if number in (None, ""):
+        return None
+    for key, period in periods.items():
+        period_number = getattr(getattr(period, "period", None), "number", None)
+        if str(key) == str(number) or str(period_number) == str(number):
+            return period
+    return None
 
 
 def _matchup_payload(period: Any, my_team_id: str, *, complete: bool | None = None) -> dict | None:
@@ -1151,7 +1165,20 @@ def _matchup_payload(period: Any, my_team_id: str, *, complete: bool | None = No
         opponent = home if is_away else away
         my_score = matchup.away_score if is_away else matchup.home_score
         opponent_score = matchup.home_score if is_away else matchup.away_score
-        margin = round(float(my_score or 0) - float(opponent_score or 0), 2)
+        period_start = getattr(period, "start", None)
+        not_started = bool(period_start and period_start > datetime.now(timezone.utc).date())
+        score_state = "live_or_final"
+        if not_started:
+            zero_like = lambda value: value is None or str(value).strip() in {"0", "0.0"}
+            if zero_like(my_score) and zero_like(opponent_score):
+                my_score = 0
+                opponent_score = 0
+                score_state = "not_started"
+            else:
+                score_state = "invalid_future_score"
+        margin = None
+        if my_score is not None and opponent_score is not None:
+            margin = round(float(my_score) - float(opponent_score), 2)
         return {
             "source": "fantrax_schedule",
             "period_number": getattr(getattr(period, "period", None), "number", None),
@@ -1170,6 +1197,7 @@ def _matchup_payload(period: Any, my_team_id: str, *, complete: bool | None = No
             "opponent_team_name": getattr(opponent, "name", None) or str(opponent),
             "opponent_score": opponent_score,
             "margin": margin,
+            "score_state": score_state,
         }
     return None
 
@@ -1651,6 +1679,7 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
         "all_team_rosters": None,
         "standings": None,
         "matchup": None,
+        "editable_matchup": None,
         "transactions": None,
         "pending_trades": None,
         "free_agents": None,
@@ -1668,7 +1697,14 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
         ("roster",           lambda: extract_roster(api, team_id, capture_lineup_policy=True)),
         ("all_team_rosters", lambda: extract_all_team_rosters(api, team_id)),
         ("standings",        lambda: extract_standings(api, team_id)),
-        ("matchup",          lambda: extract_matchup(api, team_id)),
+        (
+            "matchup_contexts",
+            lambda: extract_matchup_contexts(
+                api,
+                team_id,
+                editable_period_number=(snapshot.get("roster") or {}).get("period_number"),
+            ),
+        ),
         ("transactions",     lambda: extract_transactions(api)),
         ("pending_trades",   lambda: extract_pending_trades(api, team_id)),
         ("free_agents",      lambda: extract_free_agents(session, league_id)),
@@ -1680,6 +1716,11 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
         except Exception as e:
             log.exception("section %s failed", key)
             snapshot["errors"].append(f"{key}: {e}")
+
+    matchup_contexts = snapshot.pop("matchup_contexts", None)
+    if isinstance(matchup_contexts, dict):
+        snapshot["matchup"] = matchup_contexts.get("matchup")
+        snapshot["editable_matchup"] = matchup_contexts.get("editable_matchup")
 
     _promote_roster_lineup_policy(snapshot)
 

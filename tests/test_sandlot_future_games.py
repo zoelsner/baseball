@@ -19,6 +19,28 @@ def game(day, *, probable=None):
 
 
 class SandlotFutureGamesTests(unittest.TestCase):
+    def test_editable_matchup_owns_schedule_enrichment_window(self):
+        fetch_calls = []
+
+        def fetcher(_team_id, start, end, **_kwargs):
+            fetch_calls.append((start.isoformat(), end.isoformat()))
+            return []
+
+        snapshot = {
+            "matchup": {"period_number": 16, "start": "2026-07-06", "end": "2026-07-12"},
+            "editable_matchup": {"period_number": 17, "start": "2026-07-13", "end": "2026-07-26"},
+            "roster": {"rows": [{"id": "judge", "name": "Aaron Judge", "team": "NYY", "positions": "OF"}]},
+        }
+
+        sandlot_future_games.enrich_snapshot_future_games(
+            snapshot,
+            now=datetime(2026, 7, 11, 12, tzinfo=timezone.utc),
+            schedule_fetcher=fetcher,
+            team_resolver=lambda *_args: 147,
+        )
+
+        self.assertEqual(fetch_calls, [("2026-07-13", "2026-07-26")])
+
     def test_enriches_hitters_and_pitchers_with_separate_countable_games(self):
         fetch_calls = []
 

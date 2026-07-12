@@ -135,9 +135,13 @@ class FantraxRosterPolicyAcquisitionTests(unittest.TestCase):
 
         self.assertNotIn("_lineup_change_policy", normal)
         self.assertEqual(captured["period_number"], 17)
-        self.assertEqual(captured["period_date"], "2026-07-13")
-        self.assertEqual(captured["period_start"], "2026-07-13")
-        self.assertEqual(captured["period_end"], "2026-07-26")
+        self.assertIsNone(captured["period_date"])
+        self.assertIsNone(captured["period_start"])
+        self.assertIsNone(captured["period_end"])
+        self.assertEqual(captured["period_selection"], {
+            "period": 17,
+            "source": "fantrax.getTeamRosterInfo.displayedSelections",
+        })
         snapshot = {"roster": captured, "league_rules": None}
         fantrax_data._promote_roster_lineup_policy(snapshot)
 
@@ -162,6 +166,20 @@ class FantraxRosterPolicyAcquisitionTests(unittest.TestCase):
         self.assertIsNone(roster.period_number)
         self.assertIsNone(roster.period_start)
         self.assertIsNone(roster.period_end)
+        self.assertIsNone(roster.period_source)
+
+    def test_disagreeing_displayed_period_fields_fail_closed(self):
+        roster = fantrax_data._RawRoster(Mock(), "team-1", {
+            "displayedSelections": {
+                "displayedPeriod": 17,
+                "displayedScoringPeriod": 16,
+            },
+            "miscData": {"statusTotals": []},
+            "tables": [],
+        })
+
+        self.assertTrue(roster.period_conflict)
+        self.assertIsNone(roster.period_number)
         self.assertIsNone(roster.period_source)
 
 

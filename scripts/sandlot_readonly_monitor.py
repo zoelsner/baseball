@@ -422,6 +422,7 @@ def _validate_lineup_contract(contract: dict[str, Any], prefix: str, index: int,
         or expected.get("proposal_id") != contract.get("proposal_id")
         or expected.get("input_hash") != input_hash
         or expected.get("snapshot_id") != contract.get("snapshot_id")
+        or expected.get("target_period") != contract.get("target_period")
         or expected.get("slot_moves") != contract.get("slot_moves")
     ):
         fail(f"{prefix}_exact_confirmation", f"{label} was not bound to an exact confirmation payload")
@@ -681,8 +682,34 @@ def _validate_win_this_week(
         fail(f"{prefix}_actions_invalid", "Win This Week actions field was not a list")
         actions = []
     current_period = plan.get("current_period") if isinstance(plan.get("current_period"), dict) else {}
+    planning_horizon = plan.get("planning_horizon") if isinstance(plan.get("planning_horizon"), dict) else {}
     handoffs = plan.get("handoffs") if isinstance(plan.get("handoffs"), dict) else {}
     lineup_handoff = handoffs.get("lineup") if isinstance(handoffs.get("lineup"), dict) else {}
+    if planning_horizon.get("mode") == "editable_period":
+        expected_target = {
+            key: planning_horizon.get(key)
+            for key in ("period_number", "start", "end", "matchup_key")
+        }
+        invalid_actions = [
+            action
+            for action in actions
+            if not isinstance(action, dict)
+            or action.get("kind") not in {"lineup", "lineup_plan"}
+            or action.get("target_period") != expected_target
+        ]
+        handoff_target = lineup_handoff.get("target_period")
+        monitoring = plan.get("monitoring_actions") if isinstance(plan.get("monitoring_actions"), list) else []
+        has_waiver_boundary = any(
+            isinstance(item, dict)
+            and item.get("id") == "monitor:future-period-waiver-boundary"
+            and item.get("state") == "blocked"
+            for item in monitoring
+        )
+        if invalid_actions or (lineup_handoff and handoff_target != expected_target) or not has_waiver_boundary:
+            fail(
+                f"{prefix}_planning_horizon",
+                "Future-period plan was not lineup-only and bound to its exact target period",
+            )
     if current_period.get("state") != "ok" and (actions or lineup_handoff.get("url")):
         fail(
             f"{prefix}_period_alignment",

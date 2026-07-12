@@ -72,20 +72,27 @@ gains become one ordered multi-move plan instead of competing alternatives.
 Only movable actions with exact deadlines enter that bundle. Locked or
 uncertain actions become monitoring items instead.
 
-Before producing any current-matchup action, Sandlot also proves that the
-scoring period Fantrax currently allows the manager to edit is the same period
-being projected. The canonical `getTeamRosterInfo.displayedSelections` fields
-provide the editable period number and start/end dates. Epoch timestamps are
-normalized in the league's `America/New_York` calendar before comparison.
+Before producing any action, Sandlot proves which scoring period Fantrax
+currently allows the manager to edit. The canonical
+`getTeamRosterInfo.displayedSelections` response provides the editable period
+number. Its `displayedStartDate` and `displayedEndDate` values are not treated
+as scoring-period dates: production showed that they are view bounds and do
+not match the selector's period window. Trusted period dates instead come from
+Fantrax's schedule response.
 
-An exact date-window or period-number conflict sets
-`data_quality.current_period.state` to `mismatch`; missing evidence sets it to
-`missing`. In either case, `current_period_actions_ready` is false and Win This
-Week returns a paused plan with no lineup or waiver actions and no Fantrax
-handoff. A mismatch emits a blocked monitor; missing evidence requests a
-refresh. The matchup projection and general Adds/dynasty board remain visible
-because they are still useful evidence, but they are not presented as moves
-that can change the current matchup.
+A canonical period-number conflict sets `data_quality.current_period.state`
+to `mismatch`; missing evidence sets it to `missing`. When the schedule also
+contains a future matchup whose period matches the editable roster period,
+Win This Week switches to an explicit `editable_period` planning horizon and
+recomputes the full decision context for that matchup. Every lineup action,
+contract, input hash, and read-only handoff is bound to the exact target period.
+
+Future-period planning is lineup-only. Add/drop timing can affect the still-live
+current roster, and the editable lineup period does not prove transaction
+effective-period semantics. Adds remains available as research, but waiver
+actions stay blocked until the current period closes or Fantrax supplies a
+trusted transaction-timing contract. If the editable schedule matchup or its
+opponent roster period cannot be proven, the plan remains paused.
 
 Current Fantrax roster payloads prove destination legality with
 `eligibleStatusIds` and `eligiblePosIds`; the older

@@ -95,6 +95,13 @@ class SnapshotDataQualityTests(unittest.TestCase):
         self.assertEqual(quality["current_period"]["state"], "missing")
         self.assertFalse(quality["current_period_actions_ready"])
         self.assertTrue(quality["projection_ready"])
+        self.assertTrue(quality["recommendations_ready"])
+        self.assertTrue(quality["add_drop_recommendations_ready"])
+        self.assertFalse(quality["lineup_recommendations_ready"])
+        self.assertEqual(quality["future_games"]["covered_players"], 2)
+        self.assertEqual(quality["fppg"]["covered_players"], 2)
+        self.assertEqual(quality["free_agent_pool"]["usable_players"], 1)
+        self.assertFalse(quality["schedule_optimizer_ready"])
 
     def test_legacy_period_fields_without_canonical_source_fail_closed(self):
         snapshot = good_snapshot()
@@ -105,7 +112,7 @@ class SnapshotDataQualityTests(unittest.TestCase):
         self.assertEqual(quality["current_period"]["state"], "missing")
         self.assertFalse(quality["current_period_actions_ready"])
 
-    def test_partial_editable_period_date_conflicts_fail_closed(self):
+    def test_unclassified_displayed_date_bounds_do_not_override_matching_period(self):
         for field, editable_value, missing_field in (
             ("period_start", "2026-05-15", "period_end"),
             ("period_end", "2026-05-19", "period_start"),
@@ -117,18 +124,9 @@ class SnapshotDataQualityTests(unittest.TestCase):
 
                 quality = sandlot_data_quality.snapshot_data_quality(snapshot)
 
-                self.assertEqual(quality["current_period"]["state"], "mismatch")
-                self.assertFalse(quality["current_period_actions_ready"])
-        self.assertTrue(quality["recommendations_ready"])
-        self.assertTrue(quality["add_drop_recommendations_ready"])
-        self.assertFalse(quality["lineup_recommendations_ready"])
-        self.assertTrue(quality["recommendations_ready"])
-        self.assertTrue(quality["add_drop_recommendations_ready"])
-        self.assertEqual(quality["future_games"]["covered_players"], 2)
-        self.assertEqual(quality["fppg"]["covered_players"], 2)
-        self.assertEqual(quality["free_agent_pool"]["usable_players"], 1)
-        self.assertFalse(quality["schedule_optimizer_ready"])
-        self.assertTrue(quality["projection_ready"])
+                self.assertEqual(quality["current_period"]["state"], "ok")
+                self.assertTrue(quality["current_period_actions_ready"])
+                self.assertTrue(quality["lineup_recommendations_ready"])
 
     def test_self_declared_policy_cannot_unlock_schedule_optimizer(self):
         snapshot = good_snapshot()

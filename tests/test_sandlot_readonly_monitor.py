@@ -433,6 +433,25 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         self.assertIn("win_this_week_matchup_state", codes)
         self.assertIn("win_this_week_period_alignment", codes)
 
+    def test_future_period_plan_requires_lineup_only_period_bound_actions(self):
+        payloads = healthy_payloads()
+        for plan in (
+            payloads["/api/snapshot/latest"]["win_this_week"],
+            payloads["/api/win-this-week/latest"],
+        ):
+            plan["planning_horizon"] = {"mode": "editable_period", "period_number": 17}
+            plan["actions"][0]["kind"] = "waiver"
+            plan["actions"][0]["target_period"] = {"period_number": 16}
+            plan["handoffs"]["lineup"]["target_period"] = {"period_number": 16}
+            plan["monitoring_actions"] = []
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        codes = {item["code"] for item in report["failures"]}
+        self.assertIn("win_this_week_planning_horizon", codes)
+        self.assertIn("win_this_week_embedded_planning_horizon", codes)
+
     def test_win_this_week_no_action_requires_reasoned_alternatives(self):
         payloads = healthy_payloads()
         for plan in (
