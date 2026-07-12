@@ -1435,6 +1435,115 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "Trade analysis is temporarily unavailable")
         self.assertNotIn("secret.internal", response.text)
 
+    def test_incoming_trades_are_sanitized_exact_and_manual_only(self):
+        snapshot = {
+            "id": 281, "taken_at": NOW, "team_id": "mine",
+            "data": {"team_id": "mine", "pending_trades": [
+                {
+                    "trade_id": "tx1", "proposed_by_id": "other", "proposed_by": "Other Team",
+                    "proposed": "Jul 12", "executed": "Jul 13",
+                    "moves": [
+                        {"from_team_id": "mine", "to_team_id": "other", "player_id": "p1", "player": "Mine"},
+                        {"from_team_id": "other", "to_team_id": "mine", "player_id": "p2", "player": "Theirs"},
+                    ],
+                    "private_raw": "do not expose",
+                },
+                {"trade_id": "outbound", "proposed_by_id": "mine", "moves": []},
+            ]},
+        }
+        with patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot):
+            response = self.client.get("/api/trades/incoming")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload["offers"]), 1)
+        offer = payload["offers"][0]
+        self.assertEqual(offer["give"], [{"player_id": "p1", "player_name": "Mine"}])
+        self.assertEqual(offer["get"], [{"player_id": "p2", "player_name": "Theirs"}])
+        self.assertTrue(offer["gradeable"])
+        self.assertTrue(offer["manual_only"])
+        self.assertFalse(payload["fantrax_changed"])
+        self.assertFalse(payload["writes_enabled"])
+        self.assertNotIn("private_raw", response.text)
+
+    def test_incoming_trade_with_draft_pick_fails_closed(self):
+        snapshot = {
+            "id": 281, "taken_at": NOW, "team_id": "mine",
+            "data": {"team_id": "mine", "pending_trades": [{
+                "trade_id": "tx-pick", "proposed_by_id": "other", "moves": [
+                    {"from_team_id": "mine", "to_team_id": "other", "player_id": "p1", "player": "Mine"},
+                    {"from_team_id": "other", "to_team_id": "mine", "draft_pick": {"round": 1}},
+                ],
+            }]},
+        }
+        with patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot):
+            offer = self.client.get("/api/trades/incoming").json()["offers"][0]
+
+        self.assertFalse(offer["gradeable"])
+        self.assertIn("draft_pick", offer["blocked_reasons"])
+        self.assertIn("missing_get_side", offer["blocked_reasons"])
+
+    def test_accepted_or_multi_team_incoming_trade_cannot_be_graded(self):
+        snapshot = {
+            "id": 281, "taken_at": NOW, "team_id": "mine",
+            "data": {"team_id": "mine", "pending_trades": [{
+                "trade_id": "tx-multi", "proposed_by_id": "other", "accepted": "Jul 12",
+                "moves": [
+                    {"from_team_id": "mine", "to_team_id": "other", "player_id": "p1", "player": "Mine"},
+                    {"from_team_id": "third", "to_team_id": "mine", "player_id": "p2", "player": "Theirs"},
+                ],
+            }]},
+        }
+        with patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot):
+            offer = self.client.get("/api/trades/incoming").json()["offers"][0]
+
+        self.assertFalse(offer["gradeable"])
+        self.assertEqual(offer["status"], "awaiting_execution")
+        self.assertIn("already_accepted", offer["blocked_reasons"])
+        self.assertIn("multi_team_offer", offer["blocked_reasons"])
+
+    def test_incoming_trade_grade_revalidates_snapshot_and_exact_sides(self):
+        snapshot = {
+            "id": 281, "taken_at": NOW, "team_id": "mine", "league_id": "league",
+            "data": {"team_id": "mine", "pending_trades": [{
+                "trade_id": "tx1", "proposed_by_id": "other", "moves": [
+                    {"from_team_id": "mine", "to_team_id": "other", "player_id": "p1", "player": "Mine"},
+                    {"from_team_id": "other", "to_team_id": "mine", "player_id": "p2", "player": "Theirs"},
+                ],
+            }]},
+        }
+        with patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot):
+            stale = self.client.post("/api/trades/grade", json={
+                "give": ["p1"], "get": ["p2"], "incoming_trade_id": "tx1", "incoming_snapshot_id": 280,
+            })
+            changed = self.client.post("/api/trades/grade", json={
+                "give": ["wrong"], "get": ["p2"], "incoming_trade_id": "tx1", "incoming_snapshot_id": 281,
+            })
+
+        self.assertEqual(stale.status_code, 409)
+        self.assertIn("snapshot changed", stale.json()["detail"])
+        self.assertEqual(changed.status_code, 409)
+        self.assertIn("changed or is no longer", changed.json()["detail"])
+
+    def test_incoming_trade_excludes_ambiguous_proposer_and_blocks_duplicate_players(self):
+        base_moves = [
+            {"from_team_id": "mine", "to_team_id": "other", "player_id": "p1", "player": "Mine"},
+            {"from_team_id": "other", "to_team_id": "mine", "player_id": "p2", "player": "Theirs"},
+        ]
+        snapshot = {
+            "id": 281, "taken_at": NOW, "team_id": "mine",
+            "data": {"team_id": "mine", "pending_trades": [
+                {"trade_id": "ambiguous", "proposed_by_id": None, "moves": base_moves},
+                {"trade_id": "duplicate", "proposed_by_id": "other", "moves": [base_moves[0], base_moves[0], base_moves[1]]},
+            ]},
+        }
+        with patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot):
+            offers = self.client.get("/api/trades/incoming").json()["offers"]
+
+        self.assertEqual([offer["trade_id"] for offer in offers], ["duplicate"])
+        self.assertFalse(offers[0]["gradeable"])
+        self.assertIn("duplicate_player_identity", offers[0]["blocked_reasons"])
+
     def test_latest_receipt_returns_no_content_when_none_is_active(self):
         with patch("sandlot_api.sandlot_db.latest_active_recommendation_receipt", return_value=None):
             response = self.client.get("/api/recommendation-receipts/latest")

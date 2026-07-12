@@ -3750,36 +3750,122 @@ function V2TradeGrader({ model, onAskSkipper }) {
   const [error, setError] = React.useState(null);
   const [result, setResult] = React.useState(null);
   const [editing, setEditing] = React.useState(true);
+  const [incoming, setIncoming] = React.useState({ state:'loading', snapshotId:null, freshness:null, offers:[], error:null });
+  const [reviewingTradeId, setReviewingTradeId] = React.useState(null);
+  const gradeRequestRef = React.useRef(0);
+  const gradeSnapshotRef = React.useRef(model?.snapshotId ?? null);
+
+  React.useEffect(() => {
+    const nextSnapshotId = model?.snapshotId ?? null;
+    const priorSnapshotId = gradeSnapshotRef.current;
+    gradeSnapshotRef.current = nextSnapshotId;
+    if (priorSnapshotId === null || nextSnapshotId === priorSnapshotId) return;
+    gradeRequestRef.current += 1;
+    setLoading(false);
+    setReviewingTradeId(null);
+    setResult(null);
+    setGive([]);
+    setGet([]);
+    setEditing(true);
+    setError('Fantrax data refreshed. Review the offer again against the new snapshot.');
+    setIncoming({ state:'loading', snapshotId:null, freshness:null, offers:[], error:null });
+  }, [model?.snapshotId]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    fetch('/api/trades/incoming', { cache:'no-store' })
+      .then(async response => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body?.detail || 'Incoming offers are unavailable.');
+        if (body?.read_only !== true || body?.fantrax_changed !== false || body?.writes_enabled !== false) {
+          throw new Error('Incoming offers did not preserve the read-only boundary.');
+        }
+        if (!cancelled) setIncoming({ state:'ready', snapshotId:body.snapshot_id, freshness:body.freshness || null, offers:Array.isArray(body.offers) ? body.offers : [], error:null });
+      })
+      .catch(reason => { if (!cancelled) setIncoming({ state:'error', snapshotId:null, freshness:null, offers:[], error:reason?.message || 'Incoming offers are unavailable.' }); });
+    return () => { cancelled = true; };
+  }, [model?.snapshotId]);
 
   const ready = give.length > 0 && get.length > 0 && !loading;
 
-  const grade = async () => {
-    if (!ready) return;
+  const gradeExact = async (giveRows, getRows, incomingOffer=null) => {
+    if (!giveRows.length || !getRows.length || loading) return;
+    const requestId = ++gradeRequestRef.current;
     setLoading(true);
+    setReviewingTradeId(incomingOffer?.trade_id || null);
     setError(null);
     try {
       const res = await fetch('/api/trades/grade', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ give: give.map(p => p.id), get: get.map(p => p.id) }),
+        body: JSON.stringify({
+          give:giveRows.map(p => p.id), get:getRows.map(p => p.id),
+          ...(incomingOffer ? { incoming_trade_id:incomingOffer.trade_id, incoming_snapshot_id:incoming.snapshotId } : {}),
+        }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         const detail = body && body.detail ? String(body.detail) : `Grade failed (${res.status})`;
         throw new Error(detail);
       }
+      if (requestId !== gradeRequestRef.current) return;
       setResult(body);
       setEditing(false);
     } catch (e) {
-      setError(e && e.message ? e.message : String(e));
+      if (requestId === gradeRequestRef.current) setError(e && e.message ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (requestId === gradeRequestRef.current) {
+        setLoading(false);
+        setReviewingTradeId(null);
+      }
     }
+  };
+  const grade = () => gradeExact(give, get);
+  const reviewIncoming = offer => {
+    const index = new Map(((model && model.playerIndex) || []).map(player => [String(player.id || ''), player]));
+    const giveRows = (offer.give || []).map(item => index.get(String(item.player_id || ''))).filter(Boolean);
+    const getRows = (offer.get || []).map(item => index.get(String(item.player_id || ''))).filter(Boolean);
+    if (giveRows.length !== (offer.give || []).length || getRows.length !== (offer.get || []).length) {
+      setError('This offer references a player missing from the current snapshot. Refresh before reviewing it.');
+      return;
+    }
+    setGive(giveRows);
+    setGet(getRows);
+    setEditing(false);
+    setResult(null);
+    gradeExact(giveRows, getRows, offer);
   };
 
   return (
     <div style={{ padding:'4px 16px 32px', display:'flex', flexDirection:'column', gap:14 }}>
-      {editing || !result ? (
+      {incoming.state === 'ready' && incoming.offers.length ? (
+        <section aria-labelledby="incoming-trades-title" style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:20, padding:'14px 15px' }}>
+          <V2Eyebrow color={V2.accent}>From Fantrax</V2Eyebrow>
+          <h2 id="incoming-trades-title" style={{ margin:'6px 0 0', color:V2.ink, fontFamily:V2.fontDisplay, fontSize:21, lineHeight:1.08, letterSpacing:'-0.02em' }}>Incoming offers</h2>
+          <div style={{ marginTop:5, color:V2.muted, fontSize:11.5, lineHeight:1.4 }}>Read-only {incoming.freshness?.state || 'stored'} snapshot · reviewing never answers the offer</div>
+          <div style={{ marginTop:11, display:'flex', flexDirection:'column', gap:8 }}>
+            {incoming.offers.map((offer, index) => (
+              <div key={offer.trade_id || index} style={{ background:V2.surface2, borderRadius:14, padding:'11px 12px' }}>
+                <div style={{ color:V2.body, fontSize:11.5, fontWeight:800 }}>{offer.proposed_by || 'Another team'}</div>
+                <div style={{ marginTop:6, color:V2.ink, fontSize:12.5, lineHeight:1.4, fontWeight:750 }}>You get {(offer.get || []).map(item=>item.player_name).filter(Boolean).join(', ') || '—'}</div>
+                <div style={{ marginTop:2, color:V2.muted, fontSize:11.5, lineHeight:1.4, fontWeight:650 }}>You give {(offer.give || []).map(item=>item.player_name).filter(Boolean).join(', ') || '—'}</div>
+                {offer.includes_draft_pick ? <div style={{ marginTop:5, color:V2.warn, fontSize:10.5, lineHeight:1.35, fontWeight:750 }}>Includes a draft pick · picks are not modeled yet</div> : null}
+                <button onClick={()=>reviewIncoming(offer)} disabled={!offer.gradeable || loading} style={{ marginTop:9, minHeight:44, width:'100%', border:'none', borderRadius:999, background:offer.gradeable ? V2.ink : V2.hairline, color:offer.gradeable ? '#fff' : V2.muted, fontFamily:'inherit', fontSize:11.5, fontWeight:850, cursor:offer.gradeable && !loading ? 'pointer' : 'not-allowed' }}>
+                  {offer.gradeable ? (reviewingTradeId === offer.trade_id ? 'Reviewing…' : 'Review exact offer') : offer.status === 'awaiting_execution' ? 'Already accepted in Fantrax' : 'Manual review required'}
+                </button>
+                {!offer.gradeable && !offer.includes_draft_pick && offer.status !== 'awaiting_execution' ? <div style={{ marginTop:6, color:V2.muted, fontSize:10.5, lineHeight:1.35 }}>This offer is incomplete, stale, or includes terms Sandlot cannot model exactly. Open Fantrax to inspect it.</div> : null}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : incoming.state === 'error' ? (
+        <div role="status" aria-live="polite" style={{ color:V2.muted, fontSize:10.5, lineHeight:1.4 }}>Incoming Fantrax offers could not be checked. You can still build an offer below.</div>
+      ) : incoming.state === 'loading' ? (
+        <div role="status" aria-live="polite" style={{ color:V2.muted, fontSize:10.5, lineHeight:1.4 }}>Checking incoming Fantrax offers…</div>
+      ) : null}
+      {loading && !result ? (
+        <div role="status" aria-live="polite" style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:18, padding:16, color:V2.body, fontSize:12.5, fontWeight:750 }}>Reviewing the exact offer against snapshot {incoming.snapshotId || model?.snapshotId || '—'}…</div>
+      ) : editing || !result ? (
         <>
           <V2PlayerPicker label="You give" source="mine" model={model} value={give} onChange={setGive}/>
           <V2PlayerPicker label="You get" source="league" model={model} value={get} onChange={setGet}/>

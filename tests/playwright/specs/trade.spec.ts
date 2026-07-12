@@ -2,6 +2,10 @@ import { test, expect } from '@playwright/test';
 import { waitForAppMount, gotoTab } from '../fixtures/sandlot';
 
 async function mockTradeAdvisor(page: import('@playwright/test').Page) {
+  await page.route('**/api/trades/incoming', route => route.fulfill({
+    status:200, contentType:'application/json',
+    body:JSON.stringify({ snapshot_id:321, offers:[], read_only:true, fantrax_changed:false, writes_enabled:false }),
+  }));
   await page.route('http://127.0.0.1:8765/health', route => route.fulfill({
     status:200, contentType:'application/json', body:JSON.stringify({ ok:false }),
   }));
@@ -95,6 +99,110 @@ async function gradeMockOffer(page: import('@playwright/test').Page) {
 }
 
 test.describe('Trade page', () => {
+  test('loads an exact incoming Fantrax offer into the grader in one click', async ({ page }) => {
+    await mockTradeAdvisor(page);
+    await page.route('**/api/trades/incoming', route => route.fulfill({
+      status:200, contentType:'application/json',
+      body:JSON.stringify({
+        snapshot_id:321, read_only:true, fantrax_changed:false, writes_enabled:false,
+        offers:[{
+          trade_id:'tx1', proposed_by:'Other Team', gradeable:true, manual_only:true,
+          give:[{ player_id:'m1', player_name:'My Second Baseman' }],
+          get:[{ player_id:'o1', player_name:'Their Outfielder' }], blocked_reasons:[],
+        }],
+      }),
+    }));
+    let submitted: any = null;
+    await page.route('**/api/trades/grade', async route => {
+      submitted = route.request().postDataJSON();
+      await route.fallback();
+    });
+    await page.goto('/');
+    await waitForAppMount(page);
+    await gotoTab(page, 'League');
+    await page.getByRole('button', { name:/Grade an offer/i }).click();
+
+    const incoming = page.getByRole('region', { name:'Incoming offers' });
+    await expect(incoming.getByText('You get Their Outfielder')).toBeVisible();
+    await expect(incoming.getByText('You give My Second Baseman')).toBeVisible();
+    await incoming.getByRole('button', { name:'Review exact offer' }).click();
+    await expect(page.getByRole('heading', { name:'Counter before accepting' })).toBeVisible();
+    expect(submitted).toEqual({ give:['m1'], get:['o1'], incoming_trade_id:'tx1', incoming_snapshot_id:321 });
+    await expect(page.getByText(/never auto-accepts/i)).toBeVisible();
+  });
+
+  test('explains why an incoming draft-pick offer needs manual review', async ({ page }) => {
+    await mockTradeAdvisor(page);
+    await page.route('**/api/trades/incoming', route => route.fulfill({
+      status:200, contentType:'application/json',
+      body:JSON.stringify({
+        snapshot_id:321, read_only:true, fantrax_changed:false, writes_enabled:false,
+        offers:[{
+          trade_id:'tx-pick', proposed_by:'Other Team', gradeable:false, manual_only:true,
+          give:[{ player_id:'m1', player_name:'My Second Baseman' }], get:[],
+          blocked_reasons:['draft_pick','missing_get_side'], includes_draft_pick:true, status:'pending',
+        }],
+      }),
+    }));
+    await page.goto('/');
+    await waitForAppMount(page);
+    await gotoTab(page, 'League');
+    await page.getByRole('button', { name:/Grade an offer/i }).click();
+
+    const incoming = page.getByRole('region', { name:'Incoming offers' });
+    await expect(incoming.getByText(/Includes a draft pick.*not modeled yet/i)).toBeVisible();
+    await expect(incoming.getByRole('button', { name:'Manual review required' })).toBeDisabled();
+  });
+
+  test('discards an in-flight incoming grade when the Fantrax snapshot refreshes', async ({ page }) => {
+    await mockTradeAdvisor(page);
+    let snapshotId = 321;
+    await page.route('**/api/snapshot/latest', route => route.fulfill({
+      status:200, contentType:'application/json', body:JSON.stringify({
+        snapshot_id:snapshotId, team_id:'me', team_name:'Sandlot', freshness:{ state:'fresh', age_minutes:1 },
+        roster:[{ id:'m1', name:'My Second Baseman', slot:'2B', positions:'2B', fppg:2.0 }],
+        standings:[{ team_id:'me', team_name:'Sandlot', rank:1, fantasy_points:100 }],
+        player_index:[
+          { id:'m1', name:'My Second Baseman', source:'mine', slot:'2B', positions:'2B', team:'ME', fppg:2.0 },
+          { id:'o1', name:'Their Outfielder', source:'league', slot:'OF', positions:'OF', team:'OPP', fppg:1.5 },
+        ],
+      }),
+    }));
+    await page.route('**/api/trades/incoming', route => route.fulfill({
+      status:200, contentType:'application/json', body:JSON.stringify({
+        snapshot_id:snapshotId, freshness:{ state:'fresh' }, read_only:true, fantrax_changed:false, writes_enabled:false,
+        offers:[{ trade_id:'tx-race', proposed_by:'Other Team', gradeable:true, give:[{ player_id:'m1', player_name:'My Second Baseman' }], get:[{ player_id:'o1', player_name:'Their Outfielder' }] }],
+      }),
+    }));
+    let releaseGrade!: () => void;
+    const gradeGate = new Promise<void>(resolve => { releaseGrade = resolve; });
+    await page.route('**/api/trades/grade', async route => {
+      await gradeGate;
+      await route.fulfill({
+        status:200, contentType:'application/json', body:JSON.stringify({
+          my_give:[{ id:'m1', name:'My Second Baseman' }], my_get:[{ id:'o1', name:'Their Outfielder' }],
+          letter_grade:'A', fairness:1, my_delta:1, their_delta:-1,
+          analysis:{ recommendation:{ title:'Old snapshot result' }, horizons:[] },
+        }),
+      });
+    });
+    await page.goto('/');
+    await waitForAppMount(page);
+    await gotoTab(page, 'League');
+    await page.getByRole('button', { name:/Grade an offer/i }).click();
+    await page.getByRole('button', { name:'Review exact offer' }).click();
+    await expect(page.getByText(/Reviewing the exact offer against snapshot 321/i)).toBeVisible();
+
+    snapshotId = 322;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(page.getByRole('alert')).toContainText(/Fantrax data refreshed/i);
+    releaseGrade();
+    await page.waitForTimeout(100);
+    await expect(page.getByRole('heading', { name:'Old snapshot result' })).toHaveCount(0);
+  });
+
+
+
   test('renders both player pickers and a disabled Grade CTA', async ({ page }) => {
     await page.goto('/');
     await waitForAppMount(page);
