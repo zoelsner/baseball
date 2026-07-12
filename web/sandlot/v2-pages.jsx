@@ -1101,7 +1101,10 @@ function v2WinWeekDeadlineExpired(deadline) {
 function v2WinWeekPrompt(action, plan) {
   const points = v2Number(action?.expected_points?.estimate);
   const deadline = v2WinWeekDeadline(action?.deadline);
-  const steps = (action?.steps || []).map((step, index) => {
+  const review = action?.review?.state === 'reviewable' ? action.review : null;
+  const promptMoves = review?.slot_moves || action?.steps || [];
+  const steps = promptMoves.map((step, index) => {
+    if (review) return `${index + 1}. ${step.player_name || step.player_id}: ${step.from_slot || '?'} → ${step.to_slot || '?'}.`;
     if (step.action === 'add') return `${index + 1}. Add ${step.player_name || step.player_id}${step.to_slot ? ` for ${step.to_slot}` : ''}.`;
     if (step.action === 'move_out') return `${index + 1}. Move out ${step.player_name || step.player_id}.`;
     if (step.action === 'start') return `${index + 1}. Start ${step.player_name || step.player_id} in ${step.to_slot || 'the open slot'}.`;
@@ -1112,17 +1115,22 @@ function v2WinWeekPrompt(action, plan) {
     '',
     `Plan: ${action?.title || 'Unknown action'}.`,
     `Expected remaining-week impact: ${v2Signed(points, 1)} points. ${deadline}.`,
+    review ? `Immutable proposal: snapshot ${review.snapshot_id}; proposal ${review.proposal_id}; input hash ${review.input_hash}.` : null,
+    review ? `Exact target: Period ${review.target_period?.period_number || '?'}; matchup ${review.target_period?.matchup_key || '?'}; ${review.target_period?.start || '?'} through ${review.target_period?.end || '?'}.` : null,
     plan?.summary?.outlook || null,
     `Confidence: ${action?.confidence || 'unknown'}. Dynasty cost: ${action?.dynasty_cost?.level || 'unknown'}.`,
     action?.dynasty_cost?.reason ? `Dynasty note: ${action.dynasty_cost.reason}` : null,
     ...steps,
     '',
     plan?.summary?.win_probability_excluded_reason || null,
+    review ? 'This is a read-only review. Do not claim it was executed or alter the exact target/mapping.' : null,
     'Verify current Fantrax availability, transaction or lineup locks, MLB lineup status, and the exact deadline. Do not invent a win-probability change if it is not calibrated.',
   ].filter(Boolean).join('\n');
 }
 
 function V2WinThisWeekPanel({ plan, sync={}, onNav, onAskSkipper, onRefresh }) {
+  const [reviewAction, setReviewAction] = React.useState(null);
+  React.useEffect(() => { setReviewAction(null); }, [plan?.snapshot_id]);
   if (!plan) return null;
   const actions = Array.isArray(plan.actions) ? plan.actions : [];
   const primary = actions[0] || null;
@@ -1152,6 +1160,7 @@ function V2WinThisWeekPanel({ plan, sync={}, onNav, onAskSkipper, onRefresh }) {
       : { fg:V2.ok, bg:V2.okSoft };
 
   return (
+    <>
     <section aria-label="Win This Week" style={{
       background:`linear-gradient(145deg, ${V2.surface} 0%, #fff7ed 100%)`,
       borderRadius:26,
@@ -1267,6 +1276,10 @@ function V2WinThisWeekPanel({ plan, sync={}, onNav, onAskSkipper, onRefresh }) {
               <button onClick={onRefresh} disabled={sync.state === 'refreshing'} style={{ minHeight:44, background:V2.warn, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:sync.state === 'refreshing' ? 'not-allowed' : 'pointer', opacity:sync.state === 'refreshing' ? 0.7 : 1, fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
                 {sync.state === 'refreshing' ? 'Refreshing…' : 'Refresh plan'}
               </button>
+            ) : primary.review?.state === 'reviewable' ? (
+              <button onClick={()=>setReviewAction(primary)} style={{ minHeight:44, background:V2.ink, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
+                Review exact action
+              </button>
             ) : (
               <button onClick={()=>onAskSkipper(v2WinWeekPrompt(primary, plan))} style={{ minHeight:44, background:V2.ink, color:'#fff', border:'none', borderRadius:999, padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>
                 Pressure-test with Skipper
@@ -1322,6 +1335,83 @@ function V2WinThisWeekPanel({ plan, sync={}, onNav, onAskSkipper, onRefresh }) {
         </div>
       ) : null}
     </section>
+    {reviewAction ? (
+      <V2ActionReviewSheet
+        action={reviewAction}
+        handoff={lineupHandoff}
+        plan={plan}
+        onAskSkipper={onAskSkipper}
+        onClose={()=>setReviewAction(null)}
+      />
+    ) : null}
+    </>
+  );
+}
+
+function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
+  const { dialogRef, closeButtonRef } = useV2DialogFocus(onClose);
+  const review = action?.review || {};
+  const target = review.target_period || action?.target_period || {};
+  const moves = Array.isArray(review.slot_moves) ? review.slot_moves : [];
+  const hash = String(review.input_hash || '');
+  const points = v2Number(action?.expected_points?.estimate);
+  return (
+    <div onClick={onClose} style={{ position:'fixed', inset:0, zIndex:70, background:'rgba(31,20,12,0.62)', display:'flex', alignItems:'flex-end', justifyContent:'center' }}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Review exact lineup action"
+        onClick={event=>event.stopPropagation()}
+        style={{ width:'min(100%, 520px)', maxHeight:'88vh', overflowY:'auto', background:V2.bg, borderTopLeftRadius:28, borderTopRightRadius:28, padding:'18px 18px 24px', boxShadow:'0 -1px 0 rgba(255,255,255,0.5), 0 -18px 52px rgba(31,20,12,0.24)' }}
+      >
+        <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:14 }}>
+          <div style={{ minWidth:0 }}>
+            <V2Eyebrow color={V2.accent}>Exact action review</V2Eyebrow>
+            <h2 style={{ margin:'7px 0 0', color:V2.ink, fontFamily:V2.fontDisplay, fontSize:27, lineHeight:1.02, letterSpacing:'-0.025em', textWrap:'balance' }}>{action.title}</h2>
+          </div>
+          <button ref={closeButtonRef} onClick={onClose} aria-label="Close action review" style={{ width:44, height:44, flexShrink:0, border:'none', borderRadius:999, background:V2.surface, color:V2.body, boxShadow:'0 0 0 1px rgba(0,0,0,0.07), 0 2px 6px rgba(31,20,12,0.08)', cursor:'pointer', fontFamily:'inherit', fontSize:20 }}>×</button>
+        </div>
+
+        <div style={{ marginTop:15, display:'grid', gridTemplateColumns:'1fr 1fr', gap:9 }}>
+          <div style={{ background:V2.surface, borderRadius:16, padding:'12px 13px', boxShadow:'0 0 0 1px rgba(0,0,0,0.055)' }}>
+            <div style={{ color:V2.muted, fontSize:10, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>Target</div>
+            <div style={{ marginTop:5, color:V2.ink, fontSize:15, fontWeight:900, fontVariantNumeric:'tabular-nums' }}>Period {target.period_number || '?'}</div>
+            <div style={{ marginTop:3, color:V2.muted, fontSize:11.5, fontWeight:700 }}>{target.start && target.end ? `${target.start} → ${target.end}` : 'Dates require preflight'}</div>
+          </div>
+          <div style={{ background:V2.surface, borderRadius:16, padding:'12px 13px', boxShadow:'0 0 0 1px rgba(0,0,0,0.055)' }}>
+            <div style={{ color:V2.muted, fontSize:10, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>Expected impact</div>
+            <div style={{ marginTop:5, color:V2.accent, fontFamily:V2.fontDisplay, fontSize:22, lineHeight:1, fontWeight:900, fontVariantNumeric:'tabular-nums' }}>{v2Signed(points, 1)} pts</div>
+            <div style={{ marginTop:3, color:V2.muted, fontSize:11.5, fontWeight:700 }}>{action.confidence || 'unknown'} confidence</div>
+          </div>
+        </div>
+
+        <div style={{ marginTop:12, background:V2.surface, borderRadius:18, padding:'14px 14px 13px', boxShadow:'0 0 0 1px rgba(0,0,0,0.055)' }}>
+          <div style={{ color:V2.muted, fontSize:10, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>Exact final slot mapping</div>
+          <div style={{ marginTop:9, display:'flex', flexDirection:'column', gap:8 }}>
+            {moves.map((move, index)=>(
+              <div key={`${review.proposal_id}-review-${index}`} style={{ display:'grid', gridTemplateColumns:'22px 1fr auto', alignItems:'baseline', gap:8, color:V2.body, fontSize:12.5, lineHeight:1.35, fontWeight:750 }}>
+                <span style={{ color:V2.accent, fontFamily:V2.fontMono, fontWeight:900 }}>{move.order || index + 1}</span>
+                <span style={{ minWidth:0, textWrap:'pretty' }}>{move.player_name || move.player_id}</span>
+                <span style={{ color:V2.ink, fontFamily:V2.fontMono, fontWeight:900 }}>{move.from_slot || '?'} → {move.to_slot || '?'}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginTop:12, background:V2.warnSoft, color:V2.warn, borderRadius:16, padding:'12px 13px', fontSize:12, lineHeight:1.45, fontWeight:800, textWrap:'pretty' }}>
+          Local executor offline. Nothing will change from this screen. A future execution request will still require live Fantrax preflight and visible approval on your Mac.
+        </div>
+        <div style={{ marginTop:9, color:V2.muted, fontSize:10.5, lineHeight:1.4, fontFamily:V2.fontMono, overflowWrap:'anywhere' }}>
+          Snapshot #{review.snapshot_id || plan.snapshot_id} · proposal {review.proposal_id || action.id} · contract {hash ? `${hash.slice(0, 12)}…` : 'unavailable'}
+        </div>
+
+        <div style={{ marginTop:16, display:'grid', gridTemplateColumns:handoff ? '1fr 1fr' : '1fr', gap:9 }}>
+          <button onClick={()=>{ onClose(); onAskSkipper(v2WinWeekPrompt(action, plan)); }} style={{ minHeight:46, border:'none', borderRadius:999, background:V2.ink, color:'#fff', padding:'11px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:12.5, fontWeight:850 }}>Ask Skipper</button>
+          {handoff ? <a href={handoff.url} target="_blank" rel="noopener noreferrer" style={{ minHeight:46, borderRadius:999, background:V2.surface, color:V2.body, padding:'11px 14px', display:'flex', alignItems:'center', justifyContent:'center', textDecoration:'none', boxShadow:'0 0 0 1px rgba(0,0,0,0.08)', fontSize:12.5, fontWeight:850 }}>{handoff.label || 'Open Fantrax lineup'}</a> : null}
+        </div>
+      </div>
+    </div>
   );
 }
 

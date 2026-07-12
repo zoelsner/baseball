@@ -573,8 +573,52 @@ def _lineup_action(
         },
         "writes_enabled": False,
         "source": {"type": "matchup_recommendation", "proposal_id": proposal.get("id")},
+        "review": _action_review(proposal),
     }
     return action, None, diagnostic
+
+
+def _action_review(proposal: dict[str, Any]) -> dict[str, Any]:
+    contract = proposal.get("contract") if isinstance(proposal.get("contract"), dict) else {}
+    required = ("proposal_id", "snapshot_id", "input_hash", "target_period", "slot_moves")
+    target_period = contract.get("target_period") if isinstance(contract.get("target_period"), dict) else {}
+    slot_moves = contract.get("slot_moves") if isinstance(contract.get("slot_moves"), list) else []
+    confirmation = contract.get("confirmation") if isinstance(contract.get("confirmation"), dict) else {}
+    expected = confirmation.get("expected") if isinstance(confirmation.get("expected"), dict) else {}
+    exact_confirmation = all(
+        expected.get(key) == contract.get(key)
+        for key in required
+    )
+    if (
+        not contract
+        or any(contract.get(key) in (None, "", []) for key in required)
+        or target_period.get("period_number") in (None, "")
+        or not slot_moves
+        or not exact_confirmation
+    ):
+        return {
+            "state": "unavailable",
+            "reason": "The exact action contract is incomplete; keep this recommendation read-only.",
+            "writes_enabled": False,
+        }
+    return {
+        "state": "reviewable",
+        "proposal_id": contract.get("proposal_id"),
+        "snapshot_id": contract.get("snapshot_id"),
+        "input_hash": contract.get("input_hash"),
+        "target_period": copy.deepcopy(target_period),
+        "slot_moves": copy.deepcopy(slot_moves),
+        "confirmation_copy": contract.get("confirmation_copy"),
+        "contract": copy.deepcopy(contract),
+        "executor": {
+            "state": "offline",
+            "label": "Local executor not connected",
+            "reason": "Review is available now; execution stays disabled until a trusted local headful runner is online.",
+        },
+        "requires_local_visible_approval": True,
+        "requires_live_preflight": True,
+        "writes_enabled": False,
+    }
 
 
 def _lineup_bundle(
@@ -626,6 +670,11 @@ def _lineup_bundle(
         },
         "writes_enabled": False,
         "source": {"type": "sequential_matchup_plan", "proposal_ids": proposal_ids},
+        "review": {
+            "state": "unavailable",
+            "reason": "Multi-change lineup plans remain research-only until Fantrax atomic behavior is proven.",
+            "writes_enabled": False,
+        },
     }
 
 

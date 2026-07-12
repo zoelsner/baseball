@@ -3,7 +3,9 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import sandlot_win_week
-from sandlot_api import _snapshot_payload, latest_win_this_week
+from fastapi import HTTPException
+
+from sandlot_api import _snapshot_payload, latest_action_proposal, latest_win_this_week
 
 
 NOW = datetime(2026, 5, 14, 12, tzinfo=timezone.utc)
@@ -147,6 +149,13 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertIn("Planning Period 6", plan["summary"]["headline"])
         self.assertIn("research-only", plan["monitoring_actions"][0]["title"])
         self.assertEqual(plan["handoffs"]["lineup"]["target_period"]["period_number"], 6)
+        review = plan["actions"][0]["review"]
+        self.assertEqual(review["state"], "reviewable")
+        self.assertEqual(review["snapshot_id"], 501)
+        self.assertEqual(review["target_period"]["period_number"], 6)
+        self.assertEqual(review["slot_moves"], review["contract"]["slot_moves"])
+        self.assertEqual(review["executor"]["state"], "offline")
+        self.assertFalse(review["writes_enabled"])
 
     def test_future_period_plan_requires_matching_opponent_roster_period(self):
         row = snapshot_row()
@@ -192,6 +201,70 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertEqual(plan["state"], "paused")
         self.assertEqual(plan["actions"], [])
         self.assertIn("not proven", plan["planning_horizon"]["blocked_reason"])
+
+    def test_latest_action_proposal_rederives_exact_review_from_latest_snapshot(self):
+        row = snapshot_row()
+        plan = sandlot_win_week.build_plan(row, now=NOW)
+        reviewed_action = next(action for action in plan["actions"] if (action.get("review") or {}).get("state") == "reviewable")
+        proposal_id = reviewed_action["review"]["proposal_id"]
+
+        with (
+            patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=row),
+            patch("sandlot_win_week._aware_now", return_value=NOW),
+            patch("sandlot_matchup._movability_now", return_value=NOW),
+        ):
+            payload = latest_action_proposal(
+                proposal_id,
+                snapshot_id=reviewed_action["review"]["snapshot_id"],
+                input_hash=reviewed_action["review"]["input_hash"],
+            )
+
+        self.assertTrue(payload["is_current"])
+        self.assertTrue(payload["read_only"])
+        self.assertFalse(payload["writes_enabled"])
+        self.assertEqual(payload["review"]["proposal_id"], proposal_id)
+        self.assertEqual(payload["review"]["input_hash"], payload["review"]["contract"]["input_hash"])
+        self.assertEqual(payload["execution"]["state"], "offline")
+        self.assertFalse(payload["execution"]["request_enabled"])
+
+    def test_latest_action_proposal_rejects_stale_or_replaced_id(self):
+        row = snapshot_row()
+
+        with (
+            patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=row),
+            patch("sandlot_win_week._aware_now", return_value=NOW),
+            patch("sandlot_matchup._movability_now", return_value=NOW),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                latest_action_proposal(
+                    "lineup-swap:stale:proposal",
+                    snapshot_id=501,
+                    input_hash="a" * 64,
+                )
+
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertIn("latest actionable plan", str(raised.exception.detail))
+
+    def test_latest_action_proposal_rejects_recurring_id_with_stale_hash(self):
+        row = snapshot_row()
+        plan = sandlot_win_week.build_plan(row, now=NOW)
+        reviewed_action = next(action for action in plan["actions"] if (action.get("review") or {}).get("state") == "reviewable")
+        review = reviewed_action["review"]
+
+        with (
+            patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=row),
+            patch("sandlot_win_week._aware_now", return_value=NOW),
+            patch("sandlot_matchup._movability_now", return_value=NOW),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                latest_action_proposal(
+                    review["proposal_id"],
+                    snapshot_id=review["snapshot_id"],
+                    input_hash="f" * 64,
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertIn("stale or replaced", str(raised.exception.detail))
 
     def test_mismatched_editable_period_pauses_actions_before_planners_run(self):
         row = snapshot_row()
