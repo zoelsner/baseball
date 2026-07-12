@@ -183,6 +183,36 @@ def lookup_player_by_name(
     return matches[0].get("id")
 
 
+def resolve_player_identity(
+    name: str,
+    team: str | None = None,
+    season: int | None = None,
+) -> dict[str, Any]:
+    """Resolve an exact player name without silently choosing an ambiguous match."""
+    source = "mlb_stats_active_players_v1"
+    if not name:
+        return {"status": "missing_name", "mlb_id": None, "source": source}
+    season = season or current_season()
+    target_norm = _normalize(name)
+    target_team = _normalize_team(team)
+    matches = [
+        player for player in _get_active_players(season)
+        if _normalize(player.get("fullName") or player.get("firstLastName") or "") == target_norm
+    ]
+    if not matches:
+        return {"status": "not_found", "mlb_id": None, "source": source}
+    if len(matches) == 1:
+        return {"status": "resolved_unique_name", "mlb_id": matches[0].get("id"), "source": source}
+    if target_team:
+        team_matches = [
+            player for player in matches
+            if _normalize_team((player.get("currentTeam") or {}).get("abbreviation")) == target_team
+        ]
+        if len(team_matches) == 1:
+            return {"status": "resolved_name_team", "mlb_id": team_matches[0].get("id"), "source": source}
+    return {"status": "ambiguous", "mlb_id": None, "source": source}
+
+
 def _get_team_abbreviations(season: int) -> dict[int, str]:
     def fetch() -> tuple[dict[int, str], bool]:
         try:

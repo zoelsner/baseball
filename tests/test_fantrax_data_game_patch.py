@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import fantrax_data
 from fantraxapi.objs.game import Game
@@ -17,6 +17,40 @@ class DummyPlayer:
 
 
 class FantraxGamePatchTests(unittest.TestCase):
+    def test_trade_horizon_fetch_requests_regular_season_and_returns_hashed_calendar(self):
+        response = Mock()
+        response.json.return_value = {"dates": [{"games": [{
+            "gamePk": 1, "gameDate": "2026-07-13T17:05:00Z",
+            "status": {"detailedState": "Scheduled"},
+        }]}]}
+        with patch.object(fantrax_data.requests, "get", return_value=response) as get:
+            calendar = fantrax_data.extract_trade_horizon_calendar(
+                league_id="league",
+                periods=[{
+                    "period_number": "17", "period_name": "P17", "start": "2026-07-13",
+                    "end": "2026-07-19", "regular_season": True,
+                }],
+                captured_at=datetime(2026, 7, 12, 20, tzinfo=timezone.utc),
+            )
+
+        response.raise_for_status.assert_called_once_with()
+        self.assertEqual(get.call_args.kwargs["params"]["gameType"], "R")
+        self.assertEqual(calendar["status"], "ready")
+        self.assertEqual(len(calendar["content_hash"]), 64)
+
+    def test_trade_horizon_normalization_failure_degrades_to_unavailable(self):
+        response = Mock()
+        response.json.return_value = {"dates": []}
+        with patch.object(fantrax_data.requests, "get", return_value=response):
+            calendar = fantrax_data.extract_trade_horizon_calendar(
+                league_id="league",
+                periods=[{"period_number": None, "start": "2026-07-13", "end": "2026-07-19", "regular_season": True}],
+                captured_at=datetime(2026, 7, 12, 20, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(calendar["status"], "unavailable")
+        self.assertEqual(calendar["reason"], "calendar_normalization_failed")
+
     def test_missing_second_content_part_does_not_raise(self):
         game = Game(DummyLeague(), DummyPlayer(), "Sun 05/24", {
             "eventId": "g1",
@@ -123,6 +157,10 @@ class FantraxGamePatchTests(unittest.TestCase):
         self.assertEqual(contexts["editable_matchup"]["period_number"], 6)
         self.assertEqual(contexts["editable_matchup"]["score_state"], "not_started")
         self.assertEqual(contexts["editable_matchup"]["my_score"], 0)
+        self.assertEqual(
+            [item["period_number"] for item in contexts["regular_season_periods"]],
+            ["5", "6"],
+        )
         self.assertEqual(contexts["editable_matchup"]["opponent_score"], 0)
 
     def test_off_week_does_not_relabel_future_editable_matchup_as_current(self):

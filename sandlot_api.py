@@ -1272,6 +1272,7 @@ def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
     period = recommendation.get("period") if isinstance(recommendation.get("period"), dict) else {}
     trade = recommendation.get("offer") if isinstance(recommendation.get("offer"), dict) else None
     trade_origin = recommendation.get("origin") if isinstance(recommendation.get("origin"), dict) else {}
+    trade_outcome = recommendation.get("outcome_contract") if isinstance(recommendation.get("outcome_contract"), dict) else {}
     return {
         "receipt_id": row.get("receipt_id"),
         "builder_version": row.get("builder_version"),
@@ -1308,6 +1309,26 @@ def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
                 "source_status": trade_origin.get("source_status"),
                 "execution_verification": trade_origin.get("execution_verification"),
             },
+            "outcome_contract": {
+                "version": trade_outcome.get("version"),
+                "eligible": trade_outcome.get("eligible") is True,
+                "blocking_reasons": (
+                    trade_outcome.get("blocking_reasons") or []
+                    if trade_outcome
+                    else [{"code": "legacy_outcome_contract_unavailable"}]
+                ),
+                "selection_rule": trade_outcome.get("selection_rule"),
+                "target_period": _public_trade_target_period(trade_outcome.get("target_period")),
+                "measurement_scope": trade_outcome.get("measurement_scope"),
+                "target_metric": trade_outcome.get("target_metric"),
+                "metric_unit": trade_outcome.get("metric_unit"),
+                "causal_lift_claimed": False,
+                "execution_claimed": False,
+                "lineup_lift_claimed": False,
+                "ros_claimed": False,
+                "dynasty_claimed": False,
+                "autopilot_eligible": False,
+            },
             "grade": recommendation.get("grade") or {},
             "horizons": recommendation.get("horizons") or [],
             "guardrails": recommendation.get("guardrails") or {},
@@ -1328,6 +1349,22 @@ def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
         "read_only": True,
         "fantrax_changed": False,
         "writes_enabled": False,
+    }
+
+
+def _public_trade_target_period(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "period_number": value.get("period_number"),
+        "period_name": value.get("period_name"),
+        "season": value.get("season"),
+        "start": value.get("start"),
+        "end": value.get("end"),
+        "first_scoring_event_at": value.get("first_scoring_event_at"),
+        "period_close_at": value.get("period_close_at"),
+        "maturity_at": value.get("maturity_at"),
+        "correction_grace_hours": value.get("correction_grace_hours"),
     }
 
 

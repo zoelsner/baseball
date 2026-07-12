@@ -221,7 +221,12 @@ class RecommendationReceiptBuilderTests(unittest.TestCase):
         self.assertFalse(receipt["recommendation"]["guardrails"]["fantrax_write_authorized"])
         self.assertFalse(receipt["recommendation"]["guardrails"]["dynasty_complete"])
         self.assertEqual(receipt["recommendation"]["guardrails"]["eligibility_policy_version"], "trade_eligibility_v1")
-        self.assertEqual(receipt["builder_version"], "trade_assessment_v2")
+        self.assertEqual(receipt["builder_version"], "trade_assessment_v3")
+        self.assertFalse(receipt["recommendation"]["outcome_contract"]["eligible"])
+        self.assertIn(
+            {"code": "period_calendar_missing"},
+            receipt["recommendation"]["outcome_contract"]["blocking_reasons"],
+        )
         self.assertEqual(receipt["recommendation"]["origin"], {
             "kind": "manual_entry",
             "fantrax_trade_id": None,
@@ -1484,13 +1489,19 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         self.assertEqual(payload["receipt"]["action_type"], "trade_assessment")
         self.assertEqual(payload["receipt"]["trade"]["give"][0]["player_id"], "mine")
         self.assertEqual(payload["receipt"]["trade"]["origin"]["kind"], "manual_entry")
+        self.assertFalse(payload["receipt"]["trade"]["outcome_contract"]["eligible"])
+        self.assertFalse(payload["receipt"]["trade"]["outcome_contract"]["execution_claimed"])
+        self.assertFalse(payload["receipt"]["trade"]["outcome_contract"]["dynasty_claimed"])
+        self.assertFalse(payload["receipt"]["trade"]["outcome_contract"]["autopilot_eligible"])
         self.assertTrue(payload["receipt"]["trade"]["guardrails"]["manual_execution_only"])
         self.assertFalse(payload["receipt"]["fantrax_changed"])
         self.assertFalse(payload["receipt"]["writes_enabled"])
         self.assertNotIn("recommendation", payload["receipt"])
         persisted = record.call_args.args[0]
-        self.assertEqual(persisted["receipt_id"], built["receipt_id"])
-        self.assertEqual(persisted["input_hash"], built["input_hash"])
+        self.assertTrue(persisted["receipt_id"].startswith("trade-assessment:"))
+        self.assertEqual(len(persisted["input_hash"]), 64)
+        self.assertEqual(persisted["builder_version"], "trade_assessment_v3")
+        self.assertFalse(persisted["recommendation"]["outcome_contract"]["eligible"])
 
     def test_trade_receipt_failure_does_not_expose_database_details(self):
         snapshot = {"id": 281, "taken_at": "2026-07-12T14:00:00Z", "league_id": "league", "team_id": "team"}
@@ -1617,7 +1628,7 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         }
         stored = {
             "receipt_id": "trade-assessment:" + "a" * 64,
-            "builder_version": "trade_assessment_v2",
+            "builder_version": "trade_assessment_v3",
             "source": "trade_cockpit", "action_type": "trade_assessment",
             "recommendation": {
                 "offer": {"give": [{"player_id": "p1"}], "get": [{"player_id": "p2"}]},

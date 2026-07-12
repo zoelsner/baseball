@@ -14,10 +14,11 @@ from zoneinfo import ZoneInfo
 
 from sandlot_autopsy import PITCHER_TOKENS
 from sandlot_lineup import FULL_ACTIVE_TEMPLATE
+import sandlot_trade_evidence
 
 
 MONDAY_LINEUP_BUILDER_VERSION = "monday_lineup_v2"
-TRADE_ASSESSMENT_BUILDER_VERSION = "trade_assessment_v2"
+TRADE_ASSESSMENT_BUILDER_VERSION = "trade_assessment_v3"
 TEAM_RESULT_SCORING_VERSION = "team_result_v1"
 COUNTERFACTUAL_LINEUP_SCORING_VERSION = "counterfactual_lineup_v1"
 COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION = "fantrax_period_lineup_v2"
@@ -112,6 +113,19 @@ def build_trade_assessment_receipt(
         raise ValueError("trade receipt sides must contain unique player ids")
     if set(give_ids) & set(get_ids):
         raise ValueError("trade receipt give and get sides must be disjoint")
+    snapshot_data = snapshot.get("data") if isinstance(snapshot.get("data"), dict) else {}
+    outcome_contract = sandlot_trade_evidence.build_trade_outcome_contract(
+        league_id=league_id,
+        team_id=team_id,
+        snapshot_id=snapshot_id,
+        snapshot_taken_at=snapshot_taken_at,
+        generated_at=generated_at,
+        give_ids=give_ids,
+        get_ids=get_ids,
+        origin=normalized_origin,
+        calendar=snapshot_data.get("trade_horizon_calendar"),
+        identity_index=snapshot_data.get("trade_player_identities"),
+    )
     analysis = result.get("analysis") if isinstance(result.get("analysis"), dict) else {}
     horizons = analysis.get("horizons") if isinstance(analysis.get("horizons"), list) else []
     normalized_horizons = []
@@ -164,6 +178,7 @@ def build_trade_assessment_receipt(
         "team_id": team_id,
         "origin": normalized_origin,
         "offer": {"give": give, "get": get},
+        "outcome_contract": outcome_contract,
         "grade": {
             "letter": _required_text(result.get("letter_grade"), "trade letter grade"),
             "fairness": _finite_number(result.get("fairness"), "trade fairness"),
