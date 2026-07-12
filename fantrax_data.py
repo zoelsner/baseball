@@ -16,7 +16,7 @@ import math
 import re
 import sys
 import types
-from datetime import date as date_cls, datetime, time as time_cls, timezone
+from datetime import date as date_cls, datetime, time as time_cls, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -176,7 +176,22 @@ def _raw_team_roster(api: Any, team_id: str) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
-LINEUP_PERIOD_EVIDENCE_VERSION = "fantrax_period_lineup_v1"
+LINEUP_PERIOD_EVIDENCE_VERSION = "fantrax_period_lineup_v2"
+PARENT_LINEUP_PERIOD_EVIDENCE_VERSION = "fantrax_period_lineup_v1"
+VERIFIED_WEEKLY_LINEUP_POLICIES = {
+    ("lydahdo6mhcvnob7", 2026): {
+        "source": "fantrax.league_rules_summary",
+        "verified_at": "2026-07-12",
+        "lineup_change_system": "Managers enter lineup changes",
+        "lineup_changes_executed": "Weekly every Monday",
+        "player_lock_before_scheduled_game": "0:05",
+        "team_period_constraints": {
+            "innings_pitched_min": 7,
+            "innings_pitched_max": None,
+            "minimum_failure_effect": "Do nothing",
+        },
+    },
+}
 
 
 def extract_completed_lineup_evidence(
@@ -281,8 +296,6 @@ def extract_completed_lineup_evidence(
         raise ValueError("historical Fantrax roster has ambiguous active two-way scoring")
     observed_total = _decimal_text(completed_matchup.get("my_score"))
     active_total = _decimal_text(sum(Decimal(item["period_fpts"]) for item in active))
-    if Decimal(active_total) != Decimal(observed_total):
-        raise ValueError("historical Fantrax active-player total does not match completed team score")
     league_id = str(getattr(api, "league_id", "") or "").strip()
     if not league_id:
         raise ValueError("Fantrax league identity is unavailable")
@@ -291,8 +304,28 @@ def extract_completed_lineup_evidence(
         raise ValueError("historical Fantrax roster response team identity is missing")
     if response_team != str(team_id):
         raise ValueError("historical Fantrax roster returned a different team")
-    evidence = {
-        "evidence_version": LINEUP_PERIOD_EVIDENCE_VERSION,
+    try:
+        season = date_cls.fromisoformat(str(completed_matchup.get("start") or "")).year
+    except ValueError as exc:
+        raise ValueError("completed matchup season is invalid") from exc
+    lineup_policy = VERIFIED_WEEKLY_LINEUP_POLICIES.get((league_id, season))
+    if not lineup_policy:
+        raise ValueError("weekly lineup policy has not been verified for this league season")
+    participation = _completed_period_participation(
+        api=api,
+        team_id=str(team_id),
+        period_number=period_number,
+        period_start=str(completed_matchup.get("start") or ""),
+        period_end=str(completed_matchup.get("end") or ""),
+        period_players=players,
+    )
+    if Decimal(participation["observed_team_total"]) != Decimal(observed_total):
+        raise ValueError("daily Fantrax credited totals do not match completed team score")
+    single_window = len(participation["windows"]) == 1
+    if single_window and Decimal(active_total) != Decimal(observed_total):
+        raise ValueError("historical Fantrax active-player total does not match completed team score")
+    parent_evidence = {
+        "evidence_version": PARENT_LINEUP_PERIOD_EVIDENCE_VERSION,
         "league_id": league_id,
         "team_id": str(team_id),
         "period": {
@@ -322,6 +355,32 @@ def extract_completed_lineup_evidence(
         "active_player_count": len(active),
         "players": players,
     }
+    evidence = {
+        **parent_evidence,
+        "evidence_version": LINEUP_PERIOD_EVIDENCE_VERSION,
+        "parent_v1_evidence_hash": (
+            lineup_period_evidence_hash(parent_evidence) if single_window else None
+        ),
+        "parent_v1_state": "linked" if single_window else "not_applicable_multi_window",
+        "counterfactual_capability": {
+            "eligible": single_window,
+            "scope": "single_monday_lineup_window" if single_window else None,
+            "reason": (
+                None if single_window
+                else "period_player_fpts_not_attributed_to_lineup_windows"
+            ),
+        },
+        "final_assignment_potential_total": active_total,
+        "final_assignment_total_state": (
+            "reconciled_single_window" if single_window else "unreconciled_multi_window"
+        ),
+        "lineup_policy": lineup_policy,
+        "participation": {
+            "source_method": "getLiveScoringStats",
+            "cadence": "monday_lineup_windows_with_daily_proof",
+            **participation,
+        },
+    }
     return {**evidence, "evidence_hash": lineup_period_evidence_hash(evidence)}
 
 
@@ -329,6 +388,134 @@ def lineup_period_evidence_hash(evidence: dict[str, Any]) -> str:
     canonical_evidence = {key: value for key, value in evidence.items() if key != "evidence_hash"}
     canonical = json.dumps(canonical_evidence, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _completed_period_participation(
+    *,
+    api: Any,
+    team_id: str,
+    period_number: str,
+    period_start: str,
+    period_end: str,
+    period_players: list[dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        start = date_cls.fromisoformat(period_start)
+        end = date_cls.fromisoformat(period_end)
+    except ValueError as exc:
+        raise ValueError("completed period dates are invalid") from exc
+    if end < start or (end - start).days > 13:
+        raise ValueError("completed period participation window is invalid")
+    expected = {(item["player_id"], item["scoring_role"]): item for item in period_players}
+    inactive_slots = {"RES", "IR", "MIN", "IL", "INJ", "BENCH", "BN", "BE"}
+    expected_state = {
+        key: "bench" if item["slot"] in inactive_slots else "active"
+        for key, item in expected.items()
+    }
+    days: list[dict[str, Any]] = []
+    window_states: dict[str, dict[tuple[str, str], tuple[str, str | None]]] = {}
+    for offset in range((end - start).days + 1):
+        day = start + timedelta(days=offset)
+        day_text = day.isoformat()
+        raw = _direct_fxpa_request(
+            api,
+            "getLiveScoringStats",
+            date=day_text,
+            newView=True,
+            period="1",
+            playerViewType="1",
+            sppId="-1",
+            viewType="1",
+        )
+        if not isinstance(raw, dict):
+            raise ValueError("daily Fantrax participation response is invalid")
+        selections = raw.get("displayedSelections") if isinstance(raw.get("displayedSelections"), dict) else {}
+        if str(raw.get("date") or "") != day_text or str(selections.get("date") or "") != day_text:
+            raise ValueError("daily Fantrax participation returned a different date")
+        if str(selections.get("period") or "") != period_number:
+            raise ValueError("daily Fantrax participation returned a different period")
+        own_team_ids = {str(value) for value in (raw.get("ownTeamIds") or [])}
+        if team_id not in own_team_ids:
+            raise ValueError("daily Fantrax participation does not include the target team")
+        if raw.get("allEventsFinished") is not True:
+            raise ValueError("daily Fantrax participation is not final")
+        scorer_map = raw.get("scorerMap") if isinstance(raw.get("scorerMap"), dict) else {}
+        found: dict[tuple[str, str], tuple[str, str | None]] = {}
+        for raw_state, normalized_state in (("ACTIVE", "active"), ("BENCH", "bench")):
+            team_groups = ((scorer_map.get(raw_state) or {}).get(team_id) or {})
+            if not isinstance(team_groups, dict):
+                raise ValueError("daily Fantrax participation team groups are invalid")
+            for group, rows in team_groups.items():
+                role = {"10": "hitter", "20": "pitcher"}.get(str(group))
+                if not role:
+                    if rows:
+                        raise ValueError("daily Fantrax participation contains an unknown scoring group")
+                    continue
+                for row in rows or []:
+                    if not isinstance(row, dict):
+                        raise ValueError("daily Fantrax participation contains an invalid player row")
+                    player_id = _row_player_id(row)
+                    if not player_id:
+                        raise ValueError("daily Fantrax participation lacks stable player identity")
+                    key = (player_id, role)
+                    if key in found:
+                        raise ValueError("daily Fantrax participation contains duplicate player role")
+                    found[key] = (normalized_state, str(row.get("posId") or "") or None)
+        if set(found) != set(expected):
+            raise ValueError("daily Fantrax participation does not cover the exact period roster")
+        window_start = day - timedelta(days=day.weekday())
+        window_key = window_start.isoformat()
+        prior_state = window_states.get(window_key)
+        if prior_state is not None and found != prior_state:
+            raise ValueError("daily Fantrax participation changed within a weekly lineup window")
+        window_states[window_key] = found
+        day_players = [
+            {
+                "player_id": player_id,
+                "scoring_role": role,
+                "state": found[(player_id, role)][0],
+                "raw_pos_id": found[(player_id, role)][1],
+            }
+            for player_id, role in sorted(found)
+        ]
+        team_stats = (((raw.get("statsPerTeam") or {}).get("allTeamsStats") or {}).get(team_id) or {})
+        active_stats = team_stats.get("ACTIVE") if isinstance(team_stats, dict) else None
+        if not isinstance(active_stats, dict):
+            raise ValueError("daily Fantrax credited team totals are unavailable")
+        daily_total = _decimal_text(active_stats.get("totalFpts"))
+        days.append({
+            "date": day_text,
+            "lineup_window_start": window_key,
+            "response_period": period_number,
+            "all_events_finished": True,
+            "active_count": sum(1 for item in day_players if item["state"] == "active"),
+            "bench_count": sum(1 for item in day_players if item["state"] == "bench"),
+            "credited_team_total": daily_total,
+            "players": day_players,
+        })
+    final_state = window_states[(end - timedelta(days=end.weekday())).isoformat()]
+    if any(final_state[key][0] != expected_state[key] for key in expected):
+        raise ValueError("final weekly participation conflicts with the period roster assignment")
+    if any(final_state[key][1] != expected[key].get("raw_pos_id") for key in expected):
+        raise ValueError("final weekly participation position conflicts with the period roster assignment")
+    windows = []
+    for window_start in sorted(window_states):
+        window_days = [item for item in days if item["lineup_window_start"] == window_start]
+        windows.append({
+            "start": window_days[0]["date"],
+            "end": window_days[-1]["date"],
+            "day_count": len(window_days),
+            "stable": True,
+        })
+    return {
+        "stable_within_windows": True,
+        "window_count": len(windows),
+        "windows": windows,
+        "observed_team_total": _decimal_text(
+            sum(Decimal(item["credited_team_total"]) for item in days)
+        ),
+        "days": days,
+    }
 
 
 def _selection_code(value: Any) -> str | None:

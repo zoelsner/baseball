@@ -69,18 +69,31 @@ Sandlot terminalize the missed receipt as `unavailable`; one failed refresh or
 one incomplete response never does so.
 
 This first scorer is forecast telemetry, not decision uplift. Sandlot now
-archives a versioned, immutable `fantrax_period_lineup_v1` record for each
-completed period when Fantrax's exact BY_PERIOD roster rows reconcile to the
-authoritative final team score. The archive preserves stable player IDs,
+archives a versioned, immutable `fantrax_period_lineup_v2` record for each
+completed period when exact daily credited team totals reconcile to the
+authoritative final team score. BY_PERIOD roster rows provide potential player
+FPts and the final assignment. The archive preserves stable player IDs,
 assigned-slot provenance, hitter/pitcher scoring role, exact decimal points,
-request/response identity, and a canonical evidence hash. Identical refreshes
+request/response identity, an optional single-window parent v1 hash, and a
+canonical evidence hash. V2 additionally binds the verified league-season
+weekly-Monday lineup policy and one final daily Fantrax ACTIVE/BENCH map for
+every calendar date in the scoring period. Every day's player-role set must
+exactly match the period roster and remain stable within its Monday lineup
+window; only the final window must agree with the final period assignment.
+Daily credited team totals—not a final-roster
+shortcut—must sum to the completed matchup score. Identical refreshes
 are no-ops; changed evidence for the same period conflicts instead of rewriting
 history, and snapshot pruning leaves the archive intact.
 
-Archival coverage alone is not decision uplift. Reserve-player points still
-need to be proven as valid counterfactual values, and the historical slot must
-be proven to represent the league's full lineup cadence. Until then Sandlot
-always records:
+Production Period 15 proved the key single-window semantics: 36 player-role
+identities were stable on all seven dates (20 ACTIVE, 16 BENCH); reserve hitter Daylen Lile and
+reserve pitcher Sean Burke remained BENCH all week while the period view still
+reported their realized potential FPts. The archive is therefore sufficient
+input for a static-lineup counterfactual scorer, but archival coverage alone is
+not decision uplift. Multi-Monday periods are archived but explicitly
+counterfactual-ineligible until player FPts can be attributed to each lineup
+window. Until the separate append-only outcome-evaluation ledger
+and scorer ship, Sandlot always records:
 
 - `measurement_scope: observed_team_total`
 - `adherence_state: unverified`

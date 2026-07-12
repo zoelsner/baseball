@@ -61,9 +61,14 @@ Completed-period refreshes also feed the versioned outcome scorer. The current
 `team_result_v1` contract records exact-period observed team totals and forecast
 residuals only. Counterfactual baseline/gain fields remain null and the outcome
 is never autopilot-eligible. Completed refreshes also archive exact BY_PERIOD
-player/slot/role scoring as immutable `fantrax_period_lineup_v1` evidence that
-survives snapshot pruning. That archive is not consumed by the outcome scorer
-until reserve-point semantics and lineup-cadence coverage are separately proven.
+player/slot/role scoring as immutable `fantrax_period_lineup_v2` evidence that
+survives snapshot pruning. V2 also stores the verified weekly lineup policy and
+an exact, final daily ACTIVE/BENCH map for every date in the scoring period,
+partitioned into Monday lineup windows. Single-window periods link to v1 and
+are counterfactual-capable; multiwindow periods remain ineligible until player
+FPts are attributable per window. Daily credited totals reconcile the matchup.
+The archive is not yet consumed by the legacy single-slot receipt outcome;
+counterfactual evaluation will use a separate append-only multi-version ledger.
 
 The receipt ledger is not an execution log. `execution_requests` remains the
 separate dry-run control plane, and any future link between them must preserve
