@@ -26,6 +26,7 @@ test.describe('app boot', () => {
         }),
       });
     });
+    await page.route('**/api/recommendation-receipts/latest', route => route.fulfill({ status:204 }));
 
     await page.goto('/');
     await waitForAppMount(page);

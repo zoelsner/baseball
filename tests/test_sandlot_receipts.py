@@ -1,10 +1,17 @@
 import copy
+import hashlib
 import json
+import os
+import threading
+import time
 import unittest
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
+from fastapi.testclient import TestClient
+
+import sandlot_api
 import sandlot_db
 import sandlot_receipts
 from scripts import run_monday_lineup
@@ -311,6 +318,298 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
         with patch.object(sandlot_db, "connect", fake_connect):
             with self.assertRaisesRegex(RuntimeError, "decided recommendation"):
                 sandlot_db.record_recommendation_receipt(receipt)
+
+    def test_latest_active_receipt_is_filtered_and_deterministic(self):
+        calls = []
+
+        class Result:
+            def fetchone(self):
+                return {"receipt_id": "latest"}
+
+        class FakeConn:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                return Result()
+
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            row = sandlot_db.latest_active_recommendation_receipt(source="monday_lineup")
+
+        self.assertEqual(row, {"receipt_id": "latest"})
+        sql, params = calls[0]
+        self.assertIn("lifecycle_state = 'active'", sql)
+        self.assertIn("expires_at > clock_timestamp()", sql)
+        self.assertIn("ORDER BY generated_at DESC, receipt_id DESC", sql)
+        self.assertEqual(params, ("monday_lineup",))
+
+    def test_decision_is_atomic_and_same_state_replay_is_idempotent(self):
+        receipt = {
+            **receipt_fixture(),
+            "lifecycle_state": "active",
+            "decision_state": "pending",
+            "is_expired": False,
+        }
+        updated = {**receipt, "decision_state": "accepted"}
+        calls = []
+
+        class Result:
+            def __init__(self, row):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        class FakeConn:
+            def __init__(self, rows):
+                self.rows = list(rows)
+
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                return Result(self.rows.pop(0))
+
+        @contextmanager
+        def deciding_connect():
+            yield FakeConn([receipt, updated])
+
+        with patch.object(sandlot_db, "connect", deciding_connect):
+            row, changed = sandlot_db.decide_recommendation_receipt(
+                receipt_id=receipt["receipt_id"],
+                input_hash=receipt["input_hash"],
+                decision="accepted",
+                source="owner_bridge",
+                reason="Using it",
+            )
+        self.assertTrue(changed)
+        self.assertEqual(row["decision_state"], "accepted")
+        update_sql, update_params = calls[1]
+        self.assertIn("decision_state = 'pending'", update_sql)
+        self.assertIn("expires_at > clock_timestamp()", update_sql)
+        self.assertIn("expires_at <= clock_timestamp() AS is_expired", calls[0][0])
+        self.assertIn("decided_at = clock_timestamp()", update_sql)
+        self.assertEqual(update_params[:3], ("accepted", "owner_bridge", "Using it"))
+
+        replay = {**updated, "is_expired": False}
+
+        @contextmanager
+        def replay_connect():
+            yield FakeConn([replay])
+
+        with patch.object(sandlot_db, "connect", replay_connect):
+            row, changed = sandlot_db.decide_recommendation_receipt(
+                receipt_id=receipt["receipt_id"],
+                input_hash=receipt["input_hash"],
+                decision="accepted",
+                source="owner_bridge",
+            )
+        self.assertFalse(changed)
+        self.assertNotIn("is_expired", row)
+
+    def test_decision_rejects_missing_stale_expired_superseded_and_conflicting_receipts(self):
+        base = {
+            **receipt_fixture(),
+            "lifecycle_state": "active",
+            "decision_state": "pending",
+            "is_expired": False,
+        }
+
+        class Result:
+            def __init__(self, row):
+                self.row = row
+
+            def fetchone(self):
+                return self.row
+
+        @contextmanager
+        def fake_connect(row):
+            class FakeConn:
+                def execute(self, _sql, _params=None):
+                    return Result(row)
+            yield FakeConn()
+
+        cases = [
+            (None, LookupError, "not found", base["input_hash"], "accepted"),
+            (base, ValueError, "stale or mismatched", "f" * 64, "accepted"),
+            ({**base, "is_expired": True}, ValueError, "expired", base["input_hash"], "accepted"),
+            ({**base, "lifecycle_state": "superseded"}, ValueError, "no longer active", base["input_hash"], "accepted"),
+            ({**base, "decision_state": "rejected"}, ValueError, "already rejected", base["input_hash"], "accepted"),
+        ]
+        for stored, exception, message, input_hash, decision in cases:
+            with self.subTest(message=message), patch.object(
+                sandlot_db, "connect", lambda stored=stored: fake_connect(stored)
+            ):
+                with self.assertRaisesRegex(exception, message):
+                    sandlot_db.decide_recommendation_receipt(
+                        receipt_id=base["receipt_id"],
+                        input_hash=input_hash,
+                        decision=decision,
+                        source="owner_bridge",
+                    )
+
+
+class RecommendationReceiptApiTests(unittest.TestCase):
+    OWNER_TOKEN = "owner-secret"
+
+    def setUp(self):
+        self.client = TestClient(sandlot_api.app, raise_server_exceptions=False)
+        self.receipt = {
+            **receipt_fixture(),
+            "lifecycle_state": "active",
+            "decision_state": "pending",
+            "decision_reason": None,
+            "decided_at": None,
+            "outcome_state": "pending",
+        }
+        self.env = {
+            "SANDLOT_OWNER_ACTION_TOKEN_SHA256": hashlib.sha256(self.OWNER_TOKEN.encode()).hexdigest(),
+        }
+
+    def test_latest_receipt_is_public_but_projection_inputs_are_not(self):
+        with patch("sandlot_api.sandlot_db.latest_active_recommendation_receipt", return_value=self.receipt):
+            response = self.client.get("/api/recommendation-receipts/latest")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["receipt_id"], self.receipt["receipt_id"])
+        self.assertEqual(payload["evaluation"]["projected_gain"], self.receipt["projected_gain"])
+        self.assertNotIn("recommendation", payload)
+        self.assertNotIn("projection_inputs", json.dumps(payload))
+        self.assertTrue(payload["read_only"])
+        self.assertFalse(payload["fantrax_changed"])
+        self.assertFalse(payload["writes_enabled"])
+
+    def test_latest_receipt_returns_no_content_when_none_is_active(self):
+        with patch("sandlot_api.sandlot_db.latest_active_recommendation_receipt", return_value=None):
+            response = self.client.get("/api/recommendation-receipts/latest")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.content, b"")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
+    def test_decision_requires_owner_auth_and_records_intent_only(self):
+        body = {
+            "decision": "accepted",
+            "input_hash": self.receipt["input_hash"].upper(),
+            "reason": "  I will   use this lineup  ",
+        }
+        with patch.dict(os.environ, self.env, clear=True):
+            unauthorized = self.client.post(
+                f"/api/recommendation-receipts/{self.receipt['receipt_id']}/decision",
+                json=body,
+            )
+        self.assertEqual(unauthorized.status_code, 401)
+
+        accepted = {**self.receipt, "decision_state": "accepted", "decision_reason": "I will use this lineup"}
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch("sandlot_api.sandlot_db.decide_recommendation_receipt", return_value=(accepted, True)) as decide,
+        ):
+            response = self.client.post(
+                f"/api/recommendation-receipts/{self.receipt['receipt_id']}/decision",
+                json=body,
+                headers={"authorization": f"Bearer {self.OWNER_TOKEN}"},
+            )
+        self.assertEqual(response.status_code, 200)
+        decide.assert_called_once_with(
+            receipt_id=self.receipt["receipt_id"],
+            input_hash=self.receipt["input_hash"],
+            decision="accepted",
+            source="owner_bridge",
+            reason="I will use this lineup",
+        )
+        payload = response.json()
+        self.assertTrue(payload["changed"])
+        self.assertFalse(payload["fantrax_changed"])
+        self.assertFalse(payload["writes_enabled"])
+
+    def test_stale_decision_is_a_conflict(self):
+        with (
+            patch.dict(os.environ, self.env, clear=True),
+            patch(
+                "sandlot_api.sandlot_db.decide_recommendation_receipt",
+                side_effect=ValueError("Recommendation receipt hash is stale or mismatched"),
+            ),
+        ):
+            response = self.client.post(
+                f"/api/recommendation-receipts/{self.receipt['receipt_id']}/decision",
+                json={"decision": "rejected", "input_hash": self.receipt["input_hash"]},
+                headers={"authorization": f"Bearer {self.OWNER_TOKEN}"},
+            )
+        self.assertEqual(response.status_code, 409)
+
+
+@unittest.skipUnless(os.environ.get("SANDLOT_TEST_DATABASE_URL"), "requires disposable Postgres")
+class RecommendationReceiptPostgresConcurrencyTests(unittest.TestCase):
+    def test_waiting_decision_rechecks_wall_clock_expiry_after_row_lock(self):
+        database_url = os.environ["SANDLOT_TEST_DATABASE_URL"]
+        receipt = receipt_fixture(week_start=date(2099, 1, 5))
+        receipt["snapshot_id"] = None
+        outcome = []
+        waiting_transaction_started = threading.Event()
+
+        with patch.dict(os.environ, {"DATABASE_URL": database_url}):
+            sandlot_db.init_schema()
+            sandlot_db.record_recommendation_receipt(receipt)
+            try:
+                with sandlot_db.connect() as setup:
+                    setup.execute(
+                        "UPDATE recommendation_receipts SET expires_at = clock_timestamp() + interval '300 milliseconds' WHERE receipt_id = %s",
+                        (receipt["receipt_id"],),
+                    )
+
+                lock_conn = sandlot_db.psycopg.connect(database_url)
+                lock_conn.execute(
+                    "SELECT receipt_id FROM recommendation_receipts WHERE receipt_id = %s FOR UPDATE",
+                    (receipt["receipt_id"],),
+                )
+
+                def decide_while_waiting():
+                    waiting_conn = sandlot_db.psycopg.connect(database_url, row_factory=sandlot_db.dict_row)
+                    waiting_conn.execute("SELECT now()")  # pin transaction time before the receipt expires
+
+                    @contextmanager
+                    def prestarted_connect():
+                        try:
+                            yield waiting_conn
+                            waiting_conn.commit()
+                        except Exception:
+                            waiting_conn.rollback()
+                            raise
+
+                    waiting_transaction_started.set()
+                    try:
+                        with patch.object(sandlot_db, "connect", prestarted_connect):
+                            sandlot_db.decide_recommendation_receipt(
+                                receipt_id=receipt["receipt_id"],
+                                input_hash=receipt["input_hash"],
+                                decision="accepted",
+                                source="concurrency_test",
+                            )
+                    except Exception as exc:  # captured for assertion in the test thread
+                        outcome.append(exc)
+                    finally:
+                        waiting_conn.close()
+
+                worker = threading.Thread(target=decide_while_waiting)
+                worker.start()
+                self.assertTrue(waiting_transaction_started.wait(timeout=2))
+                time.sleep(0.45)
+                lock_conn.commit()
+                lock_conn.close()
+                worker.join(timeout=3)
+
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(len(outcome), 1)
+                self.assertIsInstance(outcome[0], ValueError)
+                self.assertIn("expired", str(outcome[0]))
+            finally:
+                with sandlot_db.connect() as cleanup:
+                    cleanup.execute(
+                        "DELETE FROM recommendation_receipts WHERE receipt_id = %s",
+                        (receipt["receipt_id"],),
+                    )
 
 
 class MondayLineupReceiptGateTests(unittest.TestCase):

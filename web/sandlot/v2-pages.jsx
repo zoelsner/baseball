@@ -1350,24 +1350,15 @@ function V2WinThisWeekPanel({ plan, sync={}, onNav, onAskSkipper, onRefresh }) {
   );
 }
 
-function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
-  const { dialogRef, closeButtonRef } = useV2DialogFocus(onClose);
-  const review = action?.review || {};
-  const target = review.target_period || action?.target_period || {};
-  const moves = Array.isArray(review.slot_moves) ? review.slot_moves : [];
-  const hash = String(review.input_hash || '');
-  const points = v2Number(action?.expected_points?.estimate);
-  const confirmation = review?.contract?.confirmation?.expected || null;
-  const [bridge, setBridge] = React.useState({ state:'connecting', nonce:null, error:null });
-  const [requestState, setRequestState] = React.useState({ state:'idle', requestId:null, error:null });
-  const exactRequestReady = review.state === 'reviewable'
-    && confirmation
-    && String(confirmation.proposal_id || '') === String(review.proposal_id || '')
-    && String(confirmation.input_hash || '') === String(review.input_hash || '')
-    && Number(confirmation.snapshot_id) === Number(review.snapshot_id);
-
+function useV2OwnerBridge(identity, { enabled=true }={}) {
+  const [bridge, setBridge] = React.useState({ state:'connecting', nonce:null, decisionsEnabled:false, error:null });
   React.useEffect(() => {
     let cancelled = false;
+    if (!enabled) {
+      setBridge({ state:'disabled', nonce:null, decisionsEnabled:false, error:null });
+      return () => { cancelled = true; };
+    }
+    setBridge({ state:'connecting', nonce:null, decisionsEnabled:false, error:null });
     fetch(`${V2_OWNER_BRIDGE_URL}/health`, { cache:'no-store', targetAddressSpace:'local' })
       .then(async response => {
         const body = await response.json().catch(() => ({}));
@@ -1376,10 +1367,42 @@ function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
         }
         return body;
       })
-      .then(body => { if (!cancelled) setBridge({ state:'ready', nonce:body.nonce, error:null }); })
-      .catch(() => { if (!cancelled) setBridge({ state:'offline', nonce:null, error:'Start the local owner bridge to request a live safety check.' }); });
+      .then(body => {
+        if (!cancelled) setBridge({
+          state:'ready',
+          nonce:body.nonce,
+          decisionsEnabled:body.recommendation_decisions_enabled === true,
+          error:null,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setBridge({
+          state:'offline',
+          nonce:null,
+          decisionsEnabled:false,
+          error:'Start the local owner bridge on your Mac to use owner-only controls.',
+        });
+      });
     return () => { cancelled = true; };
-  }, [review.proposal_id, review.input_hash]);
+  }, [enabled, identity]);
+  return bridge;
+}
+
+function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
+  const { dialogRef, closeButtonRef } = useV2DialogFocus(onClose);
+  const review = action?.review || {};
+  const target = review.target_period || action?.target_period || {};
+  const moves = Array.isArray(review.slot_moves) ? review.slot_moves : [];
+  const hash = String(review.input_hash || '');
+  const points = v2Number(action?.expected_points?.estimate);
+  const confirmation = review?.contract?.confirmation?.expected || null;
+  const bridge = useV2OwnerBridge(`${review.proposal_id || ''}:${review.input_hash || ''}`);
+  const [requestState, setRequestState] = React.useState({ state:'idle', requestId:null, error:null });
+  const exactRequestReady = review.state === 'reviewable'
+    && confirmation
+    && String(confirmation.proposal_id || '') === String(review.proposal_id || '')
+    && String(confirmation.input_hash || '') === String(review.input_hash || '')
+    && Number(confirmation.snapshot_id) === Number(review.snapshot_id);
 
   React.useEffect(() => {
     if (!requestState.requestId || !bridge.nonce) return undefined;
@@ -1580,6 +1603,190 @@ function v2ValidateExecutionResponse(body, { review, requestId=null, requireZero
   }
 }
 
+function v2ReceiptMoves(receipt) {
+  const baseline = Array.isArray(receipt?.baseline_assignment) ? receipt.baseline_assignment : [];
+  const proposed = Array.isArray(receipt?.proposed_assignment) ? receipt.proposed_assignment : [];
+  const baselineByPlayer = new Map(baseline.map(item => [String(item.player_id || ''), item]));
+  const proposedByPlayer = new Map(proposed.map(item => [String(item.player_id || ''), item]));
+  const starts = proposed.filter(item => !baselineByPlayer.has(String(item.player_id || '')));
+  const benches = baseline.filter(item => !proposedByPlayer.has(String(item.player_id || '')));
+  const slotChanges = proposed.filter(item => {
+    const prior = baselineByPlayer.get(String(item.player_id || ''));
+    return prior && prior.slot !== item.slot;
+  }).map(item => ({ ...item, from_slot:baselineByPlayer.get(String(item.player_id || ''))?.slot }));
+  return { starts, benches, slotChanges };
+}
+
+function V2RecommendationReceipt({ sync, onAskSkipper }) {
+  const [receipt, setReceipt] = React.useState(null);
+  const [readState, setReadState] = React.useState('loading');
+  const [decisionState, setDecisionState] = React.useState({ state:'idle', error:null });
+  const receiptReadSeqRef = React.useRef(0);
+  const bridge = useV2OwnerBridge(
+    receipt ? `${receipt.receipt_id}:${receipt.input_hash}` : 'receipt-none',
+    { enabled:Boolean(receipt) },
+  );
+
+  const loadReceipt = React.useCallback(async () => {
+    const requestSeq = ++receiptReadSeqRef.current;
+    try {
+      const response = await fetch('/api/recommendation-receipts/latest', { cache:'no-store' });
+      if (requestSeq !== receiptReadSeqRef.current) return null;
+      if (response.status === 204 || response.status === 404) {
+        setReceipt(null);
+        setReadState('empty');
+        return null;
+      }
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body?.detail || `Receipt failed (${response.status})`);
+      if (requestSeq !== receiptReadSeqRef.current) return null;
+      setReceipt(body);
+      setReadState('ready');
+      return body;
+    } catch (error) {
+      if (requestSeq !== receiptReadSeqRef.current) return null;
+      setReadState('error');
+      setDecisionState({ state:'idle', error:error?.message || 'Weekly lineup receipt is unavailable.' });
+      return null;
+    }
+  }, []);
+
+  React.useEffect(() => {
+    loadReceipt();
+    return () => { receiptReadSeqRef.current += 1; };
+  }, [loadReceipt, sync?.label]);
+
+  const decide = async decision => {
+    if (!receipt || bridge.state !== 'ready' || !bridge.decisionsEnabled || !bridge.nonce) return;
+    receiptReadSeqRef.current += 1;
+    setDecisionState({ state:'saving', error:null });
+    try {
+      const response = await fetch(
+        `${V2_OWNER_BRIDGE_URL}/recommendation-receipts/${encodeURIComponent(receipt.receipt_id)}/decision`,
+        {
+          method:'POST',
+          targetAddressSpace:'local',
+          headers:{ 'content-type':'application/json', 'X-Sandlot-Bridge-Nonce':bridge.nonce },
+          body:JSON.stringify({ decision, input_hash:receipt.input_hash }),
+        },
+      );
+      const body = await response.json().catch(() => ({}));
+      if (response.status === 409) {
+        await loadReceipt();
+        throw new Error('A newer recommendation is available. Review the refreshed lineup before deciding.');
+      }
+      if (!response.ok) throw new Error(body?.detail || 'Could not record this decision.');
+      if (
+        body?.receipt_id !== receipt.receipt_id
+        || String(body?.input_hash || '').toLowerCase() !== String(receipt.input_hash || '').toLowerCase()
+        || body?.decision_state !== decision
+        || body?.fantrax_changed !== false
+        || body?.writes_enabled !== false
+      ) {
+        throw new Error('Decision response did not preserve the exact no-write receipt boundary.');
+      }
+      receiptReadSeqRef.current += 1;
+      setReceipt(body);
+      setDecisionState({ state:'saved', error:null });
+    } catch (error) {
+      setDecisionState({ state:'error', error:error?.message || 'Could not record this decision.' });
+    }
+  };
+
+  if (readState === 'loading' || readState === 'empty') return null;
+  if (readState === 'error') {
+    return <V2Caution eyebrow="Weekly receipt unavailable" tone="warn">{decisionState.error}</V2Caution>;
+  }
+  const rawGain = receipt?.evaluation?.projected_gain;
+  const numericGain = rawGain === null || rawGain === undefined || rawGain === '' ? NaN : Number(rawGain);
+  const gain = Number.isFinite(numericGain) ? numericGain : null;
+  const moves = v2ReceiptMoves(receipt);
+  const pending = receipt?.decision_state === 'pending';
+  const canDecide = pending && bridge.state === 'ready' && bridge.decisionsEnabled;
+  const decisionLabel = receipt?.decision_state === 'accepted' ? 'Using this plan' : receipt?.decision_state === 'rejected' ? 'Passed' : 'Awaiting your call';
+  const prompt = `Pressure-test this weekly lineup receipt. It projects ${gain === null ? 'an unscored change' : `${v2Signed(gain, 1)} points`} for ${receipt?.period?.start || 'the coming week'}. Explain the assumptions, downside, and whether I should use it. Receipt ${receipt?.receipt_id}.`;
+  return (
+    <section aria-labelledby="weekly-receipt-title" style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, padding:'16px 18px', boxShadow:'0 8px 24px rgba(31,20,12,0.045)' }}>
+      <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
+        <div style={{ minWidth:0 }}>
+          <V2Eyebrow color={receipt?.decision_state === 'accepted' ? V2.ok : receipt?.decision_state === 'rejected' ? V2.muted : V2.accent}>Weekly lineup receipt</V2Eyebrow>
+          <h2 id="weekly-receipt-title" style={{ margin:'7px 0 0', color:V2.ink, fontFamily:V2.fontDisplay, fontSize:22, lineHeight:1.08, letterSpacing:'-0.025em', textWrap:'balance' }}>
+            A measurable plan for next week
+          </h2>
+        </div>
+        <div style={{ flexShrink:0, color:gain !== null && gain >= 0 ? V2.accent : V2.warn, fontFamily:V2.fontMono, fontSize:20, lineHeight:1, fontWeight:900, fontVariantNumeric:'tabular-nums', textAlign:'right' }}>
+          {gain === null ? '—' : v2Signed(gain, 1)}
+          <div style={{ marginTop:5, color:V2.muted, fontFamily:V2.font, fontSize:9.5, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>projected pts</div>
+        </div>
+      </div>
+
+      <div style={{ marginTop:13, background:V2.surface2, borderRadius:16, padding:'12px 13px' }}>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12 }}>
+          <div>
+            <V2Eyebrow color={V2.ok}>Start</V2Eyebrow>
+            <div style={{ marginTop:6, color:V2.body, fontSize:12, lineHeight:1.45, fontWeight:750, textWrap:'pretty' }}>
+              {moves.starts.length ? moves.starts.map(item => `${item.player_name} (${item.slot})`).join(', ') : 'Keep the current starters'}
+            </div>
+          </div>
+          <div>
+            <V2Eyebrow color={V2.warn}>Bench</V2Eyebrow>
+            <div style={{ marginTop:6, color:V2.body, fontSize:12, lineHeight:1.45, fontWeight:750, textWrap:'pretty' }}>
+              {moves.benches.length ? moves.benches.map(item => item.player_name).join(', ') : 'No additional bench moves'}
+            </div>
+          </div>
+        </div>
+        {moves.slotChanges.length ? (
+          <div style={{ marginTop:11, paddingTop:10, borderTop:`1px solid ${V2.hairline}`, color:V2.body, fontSize:11.5, lineHeight:1.45, fontWeight:750, textWrap:'pretty' }}>
+            <V2Eyebrow color={V2.inLineup}>Slot changes</V2Eyebrow>
+            <div style={{ marginTop:6 }}>
+              {moves.slotChanges.map(item => `${item.player_name} (${item.from_slot} → ${item.slot})`).join(', ')}
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div style={{ marginTop:11, display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, color:V2.muted, fontSize:10.5, lineHeight:1.35, fontWeight:750 }}>
+        <span style={{ fontVariantNumeric:'tabular-nums' }}>{receipt?.period?.start} → {receipt?.period?.end}</span>
+        <span>{decisionLabel}</span>
+      </div>
+
+      {receipt?.decision_state === 'accepted' ? (
+        <div role="status" style={{ marginTop:12, background:V2.okSoft, color:V2.body, borderRadius:14, padding:'11px 12px', fontSize:11.5, lineHeight:1.45, fontWeight:750, textWrap:'pretty' }}>
+          Decision recorded. You still need to set this lineup in Fantrax yourself.
+        </div>
+      ) : null}
+      {receipt?.decision_state === 'rejected' ? (
+        <div role="status" style={{ marginTop:12, background:V2.surface2, color:V2.body, borderRadius:14, padding:'11px 12px', fontSize:11.5, lineHeight:1.45, fontWeight:750 }}>
+          Pass recorded. Sandlot will retain this decision for outcome analysis.
+        </div>
+      ) : null}
+      {pending && !canDecide ? (
+        <div style={{ marginTop:12, color:V2.muted, fontSize:11.5, lineHeight:1.45, fontWeight:700, textWrap:'pretty' }}>
+          {bridge.state === 'connecting' ? 'Checking for owner controls on this Mac…' : 'Open Sandlot on your Mac with the local owner bridge running to record this decision.'}
+        </div>
+      ) : null}
+      {decisionState.error ? <div role="alert" style={{ marginTop:10, color:V2.bad, fontSize:11.5, lineHeight:1.4, fontWeight:750 }}>{decisionState.error}</div> : null}
+
+      <div style={{ marginTop:13, display:'grid', gridTemplateColumns:canDecide ? '1fr 1fr' : '1fr', gap:8 }}>
+        {canDecide ? (
+          <>
+            <button onClick={()=>decide('accepted')} disabled={decisionState.state === 'saving'} style={{ minHeight:44, border:'none', borderRadius:999, background:V2.ink, color:'#fff', fontFamily:'inherit', fontSize:12, fontWeight:850, cursor:decisionState.state === 'saving' ? 'wait' : 'pointer', padding:'10px 12px', opacity:decisionState.state === 'saving' ? 0.65 : 1 }}>
+              {decisionState.state === 'saving' ? 'Recording…' : 'I’ll use this lineup'}
+            </button>
+            <button onClick={()=>decide('rejected')} disabled={decisionState.state === 'saving'} style={{ minHeight:44, border:`1px solid ${V2.hairline}`, borderRadius:999, background:V2.surface, color:V2.body, fontFamily:'inherit', fontSize:12, fontWeight:850, cursor:decisionState.state === 'saving' ? 'wait' : 'pointer', padding:'10px 12px', opacity:decisionState.state === 'saving' ? 0.65 : 1 }}>
+              Pass
+            </button>
+          </>
+        ) : (
+          <button onClick={()=>onAskSkipper(prompt)} style={{ minHeight:44, border:`1px solid ${V2.hairline}`, borderRadius:999, background:V2.surface, color:V2.body, fontFamily:'inherit', fontSize:12, fontWeight:850, cursor:'pointer', padding:'10px 12px' }}>
+            Ask Skipper about this plan
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
   const health = v2RosterHealth(model);
   const dataQuality = model.dataQuality || null;
@@ -1650,6 +1857,8 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
         onAskSkipper={onAskSkipper}
         onRefresh={onRefresh}
       />
+
+      <V2RecommendationReceipt sync={sync} onAskSkipper={onAskSkipper}/>
 
       <V2HotSwapsPanel
         items={hotSwapItems}

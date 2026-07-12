@@ -1,18 +1,18 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-12** (recommendation receipt foundation in progress).
+> Last updated: **2026-07-12** (recommendation decision surface in progress).
 
 ## Where things stand
 
-- **Recommendation receipt foundation in progress (#92):** branch
-  `feature/92-proposal-ledger` adds durable, versioned decision-time evidence
-  for the Monday lineup optimizer. Receipts are scoped to an exact target week,
-  retain projection inputs and baseline/proposed assignments after snapshot
-  pruning, fail closed on untrusted Fantrax slot provenance, and supersede
-  changed pending evidence rather than overwriting it. This slice does not yet
-  expose accept/reject controls or outcome scoring; those remain the next
-  receipt loops before any action type can earn autopilot.
+- **Recommendation decisions in progress (#92):** the durable Monday lineup
+  receipt foundation is merged. The current focused slice adds a sanitized
+  latest-receipt read API, owner-authenticated accept/reject recording with
+  exact hash/expiry/CAS guards, a loopback owner-bridge proxy that keeps the
+  bearer local, and a Today card with measurable gain plus exact start/bench
+  deltas. Accept/reject records intent only and explicitly does not change
+  Fantrax. Mobile and bridge-offline use remains read-only. Outcome scoring is
+  the next receipt loop before any lineup action can earn autopilot.
 
 - **One-click proposal safety check in progress:** the exact-action review
   sheet can connect to a loopback-only owner bridge and submit the immutable
@@ -275,9 +275,10 @@
    disabled until #63's executor safety can accept a lineup-only proposal with
    named OUT/IN players, trusted slot provenance, trusted movability, a
    preflight refresh, Zach confirmation, and post-write verification.
-2. **Add the eval/decision receipt surface** — expose source, model version,
-   input hash, accepted/rejected outcome, and later hindsight result so the app
-   demonstrates AI evaluation and QA principles for the Ramp story.
+2. **Score recommendation outcomes** — join accepted/rejected receipts to the
+   completed scoring week, record actual baseline/value/gain with a versioned
+   scorer, and report calibration/decision lift before considering selective
+   autopilot.
 3. **Finish #67 real-slot proof archival** — the production gate is now clear
    via raw `posId`, but keep `diagnose_slot_provenance.py` available for DOM
    slot proof if Fantrax changes raw roster semantics.

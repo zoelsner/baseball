@@ -51,6 +51,12 @@ and superseded rather than overwritten when inputs change. See
 `docs/recommendation-receipts.md` for identity, lifecycle, and execution
 boundaries.
 
+The public API exposes only a sanitized latest active receipt. Owner decisions
+travel through the loopback-only `sandlot_owner_bridge.py`, so the production
+browser never receives the owner bearer. Recording accept/reject intent is a
+terminal ledger update, not a Fantrax mutation; the bridge and API both assert
+`fantrax_changed=false` and `writes_enabled=false`.
+
 The receipt ledger is not an execution log. `execution_requests` remains the
 separate dry-run control plane, and any future link between them must preserve
 exact confirmation, visible live preflight, protected-player enforcement, and

@@ -95,6 +95,7 @@ jobs:
     env:
       SANDLOT_URL: http://127.0.0.1:4173
       SANDLOT_EXPECT_SLOT_GATE: "1"
+      SANDLOT_EXPECT_RECEIPT: "1"
     steps:
       - uses: actions/checkout@v5
 
@@ -157,6 +158,7 @@ jobs:
           specs/skipper-web-fallback.spec.ts
           specs/today-projection.spec.ts
           specs/today.spec.ts
+          specs/recommendation-receipt.spec.ts
           --grep-invert "renders matchup card with shape-correct scores and margin|shows opponent label from snapshot"
 
       - name: Upload local HTML report on failure

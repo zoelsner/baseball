@@ -11,6 +11,22 @@ jobs:
   python-import-smoke:
     name: Python import smoke
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sandlot
+          POSTGRES_PASSWORD: sandlot
+          POSTGRES_DB: sandlot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sandlot -d sandlot_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SANDLOT_TEST_DATABASE_URL: postgresql://sandlot:sandlot@127.0.0.1:5432/sandlot_test
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5

@@ -86,6 +86,7 @@ class OwnerBridgeTests(unittest.TestCase):
             self.assertEqual(health.status_code, 200)
             nonce = health.json()["nonce"]
             self.assertFalse(health.json()["writes_enabled"])
+            self.assertTrue(health.json()["recommendation_decisions_enabled"])
             self.assertNotIn("token", json.dumps(health.json()).casefold())
 
             health_preflight = requests.options(
@@ -135,6 +136,113 @@ class OwnerBridgeTests(unittest.TestCase):
             self.assertEqual(created.status_code, 201)
             self.assertEqual(created.json()["request_id"], "xreq_abcdefghijklmnopqrstuvwxyz")
             self.assertEqual(http.calls[-1][0], "POST")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_decision_proxy_preserves_identity_and_no_write_boundary(self):
+        receipt_id = f"monday-lineup:{'a' * 64}"
+        payload = {"decision": "accepted", "input_hash": "a" * 64, "reason": "Using it"}
+        upstream = {
+            "receipt_id": receipt_id,
+            "input_hash": "a" * 64,
+            "source": "monday_lineup",
+            "lifecycle_state": "active",
+            "decision_state": "accepted",
+            "decision_reason": "Using it",
+            "fantrax_changed": False,
+            "writes_enabled": False,
+            "changed": True,
+            "projection_inputs": [{"private": True}],
+        }
+        http = FakeHttp([FakeResponse(200, upstream)])
+        bridge = self.make_bridge(http)
+
+        status, body = bridge.decide(receipt_id, payload)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["decision_state"], "accepted")
+        self.assertNotIn("projection_inputs", body)
+        method, url, kwargs = http.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(url, f"https://sandlot.example.test/api/recommendation-receipts/{receipt_id}/decision")
+        self.assertEqual(kwargs["json"], payload)
+        self.assertFalse(kwargs["allow_redirects"])
+
+    def test_decision_proxy_rejects_malformed_input_and_mismatched_upstream(self):
+        receipt_id = f"monday-lineup:{'a' * 64}"
+        http = FakeHttp()
+        bridge = self.make_bridge(http)
+        invalid = [
+            ("../execution-requests", {"decision": "accepted", "input_hash": "a" * 64}),
+            (receipt_id, {"decision": "execute", "input_hash": "a" * 64}),
+            (receipt_id, {"decision": "accepted", "input_hash": "short"}),
+            (receipt_id, {"decision": "accepted", "input_hash": "a" * 64, "extra": True}),
+        ]
+        for candidate_id, payload in invalid:
+            with self.subTest(candidate_id=candidate_id, payload=payload):
+                status, _body = bridge.decide(candidate_id, payload)
+                self.assertEqual(status, 400)
+        self.assertEqual(http.calls, [])
+
+        mismatch = FakeHttp([FakeResponse(200, {
+            "receipt_id": receipt_id,
+            "input_hash": "b" * 64,
+            "lifecycle_state": "active",
+            "decision_state": "accepted",
+            "fantrax_changed": False,
+            "writes_enabled": False,
+        })])
+        bridge = self.make_bridge(mismatch)
+        status, body = bridge.decide(
+            receipt_id,
+            {"decision": "accepted", "input_hash": "a" * 64},
+        )
+        self.assertEqual(status, 502)
+        self.assertIn("hash", body["detail"])
+
+    def test_loopback_decision_route_requires_nonce_and_forwards_exact_body(self):
+        receipt_id = f"monday-lineup:{'a' * 64}"
+        upstream = {
+            "receipt_id": receipt_id,
+            "input_hash": "a" * 64,
+            "lifecycle_state": "active",
+            "decision_state": "rejected",
+            "fantrax_changed": False,
+            "writes_enabled": False,
+        }
+        http = FakeHttp([FakeResponse(200, upstream)])
+        bridge = self.make_bridge(http)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), sandlot_owner_bridge.make_handler(bridge))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        allowed = {"Origin": "https://sandlot.example.test"}
+        body = {"decision": "rejected", "input_hash": "a" * 64, "reason": "Prefer another plan"}
+        try:
+            browser_path = receipt_id.replace(":", "%3A")
+            missing = requests.post(
+                f"{base}/recommendation-receipts/{browser_path}/decision",
+                headers={**allowed, "Content-Type": "application/json"},
+                json=body,
+                timeout=2,
+            )
+            self.assertEqual(missing.status_code, 403)
+            nonce = requests.get(f"{base}/health", headers=allowed, timeout=2).json()["nonce"]
+            decided = requests.post(
+                f"{base}/recommendation-receipts/{browser_path}/decision",
+                headers={
+                    **allowed,
+                    "Content-Type": "application/json",
+                    "X-Sandlot-Bridge-Nonce": nonce,
+                },
+                json=body,
+                timeout=2,
+            )
+            self.assertEqual(decided.status_code, 200)
+            self.assertEqual(decided.json()["decision_state"], "rejected")
+            self.assertEqual(http.calls[0][2]["json"], body)
         finally:
             server.shutdown()
             server.server_close()
