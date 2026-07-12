@@ -278,10 +278,12 @@
 2. **Finish counterfactual recommendation outcomes** — `team_result_v1` now
    joins receipts to an exact completed scoring week and records the observed
    team total plus forecast residual with explicit unverified-adherence and
-   no-counterfactual labels. `fantrax_period_lineup_v1` now archives exact,
-   reconciled player/slot/role period evidence without changing outcomes. Next
-   prove reserve-point counterfactual semantics and lineup-cadence coverage,
-   then add `counterfactual_lineup_v1`; only that version may record actual
+   no-counterfactual labels. `fantrax_period_lineup_v2` now archives exact,
+   reconciled player/slot/role period evidence plus the verified weekly policy
+   and final daily participation maps for every date, partitioned into Monday
+   lineup windows. Production Period 15's seven-day window proved that
+   BENCH players retain realized potential FPts. Next add the append-only
+   multi-version outcome ledger and `counterfactual_lineup_v1`; only that version may record actual
    baseline/gain or contribute to selective-autopilot graduation.
 3. **Finish #67 real-slot proof archival** — the production gate is now clear
    via raw `posId`, but keep `diagnose_slot_provenance.py` available for DOM

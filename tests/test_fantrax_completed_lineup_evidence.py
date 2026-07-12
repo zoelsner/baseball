@@ -89,9 +89,67 @@ def completed_matchup():
     }
 
 
+TEST_POLICY = {
+    "source": "fantrax.league_rules_summary",
+    "verified_at": "2026-07-12",
+    "lineup_change_system": "Managers enter lineup changes",
+    "lineup_changes_executed": "Weekly every Monday",
+    "player_lock_before_scheduled_game": "0:05",
+    "team_period_constraints": {
+        "innings_pitched_min": 7,
+        "innings_pitched_max": None,
+        "minimum_failure_effect": "Do nothing",
+    },
+}
+
+
+def daily_response(raw, day_text):
+    scorer_map = {"ACTIVE": {"me": {"10": [], "20": []}}, "BENCH": {"me": {"10": [], "20": []}}}
+    for table in raw["tables"]:
+        role, _source, _index = fantrax_data._table_scoring_contract(table)
+        group = "10" if role == "hitter" else "20"
+        for row in table["rows"]:
+            state = "ACTIVE" if row.get("statusId") == "1" else "BENCH"
+            scorer_map[state]["me"][group].append({
+                "posId": row.get("posId"), "scorer": row.get("scorer")
+            })
+    return {
+        "date": day_text,
+        "allEventsFinished": True,
+        "ownTeamIds": ["me"],
+        "displayedSelections": {"date": day_text, "period": 15},
+        "scorerMap": scorer_map,
+        "statsPerTeam": {
+            "allTeamsStats": {
+                "me": {"ACTIVE": {"totalFpts": 264.5 if day_text == "2026-06-29" else 0}}
+            }
+        },
+    }
+
+
+def direct_requests(raw):
+    def request(_api, method, **kwargs):
+        if method == "getTeamRosterInfo":
+            return raw
+        if method == "getLiveScoringStats":
+            return daily_response(raw, kwargs["date"])
+        raise AssertionError(method)
+
+    return patch.object(fantrax_data, "_direct_fxpa_request", side_effect=request)
+
+
+@contextmanager
+def evidence_context(raw):
+    with patch.dict(
+        fantrax_data.VERIFIED_WEEKLY_LINEUP_POLICIES,
+        {("league", 2026): TEST_POLICY},
+    ), direct_requests(raw):
+        yield
+
+
 class CompletedLineupEvidenceTests(unittest.TestCase):
     def evidence(self):
-        with patch.object(fantrax_data, "_direct_fxpa_request", return_value=historical_roster()):
+        with evidence_context(historical_roster()):
             return fantrax_data.extract_completed_lineup_evidence(
                 EvidenceApi(current_roster(), historical_roster()), "me", completed_matchup()
             )
@@ -99,9 +157,9 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
     def test_exact_period_archive_reconciles_and_hashes_deterministically(self):
         api = EvidenceApi(current_roster(), historical_roster())
 
-        with patch.object(fantrax_data, "_direct_fxpa_request", return_value=historical_roster()) as request:
+        with patch.dict(fantrax_data.VERIFIED_WEEKLY_LINEUP_POLICIES, {("league", 2026): TEST_POLICY}), direct_requests(historical_roster()) as request:
             first = fantrax_data.extract_completed_lineup_evidence(api, "me", completed_matchup())
-        with patch.object(fantrax_data, "_direct_fxpa_request", return_value=historical_roster()):
+        with evidence_context(historical_roster()):
             second = fantrax_data.extract_completed_lineup_evidence(
                 EvidenceApi(current_roster(), historical_roster()), "me", completed_matchup()
             )
@@ -109,11 +167,18 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["active_player_total"], "264.5")
         self.assertEqual(first["active_player_count"], 2)
+        self.assertEqual(len(first["participation"]["days"]), 7)
+        self.assertEqual(first["participation"]["days"][0]["active_count"], 2)
+        self.assertEqual(first["participation"]["window_count"], 1)
+        self.assertTrue(first["participation"]["stable_within_windows"])
+        self.assertEqual(first["evidence_version"], "fantrax_period_lineup_v2")
+        self.assertEqual(len(first["parent_v1_evidence_hash"]), 64)
+        self.assertTrue(first["counterfactual_capability"]["eligible"])
         self.assertEqual(len(first["evidence_hash"]), 64)
         self.assertEqual(
-            request.call_args.args[1], "getTeamRosterInfo"
+            request.call_args_list[0].args[1], "getTeamRosterInfo"
         )
-        self.assertEqual(request.call_args.kwargs, {
+        self.assertEqual(request.call_args_list[0].kwargs, {
             "teamId": "me", "period": "15",
             "seasonOrProjection": "SEASON_147_BY_PERIOD", "timeframeTypeCode": "BY_PERIOD",
         })
@@ -121,29 +186,29 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
     def test_wrong_returned_period_fails_closed(self):
         raw = historical_roster()
         raw["displayedSelections"]["displayedPeriod"] = "16"
-        with patch.object(fantrax_data, "_direct_fxpa_request", return_value=raw), self.assertRaisesRegex(ValueError, "different period"):
+        with evidence_context(raw), self.assertRaisesRegex(ValueError, "different period"):
             fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), raw), "me", completed_matchup())
 
     def test_score_mismatch_fails_closed(self):
         matchup = completed_matchup()
         matchup["my_score"] = 999
-        with patch.object(fantrax_data, "_direct_fxpa_request", return_value=historical_roster()), self.assertRaisesRegex(ValueError, "does not match"):
+        with evidence_context(historical_roster()), self.assertRaisesRegex(ValueError, "not match"):
             fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), historical_roster()), "me", matchup)
 
     def test_ambiguous_role_fails_closed(self):
         raw = historical_roster()
         raw["tables"][0]["headers"]["cells"] = [{"sortKey": "FPTS"}]
-        with patch.object(fantrax_data, "_direct_fxpa_request", return_value=raw), self.assertRaisesRegex(ValueError, "stable identity or scoring role"):
+        with evidence_context(raw), self.assertRaisesRegex(ValueError, "stable identity or scoring role"):
             fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), raw), "me", completed_matchup())
 
     def test_missing_and_conflicting_response_identity_fail_closed(self):
         missing = historical_roster()
         del missing["displayedSelections"]["displayedFantasyTeamId"]
-        with patch.object(fantrax_data, "_direct_fxpa_request", return_value=missing), self.assertRaisesRegex(ValueError, "team identity"):
+        with evidence_context(missing), self.assertRaisesRegex(ValueError, "team identity"):
             fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), missing), "me", completed_matchup())
         conflict = historical_roster()
         conflict["displayedSelections"]["displayedScoringPeriod"] = "14"
-        with patch.object(fantrax_data, "_direct_fxpa_request", return_value=conflict), self.assertRaisesRegex(ValueError, "conflicting periods"):
+        with evidence_context(conflict), self.assertRaisesRegex(ValueError, "conflicting periods"):
             fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), conflict), "me", completed_matchup())
 
     def test_scoring_value_follows_exact_header_index(self):
@@ -153,7 +218,7 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
             {"sortKey": "AGE"}, {"sortKey": "SCORING_CATEGORY_10#0010#-1"},
         ]
         raw["tables"][0]["rows"][0]["cells"] = [{"content": "260.5"}, {"content": "30"}]
-        with patch.object(fantrax_data, "_direct_fxpa_request", return_value=raw):
+        with evidence_context(raw):
             evidence = fantrax_data.extract_completed_lineup_evidence(
                 EvidenceApi(current_roster(), raw), "me", completed_matchup()
             )
@@ -169,7 +234,7 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
             with self.subTest(header=header):
                 raw = historical_roster()
                 raw["tables"][0]["headers"]["cells"][2] = header
-                with patch.object(fantrax_data, "_direct_fxpa_request", return_value=raw), self.assertRaisesRegex(ValueError, "scoring role"):
+                with evidence_context(raw), self.assertRaisesRegex(ValueError, "scoring role"):
                     fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), raw), "me", completed_matchup())
 
     def test_reserve_points_are_archived_but_not_reconciled_as_active(self):
@@ -178,7 +243,7 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
         bench = player("bench", "Bench Player", "012", "12")
         bench["statusId"] = "2"
         raw["tables"][0]["rows"].append(bench)
-        with patch.object(fantrax_data, "_direct_fxpa_request", return_value=raw):
+        with evidence_context(raw):
             evidence = fantrax_data.extract_completed_lineup_evidence(
                 EvidenceApi(current_roster(), raw), "me", completed_matchup()
             )
@@ -188,8 +253,116 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
     def test_active_two_way_double_count_fails_closed(self):
         raw = historical_roster()
         raw["tables"][1]["rows"][0]["scorer"]["scorerId"] = "judge"
-        with patch.object(fantrax_data, "_direct_fxpa_request", return_value=raw), self.assertRaisesRegex(ValueError, "two-way"):
+        with evidence_context(raw), self.assertRaisesRegex(ValueError, "two-way"):
             fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), raw), "me", completed_matchup())
+
+    def test_daily_wrong_date_or_assignment_change_fails_closed(self):
+        raw = historical_roster()
+        for mode, message in (("date", "different date"), ("assignment", "changed within")):
+            with self.subTest(mode=mode):
+                calls = 0
+
+                def request(_api, method, **kwargs):
+                    nonlocal calls
+                    if method == "getTeamRosterInfo":
+                        return raw
+                    calls += 1
+                    response = daily_response(raw, kwargs["date"])
+                    if calls == 2 and mode == "date":
+                        response["date"] = "2026-01-01"
+                    if calls == 2 and mode == "assignment":
+                        moved = response["scorerMap"]["ACTIVE"]["me"]["10"].pop()
+                        response["scorerMap"]["BENCH"]["me"]["10"].append(moved)
+                    return response
+
+                with patch.dict(
+                    fantrax_data.VERIFIED_WEEKLY_LINEUP_POLICIES,
+                    {("league", 2026): TEST_POLICY},
+                ), patch.object(
+                    fantrax_data, "_direct_fxpa_request", side_effect=request
+                ), self.assertRaisesRegex(ValueError, message):
+                    fantrax_data.extract_completed_lineup_evidence(
+                        EvidenceApi(current_roster(), raw), "me", completed_matchup()
+                    )
+
+    def test_fourteen_day_period_allows_a_second_monday_lineup(self):
+        raw = historical_roster()
+        matchup = completed_matchup()
+        matchup["end"] = "2026-07-12"
+        matchup["my_score"] = 264.5
+        call_count = 0
+
+        def request(_api, method, **kwargs):
+            nonlocal call_count
+            if method == "getTeamRosterInfo":
+                return raw
+            call_count += 1
+            response = daily_response(raw, kwargs["date"])
+            response["statsPerTeam"]["allTeamsStats"]["me"]["ACTIVE"]["totalFpts"] = (
+                264.5 if call_count == 1 else 0
+            )
+            if call_count <= 7:
+                moved = response["scorerMap"]["ACTIVE"]["me"]["10"].pop()
+                response["scorerMap"]["BENCH"]["me"]["10"].append(moved)
+            return response
+
+        with patch.dict(
+            fantrax_data.VERIFIED_WEEKLY_LINEUP_POLICIES,
+            {("league", 2026): TEST_POLICY},
+        ), patch.object(fantrax_data, "_direct_fxpa_request", side_effect=request):
+            evidence = fantrax_data.extract_completed_lineup_evidence(
+                EvidenceApi(current_roster(), raw), "me", matchup
+            )
+
+        self.assertEqual(evidence["participation"]["window_count"], 2)
+        self.assertEqual(evidence["parent_v1_state"], "not_applicable_multi_window")
+        self.assertIsNone(evidence["parent_v1_evidence_hash"])
+        self.assertFalse(evidence["counterfactual_capability"]["eligible"])
+        self.assertEqual(
+            evidence["counterfactual_capability"]["reason"],
+            "period_player_fpts_not_attributed_to_lineup_windows",
+        )
+        self.assertEqual(evidence["final_assignment_total_state"], "unreconciled_multi_window")
+
+    def test_unverified_league_season_fails_closed(self):
+        with direct_requests(historical_roster()), self.assertRaisesRegex(
+            ValueError, "policy has not been verified"
+        ):
+            fantrax_data.extract_completed_lineup_evidence(
+                EvidenceApi(current_roster(), historical_roster()), "me", completed_matchup()
+            )
+
+    def test_unknown_daily_group_or_position_mismatch_fails_closed(self):
+        raw = historical_roster()
+        for mode, message in (
+            ("group", "unknown scoring group"),
+            ("position", "position conflicts"),
+            ("missing_position", "position conflicts"),
+        ):
+            with self.subTest(mode=mode):
+                def request(_api, method, **kwargs):
+                    if method == "getTeamRosterInfo":
+                        return raw
+                    response = daily_response(raw, kwargs["date"])
+                    if mode == "group":
+                        response["scorerMap"]["BENCH"]["me"]["99"] = [
+                            {"posId": "999", "scorer": {"scorerId": "extra"}}
+                        ]
+                    elif mode == "position":
+                        response["scorerMap"]["ACTIVE"]["me"]["10"][0]["posId"] = "014"
+                    else:
+                        response["scorerMap"]["ACTIVE"]["me"]["10"][0].pop("posId")
+                    return response
+
+                with patch.dict(
+                    fantrax_data.VERIFIED_WEEKLY_LINEUP_POLICIES,
+                    {("league", 2026): TEST_POLICY},
+                ), patch.object(
+                    fantrax_data, "_direct_fxpa_request", side_effect=request
+                ), self.assertRaisesRegex(ValueError, message):
+                    fantrax_data.extract_completed_lineup_evidence(
+                        EvidenceApi(current_roster(), raw), "me", completed_matchup()
+                    )
 
     def test_archive_failure_isolated_from_refresh(self):
         with patch.dict("sandlot_refresh.os.environ", {"DATABASE_URL": "postgres://test"}), patch(
@@ -199,7 +372,7 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
             import sandlot_refresh
 
             sandlot_refresh._persist_lineup_period_evidence(
-                7, {"completed_lineup_evidence": {"evidence_version": "fantrax_period_lineup_v1"}}
+                7, {"completed_lineup_evidence": {"evidence_version": "fantrax_period_lineup_v2"}}
             )
 
     def test_archive_replay_is_idempotent_and_concurrency_safe(self):
