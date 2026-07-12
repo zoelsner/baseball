@@ -60,7 +60,10 @@ terminal ledger update, not a Fantrax mutation; the bridge and API both assert
 Completed-period refreshes also feed the versioned outcome scorer. The current
 `team_result_v1` contract records exact-period observed team totals and forecast
 residuals only. Counterfactual baseline/gain fields remain null and the outcome
-is never autopilot-eligible until player-period lineup evidence exists.
+is never autopilot-eligible. Completed refreshes also archive exact BY_PERIOD
+player/slot/role scoring as immutable `fantrax_period_lineup_v1` evidence that
+survives snapshot pruning. That archive is not consumed by the outcome scorer
+until reserve-point semantics and lineup-cadence coverage are separately proven.
 
 The receipt ledger is not an execution log. `execution_requests` remains the
 separate dry-run control plane, and any future link between them must preserve

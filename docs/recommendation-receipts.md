@@ -68,9 +68,19 @@ window. Only after Fantrax exposes a newer authoritative completed period does
 Sandlot terminalize the missed receipt as `unavailable`; one failed refresh or
 one incomplete response never does so.
 
-This first scorer is forecast telemetry, not decision uplift. Because Sandlot
-does not yet archive per-player period scoring and active/reserve participation,
-it always records:
+This first scorer is forecast telemetry, not decision uplift. Sandlot now
+archives a versioned, immutable `fantrax_period_lineup_v1` record for each
+completed period when Fantrax's exact BY_PERIOD roster rows reconcile to the
+authoritative final team score. The archive preserves stable player IDs,
+assigned-slot provenance, hitter/pitcher scoring role, exact decimal points,
+request/response identity, and a canonical evidence hash. Identical refreshes
+are no-ops; changed evidence for the same period conflicts instead of rewriting
+history, and snapshot pruning leaves the archive intact.
+
+Archival coverage alone is not decision uplift. Reserve-player points still
+need to be proven as valid counterfactual values, and the historical slot must
+be proven to represent the league's full lineup cadence. Until then Sandlot
+always records:
 
 - `measurement_scope: observed_team_total`
 - `adherence_state: unverified`
@@ -81,10 +91,10 @@ it always records:
 
 `GET /api/recommendation-outcomes/recent` exposes those labels with recent
 scored receipts. Neither an accepted intent nor a small team-total error proves
-that the proposed lineup was used. `counterfactual_lineup_v1` must first archive
-complete player-period scoring, roster ownership, and slot participation before
-Sandlot may calculate realized lineup gain or use outcomes to graduate an
-action toward autopilot.
+that the proposed lineup was used. `counterfactual_lineup_v1` must pass those
+remaining semantics and complete assignment-coverage checks before Sandlot may
+calculate realized lineup gain or use outcomes to graduate an action toward
+autopilot.
 
 ## Safety boundary
 

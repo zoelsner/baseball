@@ -85,6 +85,7 @@ def _run_refresh_unlocked(source: str, started: float) -> RefreshResult:
         )
         if status == "success":
             _persist_projection_log(snapshot_id, snapshot)
+            _persist_lineup_period_evidence(snapshot_id, snapshot)
             _persist_recommendation_outcomes(snapshot_id, snapshot)
         sandlot_db.finish_refresh_run(
             run_id,
@@ -179,6 +180,17 @@ def _persist_projection_log(snapshot_id: int, snapshot: dict[str, Any]) -> None:
             sandlot_db.update_projection_actuals(**actual)
     except Exception:
         log.exception("Projection log write failed for snapshot_id=%s", snapshot_id)
+
+
+def _persist_lineup_period_evidence(snapshot_id: int, snapshot: dict[str, Any]) -> None:
+    """Archive exact completed-period player evidence without blocking refresh."""
+    evidence = snapshot.get("completed_lineup_evidence")
+    if not isinstance(evidence, dict) or not os.environ.get("DATABASE_URL"):
+        return
+    try:
+        sandlot_db.archive_lineup_period_evidence(evidence=evidence, snapshot_id=snapshot_id)
+    except Exception:
+        log.exception("Completed lineup evidence write failed for snapshot_id=%s", snapshot_id)
 
 
 def _persist_recommendation_outcomes(snapshot_id: int, snapshot: dict[str, Any]) -> None:

@@ -9,12 +9,15 @@ rows so we can debug shape mismatches against MLB without changing parser code.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 import re
 import sys
 import types
 from datetime import date as date_cls, datetime, time as time_cls, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import requests
@@ -171,6 +174,214 @@ def _raw_team_roster(api: Any, team_id: str) -> dict[str, Any] | None:
         log.debug("Raw getTeamRosterInfo failed for team %s: %s", team_id, e)
         return None
     return raw if isinstance(raw, dict) else None
+
+
+LINEUP_PERIOD_EVIDENCE_VERSION = "fantrax_period_lineup_v1"
+
+
+def extract_completed_lineup_evidence(
+    api: Any, team_id: str, completed_matchup: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Capture one exact, final Fantrax period roster for durable outcome scoring."""
+    if not isinstance(completed_matchup, dict) or not completed_matchup.get("complete"):
+        return None
+    if str(completed_matchup.get("my_team_id") or "") != str(team_id):
+        raise ValueError("completed matchup team does not match lineup evidence target")
+    if completed_matchup.get("source") != "fantrax_schedule" or completed_matchup.get("score_state") != "live_or_final":
+        raise ValueError("completed matchup is not authoritative final evidence")
+
+    period_number = str(completed_matchup.get("period_number") or completed_matchup.get("period_id") or "").strip()
+    if not period_number:
+        raise ValueError("completed matchup period number is required")
+    current = _raw_team_roster(api, team_id)
+    if not current:
+        raise RuntimeError("current Fantrax roster metadata is unavailable")
+    by_period_code = _by_period_season_code(current)
+    raw = _direct_fxpa_request(
+        api,
+        "getTeamRosterInfo",
+        teamId=team_id,
+        period=period_number,
+        seasonOrProjection=by_period_code,
+        timeframeTypeCode="BY_PERIOD",
+    )
+    if not isinstance(raw, dict):
+        raise RuntimeError("historical Fantrax roster response is invalid")
+    displayed = raw.get("displayedSelections") if isinstance(raw.get("displayedSelections"), dict) else {}
+    displayed_period = _raw_period_value(displayed, "displayedPeriod")
+    displayed_scoring_period = _raw_period_value(displayed, "displayedScoringPeriod")
+    if displayed_period in (None, "") or displayed_scoring_period in (None, ""):
+        raise ValueError("historical Fantrax roster response identity is incomplete")
+    if str(displayed_period) != str(displayed_scoring_period):
+        raise ValueError("historical Fantrax roster returned conflicting periods")
+    if str(displayed_period or "") != period_number:
+        raise ValueError("historical Fantrax roster returned a different period")
+    displayed_code = _selection_code(displayed.get("displayedSeasonOrProjection"))
+    if displayed_code != by_period_code:
+        raise ValueError("historical Fantrax roster returned a different stats selection")
+    timeframe = str(displayed.get("timeframeTypeCode") or raw.get("timeframeTypeCode") or "")
+    if timeframe != "BY_PERIOD":
+        raise ValueError("historical Fantrax roster is not period-scoped")
+
+    roster = _RawRoster(api, team_id, raw)
+    status_lookup = _status_lookup(roster)
+    players: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for table in raw.get("tables") or []:
+        if not isinstance(table, dict):
+            continue
+        role, scoring_column, scoring_column_index = _table_scoring_contract(table)
+        for row in table.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            player_id = _row_player_id(row)
+            scorer = row.get("scorer") if isinstance(row.get("scorer"), dict) else {}
+            name = str(scorer.get("name") or scorer.get("fullName") or row.get("name") or "").strip()
+            if not player_id and not name:
+                continue
+            if not player_id or not name or not role or not scoring_column:
+                raise ValueError("historical Fantrax player row lacks stable identity or scoring role")
+            identity = (player_id, role)
+            if identity in seen:
+                raise ValueError("historical Fantrax roster contains a duplicate player scoring role")
+            seen.add(identity)
+            slot, slot_source = _assigned_slot_from_raw(row, status_lookup, api)
+            if not slot or slot_source not in {"raw.posId", "raw.statusId"}:
+                raise ValueError(f"historical Fantrax slot is untrusted for {name}")
+            points = _period_points(row, scoring_column_index)
+            if points is None:
+                raise ValueError(f"historical Fantrax period points are invalid for {name}")
+            players.append({
+                "player_id": player_id,
+                "player_name": name,
+                "scoring_role": role,
+                "slot": slot,
+                "slot_source": slot_source,
+                "raw_pos_id": str(row.get("posId") or "") or None,
+                "raw_status_id": str(row.get("statusId") or "") or None,
+                "eligibility_pos_ids": sorted({
+                    str(value) for value in (
+                        scorer.get("posIds") or scorer.get("allPositionIds") or scorer.get("posIdsNoFlex") or []
+                    ) if value not in (None, "")
+                }),
+                "period_fpts": points,
+                "period_fpts_source": scoring_column,
+            })
+    if not players:
+        raise ValueError("historical Fantrax roster contains no player evidence")
+    players.sort(key=lambda item: (item["scoring_role"], item["slot"], item["player_id"]))
+    inactive_slots = {"RES", "IR", "MIN", "IL", "INJ", "BENCH", "BN", "BE"}
+    active = [item for item in players if item["slot"] not in inactive_slots]
+    active_ids = [item["player_id"] for item in active]
+    if len(active_ids) != len(set(active_ids)):
+        raise ValueError("historical Fantrax roster has ambiguous active two-way scoring")
+    observed_total = _decimal_text(completed_matchup.get("my_score"))
+    active_total = _decimal_text(sum(Decimal(item["period_fpts"]) for item in active))
+    if Decimal(active_total) != Decimal(observed_total):
+        raise ValueError("historical Fantrax active-player total does not match completed team score")
+    league_id = str(getattr(api, "league_id", "") or "").strip()
+    if not league_id:
+        raise ValueError("Fantrax league identity is unavailable")
+    response_team = str(displayed.get("teamId") or displayed.get("displayedTeamId") or "").strip()
+    if not response_team:
+        raise ValueError("historical Fantrax roster response team identity is missing")
+    if response_team != str(team_id):
+        raise ValueError("historical Fantrax roster returned a different team")
+    evidence = {
+        "evidence_version": LINEUP_PERIOD_EVIDENCE_VERSION,
+        "league_id": league_id,
+        "team_id": str(team_id),
+        "period": {
+            "number": period_number,
+            "start": str(completed_matchup.get("start") or ""),
+            "end": str(completed_matchup.get("end") or ""),
+        },
+        "source": {
+            "method": "getTeamRosterInfo",
+            "request_identity": {
+                "league_id": league_id,
+                "team_id": str(team_id),
+                "period": period_number,
+                "season_or_projection": by_period_code,
+                "timeframe_type_code": "BY_PERIOD",
+            },
+            "response_identity": {
+                "team_id": response_team,
+                "period": period_number,
+                "season_or_projection": displayed_code,
+                "timeframe_type_code": timeframe,
+            },
+            "matchup_key": str(completed_matchup.get("matchup_key") or ""),
+        },
+        "observed_team_total": observed_total,
+        "active_player_total": active_total,
+        "active_player_count": len(active),
+        "players": players,
+    }
+    return {**evidence, "evidence_hash": lineup_period_evidence_hash(evidence)}
+
+
+def lineup_period_evidence_hash(evidence: dict[str, Any]) -> str:
+    canonical_evidence = {key: value for key, value in evidence.items() if key != "evidence_hash"}
+    canonical = json.dumps(canonical_evidence, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _selection_code(value: Any) -> str | None:
+    if isinstance(value, dict):
+        value = value.get("code") or value.get("value") or value.get("id")
+    text = str(value or "").strip()
+    return text or None
+
+
+def _by_period_season_code(raw: dict[str, Any]) -> str:
+    displayed_lists = raw.get("displayedLists") if isinstance(raw.get("displayedLists"), dict) else {}
+    values = displayed_lists.get("seasonOrProjections") or displayed_lists.get("seasonOrProjectionList") or []
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("timeframeTypeCode") or "") == "BY_PERIOD":
+            code = _selection_code(item)
+            if code:
+                return code
+    raise ValueError("Fantrax did not advertise a BY_PERIOD stats selection")
+
+
+def _table_scoring_contract(table: dict[str, Any]) -> tuple[str | None, str | None, int | None]:
+    headers = table.get("headers") or table.get("header") or table.get("columns") or []
+    if not isinstance(headers, list):
+        return None, None, None
+    matches: list[tuple[str, str, int]] = []
+    for index, header in enumerate(headers):
+        fingerprint = json.dumps(header, sort_keys=True)
+        for role, category in (("hitter", "SCORING_CATEGORY_10"), ("pitcher", "SCORING_CATEGORY_20")):
+            if category in fingerprint:
+                matches.append((role, category, index))
+    if len(matches) != 1:
+        return None, None, None
+    role, category, index = matches[0]
+    return role, f"{category}:cells[{index}].content", index
+
+
+def _period_points(row: dict[str, Any], column_index: int | None) -> str | None:
+    cells = row.get("cells")
+    if column_index is None or not isinstance(cells, list) or len(cells) <= column_index or not isinstance(cells[column_index], dict):
+        return None
+    try:
+        return _decimal_text(cells[column_index].get("content"))
+    except ValueError:
+        return None
+
+
+def _decimal_text(value: Any) -> str:
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError) as exc:
+        raise ValueError("period points must be an exact decimal") from exc
+    if not number.is_finite():
+        raise ValueError("period points must be finite")
+    normalized = format(number.normalize(), "f")
+    return "0" if normalized in {"-0", ""} else normalized
 
 
 def _getattr_any(obj: Any, *names: str, default: Any = None) -> Any:
@@ -1680,6 +1891,7 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
         "standings": None,
         "matchup": None,
         "editable_matchup": None,
+        "completed_lineup_evidence": None,
         "transactions": None,
         "pending_trades": None,
         "free_agents": None,
@@ -1703,6 +1915,14 @@ def collect_all(session: requests.Session, league_id: str, team_id: str) -> dict
                 api,
                 team_id,
                 editable_period_number=(snapshot.get("roster") or {}).get("period_number"),
+            ),
+        ),
+        (
+            "completed_lineup_evidence",
+            lambda: extract_completed_lineup_evidence(
+                api,
+                team_id,
+                ((snapshot.get("matchup_contexts") or {}).get("matchup") or {}).get("latest_completed"),
             ),
         ),
         ("transactions",     lambda: extract_transactions(api)),
