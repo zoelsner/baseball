@@ -545,12 +545,22 @@ class RecommendationReceiptPostgresConcurrencyTests(unittest.TestCase):
     def test_waiting_decision_rechecks_wall_clock_expiry_after_row_lock(self):
         database_url = os.environ["SANDLOT_TEST_DATABASE_URL"]
         receipt = receipt_fixture(week_start=date(2099, 1, 5))
-        receipt["snapshot_id"] = None
         outcome = []
         waiting_transaction_started = threading.Event()
+        snapshot_id = None
 
         with patch.dict(os.environ, {"DATABASE_URL": database_url}):
             sandlot_db.init_schema()
+            with sandlot_db.connect() as setup:
+                snapshot_row = setup.execute(
+                    """
+                    INSERT INTO snapshots (taken_at, source, status, league_id, team_id, errors, data)
+                    VALUES (clock_timestamp(), 'concurrency_test', 'success', 'league', 'team', '[]'::jsonb, '{}'::jsonb)
+                    RETURNING id
+                    """
+                ).fetchone()
+                snapshot_id = int(snapshot_row["id"])
+            receipt["snapshot_id"] = snapshot_id
             sandlot_db.record_recommendation_receipt(receipt)
             try:
                 with sandlot_db.connect() as setup:
@@ -610,6 +620,8 @@ class RecommendationReceiptPostgresConcurrencyTests(unittest.TestCase):
                         "DELETE FROM recommendation_receipts WHERE receipt_id = %s",
                         (receipt["receipt_id"],),
                     )
+                    if snapshot_id is not None:
+                        cleanup.execute("DELETE FROM snapshots WHERE id = %s", (snapshot_id,))
 
 
 class MondayLineupReceiptGateTests(unittest.TestCase):
