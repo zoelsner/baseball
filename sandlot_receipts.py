@@ -16,7 +16,7 @@ from sandlot_autopsy import PITCHER_TOKENS
 from sandlot_lineup import FULL_ACTIVE_TEMPLATE
 
 
-MONDAY_LINEUP_BUILDER_VERSION = "monday_lineup_v1"
+MONDAY_LINEUP_BUILDER_VERSION = "monday_lineup_v2"
 TRADE_ASSESSMENT_BUILDER_VERSION = "trade_assessment_v1"
 TEAM_RESULT_SCORING_VERSION = "team_result_v1"
 COUNTERFACTUAL_LINEUP_SCORING_VERSION = "counterfactual_lineup_v1"
@@ -193,6 +193,7 @@ def build_monday_lineup_receipt(
     entries: list[dict[str, Any]],
     current_active: list[dict[str, Any]],
     current_total: float,
+    decision_deadline_at: datetime,
     generated_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Build one versioned, deterministic receipt from decision-time inputs."""
@@ -206,6 +207,13 @@ def build_monday_lineup_receipt(
     league_id = _required_text(snapshot.get("league_id"), "snapshot.league_id")
     team_id = _required_text(snapshot.get("team_id"), "snapshot.team_id")
     snapshot_taken_at = _utc_datetime(snapshot.get("taken_at"))
+    decision_deadline_at = _utc_datetime(decision_deadline_at)
+    period_start_at = datetime.combine(week_start, time.min, tzinfo=ET).astimezone(timezone.utc)
+    period_close_at = datetime.combine(week_end + timedelta(days=1), time.min, tzinfo=ET).astimezone(timezone.utc)
+    if not (period_start_at <= decision_deadline_at < period_close_at):
+        raise ValueError("decision deadline must fall inside the target scoring period")
+    if snapshot_taken_at > generated_at or generated_at >= decision_deadline_at:
+        raise ValueError("Monday lineup evidence must be frozen before the first scoring deadline")
     scope_key = f"{league_id}:{team_id}:monday_lineup:{week_start.isoformat()}"
     proposal_id = scope_key
 
@@ -250,7 +258,12 @@ def build_monday_lineup_receipt(
         "league_id": league_id,
         "team_id": team_id,
         "season": week_start.year,
-        "period": {"start": week_start.isoformat(), "end": week_end.isoformat()},
+        "period": {
+            "start": week_start.isoformat(),
+            "end": week_end.isoformat(),
+            "decision_deadline_at": decision_deadline_at.isoformat(),
+            "deadline_source": "mlb_schedule_first_game_v1",
+        },
         "evaluation": {
             "horizon": "scoring_week",
             "metric_name": "league_fantasy_points",

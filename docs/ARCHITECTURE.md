@@ -143,6 +143,17 @@ Use this pattern for AI-enabled features:
 
 Do not let OpenRouter latency or model output control the core refresh path.
 
+## Decision Science
+
+`sandlot_decision_science.py` builds the offline, versioned
+`lineup_decision_features_v1` dataset from immutable recommendation receipts
+and later counterfactual evaluations. Feature and label blocks are separate,
+all evidence hashes are retained as lineage, and rolling evaluation may use a
+label only after its recorded availability timestamp. The first candidate is
+an interpretable affine calibration of projected gain against realized static
+counterfactual gain. It cannot enable product behavior or autopilot, even when
+it beats the baseline. See `docs/decision-science.md`.
+
 ## Frontend Boundaries
 
 `web/sandlot/index.html` loads scripts in order:

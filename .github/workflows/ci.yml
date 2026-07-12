@@ -49,6 +49,7 @@ jobs:
           import sandlot_cron
           import sandlot_waivers
           import sandlot_calibration
+          import sandlot_decision_science
           import sandlot_scoring
           import sandlot_autopsy
           import sandlot_lineup
