@@ -508,6 +508,7 @@ def create_execution_request(payload: dict[str, Any]) -> tuple[dict[str, Any], b
             result = dict(row)
             result.pop("created", None)
             return result, True
+        _expire_execution_requests(conn)
         row = conn.execute(
             """
             SELECT *
@@ -528,6 +529,7 @@ def create_execution_request(payload: dict[str, Any]) -> tuple[dict[str, Any], b
 
 def execution_request_by_id(request_id: str) -> dict[str, Any] | None:
     with connect() as conn:
+        _expire_execution_requests(conn, request_id=request_id)
         row = conn.execute(
             "SELECT * FROM execution_requests WHERE request_id = %s",
             (request_id,),
@@ -543,23 +545,7 @@ def claim_next_execution_request(
 ) -> dict[str, Any] | None:
     """Atomically claim one request once; expired claims are never requeued."""
     with connect() as conn:
-        conn.execute(
-            """
-            UPDATE execution_requests
-            SET state = 'expired',
-                completed_at = now(),
-                lease_token_hash = NULL,
-                failure_reason = CASE
-                  WHEN state = 'claimed' THEN 'Runner lease expired before preflight completion'
-                  ELSE 'Execution request expired before claim'
-                END
-            WHERE state IN ('pending', 'claimed')
-              AND (
-                expires_at <= now()
-                OR (state = 'claimed' AND lease_expires_at <= now())
-              )
-            """
-        )
+        _expire_execution_requests(conn)
         row = conn.execute(
             """
             WITH candidate AS (
@@ -599,19 +585,7 @@ def finish_execution_preflight(
 ) -> dict[str, Any] | None:
     target_state = "preflight_passed" if outcome == "passed" else "preflight_failed"
     with connect() as conn:
-        conn.execute(
-            """
-            UPDATE execution_requests
-            SET state = 'expired',
-                completed_at = now(),
-                lease_token_hash = NULL,
-                failure_reason = 'Runner lease expired before preflight completion'
-            WHERE request_id = %s
-              AND state = 'claimed'
-              AND (lease_expires_at <= now() OR expires_at <= now())
-            """,
-            (request_id,),
-        )
+        _expire_execution_requests(conn, request_id=request_id)
         row = conn.execute(
             """
             UPDATE execution_requests
@@ -636,6 +610,30 @@ def finish_execution_preflight(
             ),
         ).fetchone()
     return dict(row) if row else None
+
+
+def _expire_execution_requests(conn: Any, *, request_id: str | None = None) -> None:
+    request_filter = " AND request_id = %s" if request_id is not None else ""
+    params: tuple[Any, ...] = (request_id,) if request_id is not None else ()
+    conn.execute(
+        f"""
+        UPDATE execution_requests
+        SET state = 'expired',
+            completed_at = now(),
+            lease_token_hash = NULL,
+            failure_reason = CASE
+              WHEN state = 'claimed' THEN 'Runner lease expired before preflight completion'
+              ELSE 'Execution request expired before claim'
+            END
+        WHERE state IN ('pending', 'claimed')
+          AND (
+            expires_at <= now()
+            OR (state = 'claimed' AND lease_expires_at <= now())
+          )
+          {request_filter}
+        """,
+        params,
+    )
 
 
 DEFAULT_CHAT_SESSION_TITLE = "Skipper"

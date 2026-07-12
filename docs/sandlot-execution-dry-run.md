@@ -15,7 +15,9 @@ Fantrax.
 - The local runner may navigate a headful browser and use authenticated read
   APIs. It has no click, type, submit, or mutation path.
 - A request expires after at most 120 seconds. A claim lease expires after at
-  most 90 seconds and is never requeued.
+  most 90 seconds and is never requeued. Owner status and idempotent-create
+  reads normalize overdue pending/claimed rows to `expired` even when no runner
+  is polling.
 - Full roster membership must remain unchanged. Any missing player—including
   Aaron Judge—fails preflight before a future write could be considered.
 
@@ -54,7 +56,12 @@ Runner credential:
 - `POST /api/execution-requests/claim` — atomically claims one pending request
   with `FOR UPDATE SKIP LOCKED`; returns the one-time lease plaintext once.
 - `POST /api/execution-requests/{request_id}/preflight` — compare-and-swap
-  terminal report bound to the runner credential and lease digest.
+  terminal report bound to the runner credential and lease digest. A passing
+  report must contain the complete contract-derived check-key set, an exact
+  full-roster SHA-256 digest, exact observed participant slots and eligible
+  destinations, and an observation timestamp inside the live claim window. A
+  fixed `live_read` failure may terminal-fail without pretending roster facts
+  were observed.
 
 ```text
 pending -> claimed -> preflight_passed
@@ -84,6 +91,10 @@ but it does not retry a claimed request. For each claim the runner:
    destinations, and exact deadline;
 4. records zero clicks and zero writes; and
 5. reports one terminal pass/fail result.
+
+Credential-bearing runner calls require HTTPS. Plain HTTP is accepted only for
+`localhost`, `127.0.0.1`, or `::1` development, and redirects are rejected so a
+runner bearer cannot be forwarded to a typoed or untrusted destination.
 
 ## Deliberately deferred
 

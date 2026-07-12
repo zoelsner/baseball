@@ -13,7 +13,7 @@ import hmac
 import json
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 
@@ -34,7 +34,10 @@ ALLOWED_EVIDENCE_KEYS = {
     "source",
     "target_period",
     "roster_player_count",
+    "roster_ids_sha256",
     "participant_ids",
+    "participant_slots",
+    "eligible_destinations",
     "fantrax_click_count",
     "fantrax_write_count",
 }
@@ -159,7 +162,8 @@ def prepare_dry_run_request(
     if request_expires_at <= now:
         raise ExecutionContractError("Proposal cannot be claimed before its deadline")
 
-    immutable_contract = json.loads(json.dumps(contract, sort_keys=True))
+    immutable_contract = json.loads(json.dumps(contract, sort_keys=True, default=_json_default))
+    expected_roster_digest = roster_ids_digest(roster_ids)
     return {
         "request_id": "xreq_" + secrets.token_urlsafe(18),
         "mode": DRY_RUN_MODE,
@@ -177,6 +181,7 @@ def prepare_dry_run_request(
             "protected_players_may_leave_roster": False,
             "visible_runner_required": True,
             "fantrax_clicks_allowed": False,
+            "expected_roster_ids_sha256": expected_roster_digest,
         },
     }
 
@@ -217,9 +222,10 @@ def validate_preflight_report(
             "state": state,
             "detail": "Live check passed." if state == "passed" else "Live check failed.",
         })
+    keys = [check["key"] for check in normalized_checks]
+    if len(keys) != len(set(keys)):
+        raise ExecutionContractError("Preflight check keys must be unique")
     any_failed = any(check["state"] == "failed" for check in normalized_checks)
-    if (outcome == "passed" and any_failed) or (outcome == "failed" and not any_failed):
-        raise ExecutionContractError("Preflight outcome does not agree with its checks")
     evidence = report.get("evidence") or {}
     if not isinstance(evidence, dict):
         raise ExecutionContractError("Preflight evidence must be an object")
@@ -231,10 +237,22 @@ def validate_preflight_report(
         raise ExecutionContractError("Dry-run evidence must prove zero Fantrax clicks and writes")
     if evidence.get("source") != "visible_fantrax_dom+authenticated_read_api":
         raise ExecutionContractError("Preflight evidence source is not the visible read-only runner")
-    participant_ids = evidence.get("participant_ids", [])
-    if not isinstance(participant_ids, list) or len(participant_ids) > 2:
-        raise ExecutionContractError("Preflight participant_ids must contain at most two players")
-    if request_row is not None:
+    read_failure = keys == ["live_read"] and normalized_checks[0]["state"] == "failed"
+    if read_failure:
+        if outcome != "failed":
+            raise ExecutionContractError("A live-read failure cannot report a passing outcome")
+        allowed_failure_evidence = {"source", "fantrax_click_count", "fantrax_write_count"}
+        if set(evidence) - allowed_failure_evidence:
+            raise ExecutionContractError("Live-read failure evidence contains unobserved live invariants")
+    else:
+        if request_row is None:
+            raise ExecutionContractError("A claimed request is required for contract-specific preflight")
+        required_keys = required_preflight_check_keys(request_row)
+        if set(keys) != required_keys or len(keys) != len(required_keys):
+            raise ExecutionContractError("Preflight report does not contain the exact required live checks")
+        if (outcome == "passed" and any_failed) or (outcome == "failed" and not any_failed):
+            raise ExecutionContractError("Preflight outcome does not agree with its checks")
+        participant_ids = evidence.get("participant_ids", [])
         contract = request_row.get("contract") if isinstance(request_row.get("contract"), dict) else {}
         expected_participants = [
             str(move.get("player_id") or "")
@@ -243,16 +261,44 @@ def validate_preflight_report(
         ]
         if participant_ids != expected_participants:
             raise ExecutionContractError("Preflight participants do not match the claimed contract")
-        target_period = (contract.get("target_period") or {}).get("period_number")
-        try:
-            period_matches = int(evidence.get("target_period")) == int(target_period)
-        except (TypeError, ValueError):
-            period_matches = False
-        if not period_matches:
-            raise ExecutionContractError("Preflight period does not match the claimed contract")
-        expected_roster_ids = request_row.get("expected_roster_ids") or []
-        if evidence.get("roster_player_count") != len(expected_roster_ids):
-            raise ExecutionContractError("Preflight roster count does not match the claimed contract")
+        roster_digest = str(evidence.get("roster_ids_sha256") or "").casefold()
+        if len(roster_digest) != 64 or any(char not in "0123456789abcdef" for char in roster_digest):
+            raise ExecutionContractError("Preflight roster digest is missing or malformed")
+        if outcome == "passed":
+            target_period = (contract.get("target_period") or {}).get("period_number")
+            try:
+                period_matches = int(evidence.get("target_period")) == int(target_period)
+            except (TypeError, ValueError):
+                period_matches = False
+            if not period_matches:
+                raise ExecutionContractError("Passing preflight period does not match the claimed contract")
+            expected_roster_ids = request_row.get("expected_roster_ids") or []
+            if evidence.get("roster_player_count") != len(expected_roster_ids):
+                raise ExecutionContractError("Passing preflight roster count does not match the claimed contract")
+            if not hmac.compare_digest(roster_digest, roster_ids_digest(expected_roster_ids)):
+                raise ExecutionContractError("Passing preflight roster membership does not match the claimed contract")
+            observed_slots = evidence.get("participant_slots")
+            eligible_destinations = evidence.get("eligible_destinations")
+            if not isinstance(observed_slots, dict) or set(observed_slots) != set(expected_participants):
+                raise ExecutionContractError("Passing preflight participant slots are incomplete")
+            if not isinstance(eligible_destinations, dict) or set(eligible_destinations) != set(expected_participants):
+                raise ExecutionContractError("Passing preflight destination evidence is incomplete")
+            for move in contract.get("slot_moves") or []:
+                player_id = str(move.get("player_id") or "")
+                if _normalized_slot(observed_slots.get(player_id)) != _normalized_slot(move.get("from_slot")):
+                    raise ExecutionContractError("Passing preflight participant slot does not match the contract")
+                destinations = {
+                    _normalized_slot(value)
+                    for value in eligible_destinations.get(player_id) or []
+                }
+                if _normalized_slot(move.get("to_slot")) not in destinations:
+                    raise ExecutionContractError("Passing preflight destination eligibility does not match the contract")
+            if any(check["state"] != "passed" for check in normalized_checks):
+                raise ExecutionContractError("Passing preflight must pass every required live check")
+    if outcome == "failed" and not any_failed:
+        raise ExecutionContractError("Failed preflight must contain a failed check")
+    if request_row is not None:
+        _validate_observed_at(report.get("observed_at"), request_row)
     evidence = {key: value for key, value in evidence.items() if key in ALLOWED_EVIDENCE_KEYS}
     if len(json.dumps(evidence, sort_keys=True, default=str)) > 32_000:
         raise ExecutionContractError("Preflight evidence is too large")
@@ -267,6 +313,34 @@ def validate_preflight_report(
             else str(report.get("observed_at") or "")
         ),
     }
+
+
+def required_preflight_check_keys(request_row: dict[str, Any]) -> set[str]:
+    contract = request_row.get("contract") if isinstance(request_row.get("contract"), dict) else {}
+    participant_ids = [
+        str(move.get("player_id") or "")
+        for move in contract.get("slot_moves") or []
+        if isinstance(move, dict) and move.get("player_id")
+    ]
+    keys = {"mode", "target_period", "roster_set", "roster_departures", "deadline", "atomic_swap"}
+    for player_id in participant_ids:
+        keys.update({
+            f"player_present:{player_id}",
+            f"from_slot:{player_id}",
+            f"destination:{player_id}",
+        })
+    return keys
+
+
+def roster_ids_digest(roster_ids: Any) -> str:
+    normalized = sorted({str(value) for value in roster_ids or [] if value})
+    canonical = json.dumps(normalized, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _normalized_slot(value: Any) -> str:
+    slot = str(value or "").strip().upper()
+    return "RES" if slot == "BN" else slot
 
 
 def public_request(row: dict[str, Any], *, include_contract: bool) -> dict[str, Any]:
@@ -345,6 +419,25 @@ def _parse_datetime(value: Any) -> datetime | None:
         return _aware(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
     except ValueError:
         return None
+
+
+def _validate_observed_at(value: Any, request_row: dict[str, Any]) -> None:
+    observed = _parse_datetime(value)
+    claimed_at = _parse_datetime(request_row.get("claimed_at"))
+    lease_expires_at = _parse_datetime(request_row.get("lease_expires_at"))
+    request_expires_at = _parse_datetime(request_row.get("expires_at"))
+    if not observed or not claimed_at or not lease_expires_at or not request_expires_at:
+        raise ExecutionContractError("Preflight observation or claim timing is incomplete")
+    skew = timedelta(seconds=15)
+    terminal = min(lease_expires_at, request_expires_at)
+    if observed < claimed_at - skew or observed > terminal + skew:
+        raise ExecutionContractError("Preflight observation is outside the live claim window")
+
+
+def _json_default(value: Any) -> str:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def _aware(value: datetime) -> datetime:

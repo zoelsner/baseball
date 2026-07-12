@@ -57,6 +57,7 @@ def valid_fixture():
         "writes_enabled": False,
         "action": "change_slot",
         "snapshot_id": 274,
+        "snapshot_taken_at": NOW,
         "league_id": "league",
         "team_id": "team",
         "target_period": target,
@@ -255,6 +256,29 @@ class FakeConnection:
         return FakeResult(row)
 
 
+class FakeHttpResponse:
+    def __init__(self, payload, status_code=200):
+        self.payload = payload
+        self.status_code = status_code
+
+    def json(self):
+        return self.payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class FakeHttp:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def post(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return self.responses.pop(0)
+
+
 @contextmanager
 def fake_connect(connection):
     yield connection
@@ -303,10 +327,35 @@ class ExecutionPersistenceTests(unittest.TestCase):
         self.assertIn("lease_token_hash = %s", terminal_sql)
         self.assertIn("lease_token_hash = NULL", terminal_sql)
 
+    def test_status_read_normalizes_expired_pending_request(self):
+        connection = FakeConnection(rows=[None, {"request_id": "xreq", "state": "expired"}])
+        with patch("sandlot_db.connect", lambda: fake_connect(connection)):
+            row = sandlot_db.execution_request_by_id("xreq")
+
+        self.assertEqual(row["state"], "expired")
+        self.assertIn("state = 'expired'", connection.calls[0][0])
+        self.assertEqual(connection.calls[0][1], ("xreq",))
+
+    def test_idempotent_conflict_normalizes_expiry_before_returning_existing_row(self):
+        snapshot, action, submitted = valid_fixture()
+        prepared = sandlot_execution.prepare_dry_run_request(
+            snapshot_row=snapshot,
+            action=action,
+            submitted=submitted,
+            now=NOW,
+        )
+        connection = FakeConnection(rows=[None, None, {**prepared, "state": "expired"}])
+        with patch("sandlot_db.connect", lambda: fake_connect(connection)):
+            row, created = sandlot_db.create_execution_request(prepared)
+
+        self.assertFalse(created)
+        self.assertEqual(row["state"], "expired")
+        self.assertIn("state = 'expired'", connection.calls[1][0])
+
     def test_runner_free_text_is_not_persisted_and_evidence_is_allowlisted(self):
         report = sandlot_execution.validate_preflight_report({
             "outcome": "failed",
-            "checks": [{"key": "deadline", "state": "failed", "detail": "do not store this arbitrary text"}],
+            "checks": [{"key": "live_read", "state": "failed", "detail": "do not store this arbitrary text"}],
             "evidence": {
                 "source": "visible_fantrax_dom+authenticated_read_api",
                 "fantrax_click_count": 0,
@@ -337,23 +386,59 @@ class ExecutionPersistenceTests(unittest.TestCase):
             submitted=submitted,
             now=NOW,
         )
-        report = {
+        report = sandlot_execution_runner.evaluate_preflight(claimed, live_fixture(), now=NOW)
+        report["evidence"]["participant_ids"] = ["wrong", "players"]
+
+        with self.assertRaisesRegex(sandlot_execution.ExecutionContractError, "participants"):
+            sandlot_execution.validate_preflight_report(report, request_row=claimed)
+
+    def test_real_datetime_contract_is_normalized_for_jsonb_storage(self):
+        snapshot, action, submitted = valid_fixture()
+        request = sandlot_execution.prepare_dry_run_request(
+            snapshot_row=snapshot,
+            action=action,
+            submitted=submitted,
+            now=NOW,
+        )
+        self.assertEqual(request["contract"]["snapshot_taken_at"], NOW.isoformat())
+
+    def test_incomplete_or_stale_passing_report_is_rejected(self):
+        snapshot, action, submitted = valid_fixture()
+        claimed = sandlot_execution.prepare_dry_run_request(
+            snapshot_row=snapshot,
+            action=action,
+            submitted=submitted,
+            now=NOW,
+        )
+        claimed.update({
+            "claimed_at": NOW - timedelta(seconds=1),
+            "lease_expires_at": NOW + timedelta(seconds=30),
+        })
+        incomplete = {
             "outcome": "passed",
-            "checks": [{"key": "all", "state": "passed", "detail": "ok"}],
+            "checks": [{"key": "all", "state": "passed", "detail": "trust me"}],
             "evidence": {
                 "source": "visible_fantrax_dom+authenticated_read_api",
                 "target_period": 17,
                 "roster_player_count": 3,
-                "participant_ids": ["wrong", "players"],
+                "roster_ids_sha256": sandlot_execution.roster_ids_digest(["bench", "judge", "starter"]),
+                "participant_ids": ["bench", "starter"],
                 "fantrax_click_count": 0,
                 "fantrax_write_count": 0,
             },
             "observed_at": NOW,
             "writes_attempted": False,
         }
+        with self.assertRaisesRegex(sandlot_execution.ExecutionContractError, "exact required"):
+            sandlot_execution.validate_preflight_report(incomplete, request_row=claimed)
 
-        with self.assertRaisesRegex(sandlot_execution.ExecutionContractError, "participants"):
-            sandlot_execution.validate_preflight_report(report, request_row=claimed)
+        full = sandlot_execution_runner.evaluate_preflight(
+            claimed,
+            live_fixture(),
+            now=NOW - timedelta(minutes=5),
+        )
+        with self.assertRaisesRegex(sandlot_execution.ExecutionContractError, "outside the live claim"):
+            sandlot_execution.validate_preflight_report(full, request_row=claimed)
 
 
 class VisibleRunnerTests(unittest.TestCase):
@@ -380,6 +465,13 @@ class VisibleRunnerTests(unittest.TestCase):
         self.assertEqual(result["evidence"]["fantrax_click_count"], 0)
         self.assertEqual(result["evidence"]["fantrax_write_count"], 0)
         self.assertTrue(all(check["state"] == "passed" for check in result["checks"]))
+        claimed = self.claimed_request()
+        claimed.update({
+            "claimed_at": NOW - timedelta(seconds=1),
+            "lease_expires_at": NOW + timedelta(seconds=30),
+        })
+        validated = sandlot_execution.validate_preflight_report(result, request_row=claimed)
+        self.assertEqual(validated["outcome"], "passed")
 
     def test_visible_reader_uses_only_headful_capture_and_read_api(self):
         request = self.claimed_request()
@@ -434,6 +526,82 @@ class VisibleRunnerTests(unittest.TestCase):
                 self.assertEqual(result["outcome"], "failed")
                 self.assertIn(expected_key, failed)
 
+    def test_failed_drift_report_can_reach_terminal_validation(self):
+        claimed = self.claimed_request()
+        claimed.update({
+            "claimed_at": NOW - timedelta(seconds=1),
+            "lease_expires_at": NOW + timedelta(seconds=30),
+        })
+        live = live_fixture()
+        live["snapshot"]["roster"]["period_number"] = 18
+        report = sandlot_execution_runner.evaluate_preflight(claimed, live, now=NOW)
+
+        validated = sandlot_execution.validate_preflight_report(report, request_row=claimed)
+        self.assertEqual(validated["outcome"], "failed")
+
+    def test_runner_rejects_remote_http_but_allows_https_and_loopback(self):
+        with self.assertRaisesRegex(ValueError, "HTTPS"):
+            sandlot_execution_runner.validate_base_url("http://sandlot.example.com")
+        self.assertEqual(
+            sandlot_execution_runner.validate_base_url("http://127.0.0.1:8123"),
+            "http://127.0.0.1:8123",
+        )
+        self.assertEqual(
+            sandlot_execution_runner.validate_base_url("https://sandlot.example.com/"),
+            "https://sandlot.example.com",
+        )
+
+    def test_live_read_exception_reports_one_terminal_safe_failure(self):
+        claimed = self.claimed_request()
+        current = datetime.now(timezone.utc)
+        claimed.update({
+            "request_id": "xreq_failure",
+            "state": "claimed",
+            "claimed_at": current - timedelta(seconds=1),
+            "lease_expires_at": current + timedelta(seconds=30),
+            "expires_at": current + timedelta(seconds=60),
+            "lease_token": "plain-lease-token-value",
+        })
+        http = FakeHttp([
+            FakeHttpResponse({"request": deepcopy(claimed), "writes_enabled": False}),
+            FakeHttpResponse({"request_id": "xreq_failure", "state": "preflight_failed"}),
+        ])
+
+        class FailingReader:
+            def read(self, _request):
+                raise RuntimeError("local browser unavailable")
+
+        result = sandlot_execution_runner.process_once(
+            base_url="https://sandlot.example.com",
+            runner_token="runner-secret",
+            runner_id="zach-mac",
+            reader=FailingReader(),
+            http=http,
+        )
+
+        self.assertEqual(result["state"], "preflight_failed")
+        self.assertEqual(len(http.calls), 2)
+        self.assertFalse(http.calls[0][1]["allow_redirects"])
+        report = deepcopy(http.calls[1][1]["json"])
+        report.pop("lease_token")
+        validated = sandlot_execution.validate_preflight_report(report, request_row=claimed)
+        self.assertEqual(validated["checks"], [{
+            "key": "live_read",
+            "state": "failed",
+            "detail": "Live check failed.",
+        }])
+
+    def test_runner_refuses_credential_bearing_redirect(self):
+        http = FakeHttp([FakeHttpResponse({}, status_code=302)])
+        with self.assertRaisesRegex(RuntimeError, "redirect"):
+            sandlot_execution_runner.process_once(
+                base_url="https://sandlot.example.com",
+                runner_token="runner-secret",
+                runner_id="zach-mac",
+                http=http,
+            )
+        self.assertFalse(http.calls[0][1]["allow_redirects"])
+
 
 class ExecutionApiTests(unittest.TestCase):
     def setUp(self):
@@ -481,6 +649,7 @@ class ExecutionApiTests(unittest.TestCase):
         )
         stored = {
             **prepared,
+            "state": "expired",
             "created_at": NOW,
             "claimed_at": None,
             "completed_at": None,
@@ -503,6 +672,7 @@ class ExecutionApiTests(unittest.TestCase):
         self.assertFalse(response.json()["created"])
         self.assertNotIn("contract", response.json())
         self.assertFalse(response.json()["writes_enabled"])
+        self.assertFalse(response.json()["request_enabled"])
         self.assertEqual(create.call_count, 1)
 
     def test_claim_returns_plaintext_lease_once_and_stores_only_digest(self):
@@ -530,28 +700,21 @@ class ExecutionApiTests(unittest.TestCase):
         self.assertNotEqual(claim.call_args.kwargs["lease_token_hash"], "plain-lease-token-value")
 
     def test_terminal_preflight_is_compare_and_swap_bound_to_live_lease(self):
-        body = {
-            "lease_token": "a-valid-lease-token",
-            "outcome": "passed",
-            "checks": [{"key": "all", "state": "passed", "detail": "All live checks passed"}],
-            "evidence": {
-                "source": "visible_fantrax_dom+authenticated_read_api",
-                "target_period": 17,
-                "roster_player_count": 3,
-                "participant_ids": ["bench", "starter"],
-                "fantrax_click_count": 0,
-                "fantrax_write_count": 0,
-            },
-            "observed_at": NOW.isoformat(),
-            "writes_attempted": False,
-        }
         claimed = sandlot_execution.prepare_dry_run_request(
             snapshot_row=self.snapshot,
             action=self.action,
             submitted=self.submitted,
             now=NOW,
         )
-        claimed["state"] = "claimed"
+        claimed.update({
+            "state": "claimed",
+            "claimed_at": NOW - timedelta(seconds=1),
+            "lease_expires_at": NOW + timedelta(seconds=30),
+        })
+        body = {
+            **sandlot_execution_runner.evaluate_preflight(claimed, live_fixture(), now=NOW),
+            "lease_token": "a-valid-lease-token",
+        }
         with (
             patch.dict(os.environ, self.env, clear=True),
             patch("sandlot_api.sandlot_db.execution_request_by_id", return_value=claimed),

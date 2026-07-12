@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import requests
 
@@ -25,6 +26,7 @@ if str(ROOT) not in sys.path:
 import auth
 import fantrax_data
 import fantrax_dom
+import sandlot_execution
 
 
 BENCH_SLOTS = {"BN", "RES"}
@@ -86,6 +88,8 @@ def evaluate_preflight(
     live_ids = set(by_id)
     dom_slots = live.get("dom_slots") if isinstance(live.get("dom_slots"), dict) else {}
     checks: list[dict[str, str]] = []
+    participant_slots: dict[str, str] = {}
+    eligible_destinations: dict[str, list[str]] = {}
 
     _check(
         checks,
@@ -137,6 +141,8 @@ def evaluate_preflight(
         to_slot = _slot(move.get("to_slot"))
         api_slot = _slot((row or {}).get("slot"))
         dom_slot = _slot((dom_slots.get(player_id) or {}).get("slot"))
+        participant_slots[player_id] = api_slot
+        eligible_destinations[player_id] = sorted(_eligible_destinations(row or {}))
         _check(
             checks,
             f"player_present:{player_id}",
@@ -174,7 +180,10 @@ def evaluate_preflight(
             "source": "visible_fantrax_dom+authenticated_read_api",
             "target_period": roster.get("period_number"),
             "roster_player_count": len(live_ids),
+            "roster_ids_sha256": sandlot_execution.roster_ids_digest(live_ids),
             "participant_ids": participant_ids,
+            "participant_slots": participant_slots,
+            "eligible_destinations": eligible_destinations,
             "fantrax_click_count": 0,
             "fantrax_write_count": 0,
         },
@@ -191,8 +200,10 @@ def process_once(
     reader: LiveReader | None = None,
     http: Any = requests,
 ) -> dict[str, Any] | None:
+    base_url = validate_base_url(base_url)
     headers = {"authorization": f"Bearer {runner_token}"}
-    response = http.post(
+    response = _post_without_redirects(
+        http,
         f"{base_url.rstrip('/')}/api/execution-requests/claim",
         json={"runner_id": runner_id},
         headers=headers,
@@ -224,7 +235,8 @@ def process_once(
             "writes_attempted": False,
         }
 
-    result = http.post(
+    result = _post_without_redirects(
+        http,
         f"{base_url.rstrip('/')}/api/execution-requests/{claimed['request_id']}/preflight",
         json={**report, "lease_token": lease_token},
         headers=headers,
@@ -234,15 +246,41 @@ def process_once(
     return result.json()
 
 
+def validate_base_url(value: str) -> str:
+    raw = str(value or "").strip()
+    parsed = urlsplit(raw)
+    host = (parsed.hostname or "").casefold()
+    loopback = host in {"localhost", "127.0.0.1", "::1"}
+    if not host or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Runner base URL must be an uncredentialed origin")
+    if parsed.path not in {"", "/"}:
+        raise ValueError("Runner base URL must not contain a path")
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and loopback):
+        raise ValueError("Runner base URL must use HTTPS except for loopback development")
+    return raw.rstrip("/")
+
+
+def _post_without_redirects(http: Any, url: str, **kwargs: Any) -> Any:
+    response = http.post(url, allow_redirects=False, **kwargs)
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if 300 <= status_code < 400:
+        raise RuntimeError("Runner API refused a credential-bearing redirect")
+    return response
+
+
 def _destination_allowed(row: dict[str, Any], to_slot: str) -> bool:
+    return to_slot in _eligible_destinations(row)
+
+
+def _eligible_destinations(row: dict[str, Any]) -> set[str]:
     eligibility = row.get("lineup_eligibility")
-    if not isinstance(eligibility, dict) or not to_slot:
-        return False
-    if to_slot in BENCH_SLOTS:
-        statuses = {_slot(value) for value in eligibility.get("eligible_statuses") or []}
-        return bool(statuses & BENCH_SLOTS)
-    positions = {_slot(value) for value in eligibility.get("eligible_positions") or []}
-    return to_slot in positions
+    if not isinstance(eligibility, dict):
+        return set()
+    destinations = {_slot(value) for value in eligibility.get("eligible_positions") or []}
+    statuses = {_slot(value) for value in eligibility.get("eligible_statuses") or []}
+    if statuses & BENCH_SLOTS:
+        destinations.add("RES")
+    return {value for value in destinations if value}
 
 
 def _check(

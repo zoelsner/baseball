@@ -252,7 +252,9 @@ A separately authenticated local Mac runner claims a request once, receives a
 single-use lease, opens Fantrax visibly, and performs zero-click checks against
 both the rendered roster DOM and authenticated read APIs. It proves the exact
 editable period, complete unchanged roster ID set, participant from-slots,
-destination eligibility, and deadline. The request then becomes terminal as
+destination eligibility, and deadline. A passing report includes every
+contract-derived live check, the exact full-roster digest, and a timestamp
+inside the one-time lease window. The request then becomes terminal as
 `preflight_passed` or `preflight_failed`; an expired claim is never requeued.
 The database stores only credential and lease digests, never their plaintext,
 and preflight evidence rejects cookie, token, session, password, or auth fields.
