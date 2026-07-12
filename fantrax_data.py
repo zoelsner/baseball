@@ -25,6 +25,7 @@ from fantraxapi import FantraxAPI
 
 import mlb_stats
 import sandlot_trade_evidence
+import sandlot_trade_outcomes
 try:
     from fantraxapi import api as _fantrax_api
 except Exception:  # fantraxapi 0.2.x exposes raw calls through FantraxAPI._request.
@@ -195,6 +196,217 @@ VERIFIED_WEEKLY_LINEUP_POLICIES = {
         },
     },
 }
+
+
+def extract_trade_player_period_evidence(
+    api: Any,
+    requirement: dict[str, Any],
+    *,
+    by_period_code: str | None = None,
+    observed_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Fetch one exact arbitrary-player Fantrax period/role row after maturity."""
+    league_id = str(getattr(api, "league_id", "") or "").strip()
+    if league_id != str(requirement.get("league_id") or ""):
+        raise ValueError("trade player-period request league identity is invalid")
+    period_number = str(requirement.get("period_number") or "").strip()
+    player_name = str(requirement.get("player_name") or "").strip()
+    player_id = str(requirement.get("fantrax_scorer_id") or "").strip()
+    scoring_role = str(requirement.get("scoring_role") or "").strip()
+    role_filter = sandlot_trade_outcomes.ROLE_FILTERS.get(scoring_role)
+    if not period_number or not player_name or not player_id or not role_filter:
+        raise ValueError("trade player-period request identity is incomplete")
+    if role_filter != requirement.get("role_filter"):
+        raise ValueError("trade player-period role filter is contradictory")
+    if by_period_code is None:
+        team_id = str(getattr(api, "team_id", "") or "").strip()
+        if not team_id:
+            own_ids = sorted(str(value) for value in getattr(api, "team_lookup", {}) or {})
+            team_id = own_ids[0] if own_ids else ""
+        current = _raw_team_roster(api, team_id) if team_id else None
+        if not current:
+            raise RuntimeError("Fantrax period selector metadata is unavailable")
+        by_period_code = _by_period_season_code(current)
+    request_data = {
+        "leagueId": league_id,
+        "view": "STATS",
+        "positionOrGroup": role_filter,
+        "statusOrTeamFilter": "ALL",
+        "maxResultsPerPage": "50",
+        "sortType": "SCORE",
+        "timeframeTypeCode": "BY_PERIOD",
+        "timeStartType": "PERIOD_ONLY",
+        "seasonOrProjection": by_period_code,
+        "transactionPeriod": int(period_number),
+        "pageNumber": "1",
+        "searchName": player_name,
+    }
+    raw = _direct_fxpa_request(api, "getPlayerStats", **request_data)
+    if not isinstance(raw, dict):
+        raise RuntimeError("Fantrax trade player-period response is invalid")
+    displayed_selection = raw.get("displayedSeasonOrProjection")
+    if not isinstance(displayed_selection, dict):
+        displayed = raw.get("displayedSelections") if isinstance(raw.get("displayedSelections"), dict) else {}
+        displayed_selection = displayed.get("displayedSeasonOrProjection")
+    if (
+        str(raw.get("displayedPeriod") or "") != period_number
+        or str(raw.get("displayedPosOrGroup") or "") != role_filter
+        or str(raw.get("displayedStatusOrTeam") or "") != "ALL"
+        or str(raw.get("displayedTimeStartType") or "") != "PERIOD_ONLY"
+        or _selection_code(displayed_selection) != by_period_code
+        or not isinstance(displayed_selection, dict)
+        or str(displayed_selection.get("timeframeTypeCode") or "") != "BY_PERIOD"
+    ):
+        raise ValueError("Fantrax trade player-period response identity does not match the request")
+    period_range = _player_stats_period_range(raw.get("periodList"), period_number, requirement.get("season"))
+    if period_range != (str(requirement.get("period_start")), str(requirement.get("period_end"))):
+        raise ValueError("Fantrax trade player-period response dates do not match the frozen period")
+    pagination = raw.get("paginatedResultSet") if isinstance(raw.get("paginatedResultSet"), dict) else {}
+    rows = raw.get("statsTable") if isinstance(raw.get("statsTable"), list) else []
+    if (
+        int(pagination.get("pageNumber") or 0) != 1
+        or int(pagination.get("totalNumPages") or 0) != 1
+        or int(pagination.get("totalNumResults") or -1) != len(rows)
+        or int(pagination.get("maxResultsPerPage") or 0) != 50
+    ):
+        raise ValueError("Fantrax trade player-period targeted response is incomplete")
+    header = raw.get("tableHeader") if isinstance(raw.get("tableHeader"), dict) else {}
+    header_cells = header.get("cells") if isinstance(header.get("cells"), list) else []
+    fpts_indexes = [
+        index for index, cell in enumerate(header_cells)
+        if isinstance(cell, dict)
+        and cell.get("sortKey") == "SCORE"
+        and cell.get("key") == "fpts"
+        and cell.get("shortName") == "FPts"
+    ]
+    if len(fpts_indexes) != 1:
+        raise ValueError("Fantrax trade player-period FPts column is ambiguous")
+    observed = observed_at or datetime.now(timezone.utc)
+    query_content = {
+        "version": sandlot_trade_outcomes.TRADE_PLAYER_PERIOD_QUERY_VERSION,
+        "method": "getPlayerStats",
+        "request_identity": {
+            "league_id": league_id, "period": period_number,
+            "period_start": str(requirement.get("period_start")),
+            "period_end": str(requirement.get("period_end")),
+            "fantrax_scorer_id": player_id, "scoring_role": scoring_role,
+            "season_or_projection": by_period_code, "timeframe_type_code": "BY_PERIOD",
+            "time_start_type": "PERIOD_ONLY", "population": "ALL",
+            "role_filter": role_filter, "search_name": player_name, "page": 1, "page_size": 50,
+        },
+    }
+    source_query = {
+        **query_content,
+        "query_hash": hashlib.sha256(
+            json.dumps(query_content, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest(),
+    }
+    matches = [row for row in rows if isinstance(row, dict) and _row_player_id(row) == player_id]
+    if not matches:
+        returned_ids = sorted(_row_player_id(row) for row in rows if isinstance(row, dict) and _row_player_id(row))
+        absence_content = {
+            "displayed_period": period_number,
+            "displayed_period_start": period_range[0], "displayed_period_end": period_range[1],
+            "displayed_season_or_projection": by_period_code,
+            "displayed_timeframe_type_code": "BY_PERIOD", "displayed_time_start_type": "PERIOD_ONLY",
+            "displayed_population": "ALL", "displayed_role_filter": role_filter,
+            "page_number": 1, "total_pages": 1, "total_results": len(rows),
+            "exact_scorer_present": False, "returned_scorer_ids": returned_ids,
+            "header_hash": hashlib.sha256(
+                json.dumps(header_cells, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+            ).hexdigest(),
+            "raw_response_hash": hashlib.sha256(
+                json.dumps(raw, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+            ).hexdigest(),
+        }
+        source_response = {
+            **absence_content,
+            "response_hash": hashlib.sha256(
+                json.dumps(absence_content, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+            ).hexdigest(),
+        }
+        return sandlot_trade_outcomes.build_missing_player_period_observation(
+            requirement=requirement,
+            source_query=source_query,
+            source_response=source_response,
+            observed_at=observed,
+        )
+    if len(matches) != 1:
+        raise ValueError("Fantrax trade player-period response repeats the exact scorer")
+    row = matches[0]
+    points = _period_points(row, fpts_indexes[0])
+    if points is None:
+        raise ValueError("Fantrax trade player-period points are invalid")
+    scorer = row.get("scorer") if isinstance(row.get("scorer"), dict) else {}
+    returned_name = str(scorer.get("name") or scorer.get("fullName") or "").strip()
+    if not returned_name:
+        raise ValueError("Fantrax trade player-period scorer name is missing")
+    period_fpts_source = f"SCORE:fpts:cells[{fpts_indexes[0]}].content"
+    matched_source_slice = {
+        "fantrax_scorer_id": player_id,
+        "player_name": returned_name,
+        "scoring_role": scoring_role,
+        "period_fpts": points,
+        "period_fpts_source": period_fpts_source,
+    }
+    response_content = {
+        "displayed_period": period_number,
+        "displayed_period_start": period_range[0], "displayed_period_end": period_range[1],
+        "displayed_season_or_projection": by_period_code,
+        "displayed_timeframe_type_code": "BY_PERIOD", "displayed_time_start_type": "PERIOD_ONLY",
+        "displayed_population": "ALL", "displayed_role_filter": role_filter,
+        "page_number": 1, "total_pages": 1, "total_results": len(rows),
+        "matched_scorer_id": player_id, "matched_scorer_name": returned_name,
+        "matched_scoring_role": scoring_role, "matched_period_fpts": points,
+        "period_fpts_source": period_fpts_source,
+        "matched_source_slice": matched_source_slice,
+        "matched_source_slice_hash": hashlib.sha256(
+            json.dumps(matched_source_slice, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest(),
+        "raw_matched_row_hash": hashlib.sha256(
+            json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest(),
+        "raw_response_hash": hashlib.sha256(
+            json.dumps(raw, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest(),
+        "header_hash": hashlib.sha256(
+            json.dumps(header_cells, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest(),
+    }
+    source_response = {
+        **response_content,
+        "response_hash": hashlib.sha256(
+            json.dumps(response_content, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest(),
+    }
+    return sandlot_trade_outcomes.build_player_period_evidence(
+        requirement={**requirement, "player_name": returned_name},
+        period_fpts=points,
+        source_query=source_query,
+        source_response=source_response,
+        observed_at=observed,
+    )
+
+
+def _player_stats_period_range(period_list: Any, period_number: str, season: Any) -> tuple[str, str] | None:
+    if not isinstance(period_list, list):
+        return None
+    try:
+        year = int(season)
+    except (TypeError, ValueError):
+        return None
+    pattern = re.compile(
+        rf"^\s*{re.escape(str(period_number))}\s*\(\s*([A-Za-z]{{3}}\s+\d{{1,2}})\s*[-–]\s*([A-Za-z]{{3}}\s+\d{{1,2}})\s*\)\s*$"
+    )
+    for value in period_list:
+        match = pattern.match(str(value or ""))
+        if not match:
+            continue
+        start = datetime.strptime(f"{match.group(1)} {year}", "%b %d %Y").date()
+        end_year = year + 1 if match.group(2).startswith("Jan") and start.month == 12 else year
+        end = datetime.strptime(f"{match.group(2)} {end_year}", "%b %d %Y").date()
+        return start.isoformat(), end.isoformat()
+    return None
 
 
 def extract_completed_lineup_evidence(

@@ -23,6 +23,7 @@ import sandlot_db
 import sandlot_future_games
 import sandlot_matchup
 import sandlot_receipts
+import sandlot_trade_outcomes
 
 log = logging.getLogger(__name__)
 REFRESH_LOCK_ID = 2026051501
@@ -86,6 +87,9 @@ def _run_refresh_unlocked(source: str, started: float) -> RefreshResult:
         if status == "success":
             _persist_projection_log(snapshot_id, snapshot)
             _persist_lineup_period_evidence(snapshot_id, snapshot)
+            _persist_trade_period_outcomes(
+                snapshot_id, snapshot, session=session, league_id=league_id, team_id=team_id,
+            )
             _persist_recommendation_outcomes(snapshot_id, snapshot)
         sandlot_db.finish_refresh_run(
             run_id,
@@ -191,6 +195,143 @@ def _persist_lineup_period_evidence(snapshot_id: int, snapshot: dict[str, Any]) 
         sandlot_db.archive_lineup_period_evidence(evidence=evidence, snapshot_id=snapshot_id)
     except Exception:
         log.exception("Completed lineup evidence write failed for snapshot_id=%s", snapshot_id)
+
+
+def _persist_trade_period_outcomes(
+    snapshot_id: int,
+    snapshot: dict[str, Any],
+    *,
+    session: requests.Session,
+    league_id: str,
+    team_id: str,
+) -> None:
+    """Collect only mature required player-role rows, then score complete packages."""
+    if not os.environ.get("DATABASE_URL"):
+        return
+    try:
+        receipts = sandlot_db.trade_receipts_missing_static_package_evaluation(
+            league_id=league_id, team_id=team_id,
+        )
+        as_of = datetime.now(timezone.utc)
+        requirements = sandlot_trade_outcomes.dedupe_requirements(receipts, as_of=as_of)
+    except Exception:
+        log.exception("Trade period evidence requirement selection failed for snapshot_id=%s", snapshot_id)
+        return
+    if not requirements:
+        return
+    absence_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    try:
+        archived = sandlot_db.get_trade_player_period_evidence(requirements=requirements)
+        archived_keys = {
+            sandlot_trade_outcomes.requirement_key({
+                "league_id": item.get("league_id"), "season": item.get("season"),
+                "period_number": (item.get("period") or {}).get("number"),
+                "period_start": (item.get("period") or {}).get("start"),
+                "period_end": (item.get("period") or {}).get("end"),
+                "fantrax_scorer_id": (item.get("entity") or {}).get("fantrax_scorer_id"),
+                "scoring_role": (item.get("entity") or {}).get("scoring_role"),
+                "evidence_version": item.get("evidence_version"),
+            })
+            for item in archived
+            if isinstance(item, dict)
+        }
+        missing = [
+            requirement for requirement in requirements
+            if sandlot_trade_outcomes.requirement_key(requirement) not in archived_keys
+        ]
+        if missing:
+            api = fantrax_data.FantraxAPI(league_id, session=session)
+            current = fantrax_data._raw_team_roster(api, team_id)
+            if not current:
+                raise RuntimeError("Fantrax period selector metadata is unavailable")
+            by_period_code = fantrax_data._by_period_season_code(current)
+            for requirement in missing:
+                try:
+                    evidence = fantrax_data.extract_trade_player_period_evidence(
+                        api,
+                        requirement,
+                        by_period_code=by_period_code,
+                    )
+                    if evidence.get("observation_type") == "exact_scorer_absent":
+                        absence_by_key[sandlot_trade_outcomes.requirement_key(requirement)] = evidence
+                        log.info(
+                            "Trade period evidence pending for scorer=%s role=%s period=%s",
+                            requirement.get("fantrax_scorer_id"), requirement.get("scoring_role"),
+                            requirement.get("period_number"),
+                        )
+                        continue
+                    sandlot_db.archive_trade_player_period_evidence(
+                        evidence=evidence, snapshot_id=snapshot_id,
+                    )
+                except Exception:
+                    log.exception(
+                        "Trade player-period evidence collection failed for scorer=%s role=%s period=%s",
+                        requirement.get("fantrax_scorer_id"), requirement.get("scoring_role"),
+                        requirement.get("period_number"),
+                    )
+    except Exception:
+        log.exception("Trade player-period evidence batch failed for snapshot_id=%s", snapshot_id)
+
+    for receipt in receipts:
+        try:
+            receipt_requirements = sandlot_trade_outcomes.receipt_requirements(
+                receipt, as_of=datetime.now(timezone.utc),
+            )
+            if not receipt_requirements:
+                continue
+            evidence_rows = sandlot_db.get_trade_player_period_evidence(
+                requirements=receipt_requirements,
+            )
+            if len(evidence_rows) != len(receipt_requirements):
+                evidence_keys = {
+                    sandlot_trade_outcomes.requirement_key({
+                        "league_id": item.get("league_id"), "season": item.get("season"),
+                        "period_number": (item.get("period") or {}).get("number"),
+                        "period_start": (item.get("period") or {}).get("start"),
+                        "period_end": (item.get("period") or {}).get("end"),
+                        "fantrax_scorer_id": (item.get("entity") or {}).get("fantrax_scorer_id"),
+                        "scoring_role": (item.get("entity") or {}).get("scoring_role"),
+                        "evidence_version": item.get("evidence_version"),
+                    })
+                    for item in evidence_rows
+                }
+                missing_keys = [
+                    sandlot_trade_outcomes.requirement_key(item)
+                    for item in receipt_requirements
+                    if sandlot_trade_outcomes.requirement_key(item) not in evidence_keys
+                ]
+                observations = [absence_by_key[key] for key in missing_keys if key in absence_by_key]
+                terminal_as_of = datetime.now(timezone.utc)
+                if (
+                    len(observations) == len(missing_keys)
+                    and sandlot_trade_outcomes.missing_evidence_terminal_ready(
+                        receipt=receipt, snapshot=snapshot, as_of=terminal_as_of,
+                    )
+                ):
+                    unavailable = sandlot_trade_outcomes.build_static_package_unavailable(
+                        receipt=receipt,
+                        missing_observations=observations,
+                        snapshot=snapshot,
+                        snapshot_id=snapshot_id,
+                        as_of=terminal_as_of,
+                    )
+                    sandlot_db.record_trade_static_package_evaluation(
+                        receipt_id=receipt["receipt_id"], evaluation=unavailable,
+                    )
+                continue
+            evaluation = sandlot_trade_outcomes.build_static_package_evaluation(
+                receipt=receipt,
+                player_period_evidence=evidence_rows,
+                as_of=datetime.now(timezone.utc),
+            )
+            sandlot_db.record_trade_static_package_evaluation(
+                receipt_id=receipt["receipt_id"], evaluation=evaluation,
+            )
+        except Exception:
+            log.exception(
+                "Trade static package evaluation failed for receipt_id=%s",
+                receipt.get("receipt_id"),
+            )
 
 
 def _persist_recommendation_outcomes(snapshot_id: int, snapshot: dict[str, Any]) -> None:

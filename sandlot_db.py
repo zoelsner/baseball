@@ -288,6 +288,7 @@ def init_schema() -> None:
         _init_recommendation_receipts_schema(conn)
         _init_recommendation_outcome_evaluations_schema(conn)
         _init_lineup_period_evidence_schema(conn)
+        _init_trade_player_period_evidence_schema(conn)
         conn.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS execution_requests_proposal_instance_key
@@ -444,6 +445,89 @@ def archive_lineup_period_evidence(*, evidence: dict[str, Any], snapshot_id: int
         if existing and existing.get("evidence_hash") == evidence_hash and existing.get("evidence") == evidence:
             return dict(existing), False
         raise ValueError("completed lineup period already has different immutable evidence")
+
+
+def _init_trade_player_period_evidence_schema(conn: Any) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS trade_player_period_evidence (
+          league_id TEXT NOT NULL,
+          season INTEGER NOT NULL,
+          period_number TEXT NOT NULL,
+          period_start DATE NOT NULL,
+          period_end DATE NOT NULL,
+          fantrax_scorer_id TEXT NOT NULL,
+          scoring_role TEXT NOT NULL CHECK (scoring_role IN ('hitting', 'pitching')),
+          evidence_version TEXT NOT NULL,
+          league_fantasy_points NUMERIC NOT NULL,
+          source_status TEXT NOT NULL CHECK (source_status IN ('observed', 'explicit_zero')),
+          evidence_hash TEXT NOT NULL CHECK (evidence_hash ~ '^[0-9a-f]{64}$'),
+          evidence JSONB NOT NULL,
+          source_snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL,
+          observed_at TIMESTAMPTZ NOT NULL,
+          captured_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          PRIMARY KEY (
+            league_id, season, period_number, period_start, period_end,
+            fantrax_scorer_id, scoring_role, evidence_version
+          ),
+          CHECK (period_end >= period_start)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS trade_player_period_evidence_period_idx
+        ON trade_player_period_evidence
+          (league_id, season, period_number, evidence_version, fantrax_scorer_id, scoring_role)
+        """
+    )
+
+
+def archive_trade_player_period_evidence(
+    *, evidence: dict[str, Any], snapshot_id: int,
+) -> tuple[dict[str, Any], bool]:
+    """Append one exact immutable arbitrary-player period scoring entity."""
+    import sandlot_trade_outcomes
+
+    sandlot_trade_outcomes.validate_player_period_evidence(evidence)
+    period = evidence.get("period") if isinstance(evidence.get("period"), dict) else {}
+    entity = evidence.get("entity") if isinstance(evidence.get("entity"), dict) else {}
+    values = (
+        evidence.get("league_id"), evidence.get("season"), period.get("number"),
+        period.get("start"), period.get("end"), entity.get("fantrax_scorer_id"),
+        entity.get("scoring_role"), evidence.get("evidence_version"),
+        evidence.get("league_fantasy_points"), evidence.get("source_status"),
+        evidence.get("evidence_hash"), Jsonb(evidence), snapshot_id, evidence.get("observed_at"),
+    )
+    if any(value in (None, "") for value in values[:10]) or not snapshot_id:
+        raise ValueError("trade player-period evidence identity is incomplete")
+    with connect() as conn:
+        row = conn.execute(
+            """INSERT INTO trade_player_period_evidence
+               (league_id, season, period_number, period_start, period_end,
+                fantrax_scorer_id, scoring_role, evidence_version,
+                league_fantasy_points, source_status, evidence_hash, evidence,
+                source_snapshot_id, observed_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (
+                 league_id, season, period_number, period_start, period_end,
+                 fantrax_scorer_id, scoring_role, evidence_version
+               ) DO NOTHING
+               RETURNING *""",
+            values,
+        ).fetchone()
+        if row:
+            return dict(row), True
+        existing = conn.execute(
+            """SELECT * FROM trade_player_period_evidence
+               WHERE league_id=%s AND season=%s AND period_number=%s
+                 AND period_start=%s AND period_end=%s AND fantrax_scorer_id=%s
+                 AND scoring_role=%s AND evidence_version=%s""",
+            values[:8],
+        ).fetchone()
+        if existing and existing.get("evidence_hash") == evidence.get("evidence_hash") and existing.get("evidence") == evidence:
+            return dict(existing), False
+        raise ValueError("trade player-period entity already has different immutable evidence")
 
 
 def _init_recommendation_receipts_schema(conn: Any) -> None:
@@ -852,6 +936,66 @@ def receipts_missing_outcome_evaluation(
     return [dict(row) for row in rows]
 
 
+def trade_receipts_missing_static_package_evaluation(
+    *, league_id: str, team_id: str, limit: int = 500,
+) -> list[dict[str, Any]]:
+    """Return eligible V4 trade receipts regardless of owner intent or lifecycle state."""
+    import sandlot_trade_outcomes
+
+    bounded_limit = max(1, min(int(limit), 5000))
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.*
+            FROM recommendation_receipts r
+            LEFT JOIN recommendation_outcome_evaluations e
+              ON e.receipt_id = r.receipt_id AND e.scoring_version = %s
+            WHERE r.action_type = 'trade_assessment'
+              AND r.builder_version = %s
+              AND r.league_id = %s
+              AND r.team_id = %s
+              AND r.recommendation->'outcome_contract'->>'eligible' = 'true'
+              AND e.receipt_id IS NULL
+            ORDER BY r.generated_at, r.receipt_id
+            LIMIT %s
+            """,
+            (
+                sandlot_trade_outcomes.TRADE_STATIC_PACKAGE_SCORING_VERSION,
+                sandlot_trade_outcomes.TRADE_ASSESSMENT_BUILDER_VERSION,
+                league_id,
+                team_id,
+                bounded_limit,
+            ),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_trade_player_period_evidence(
+    *, requirements: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Load exact archived entities for a bounded set of frozen requirements."""
+    if not requirements:
+        return []
+    found: list[dict[str, Any]] = []
+    with connect() as conn:
+        for requirement in requirements:
+            row = conn.execute(
+                """SELECT evidence FROM trade_player_period_evidence
+                   WHERE league_id=%s AND season=%s AND period_number=%s
+                     AND period_start=%s AND period_end=%s AND fantrax_scorer_id=%s
+                     AND scoring_role=%s AND evidence_version=%s""",
+                (
+                    requirement.get("league_id"), requirement.get("season"),
+                    requirement.get("period_number"), requirement.get("period_start"),
+                    requirement.get("period_end"), requirement.get("fantrax_scorer_id"),
+                    requirement.get("scoring_role"), requirement.get("evidence_version"),
+                ),
+            ).fetchone()
+            if row and isinstance(row.get("evidence"), dict):
+                found.append(row["evidence"])
+    return found
+
+
 def record_recommendation_outcome_evaluation(
     *, receipt_id: str, evaluation: dict[str, Any]
 ) -> tuple[dict[str, Any], bool]:
@@ -974,6 +1118,193 @@ def record_recommendation_outcome_evaluation(
         if same:
             return dict(existing), False
         raise ValueError("recommendation evaluation version already has different immutable evidence")
+
+
+def record_trade_static_package_evaluation(
+    *, receipt_id: str, evaluation: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Append one immutable trade package label with exact source-row verification."""
+    import sandlot_trade_outcomes
+
+    if evaluation.get("scoring_version") != sandlot_trade_outcomes.TRADE_STATIC_PACKAGE_SCORING_VERSION:
+        raise ValueError("trade static package scoring version is unsupported")
+    state = evaluation.get("state")
+    if state not in {"scored", "unavailable"}:
+        raise ValueError("trade static package evaluation state is unsupported")
+    source_version = str(evaluation.get("source_evidence_version") or "")
+    source_hash = str(evaluation.get("source_evidence_hash") or "")
+    evidence = evaluation.get("evidence")
+    metrics = evaluation.get("metrics")
+    if source_version != sandlot_trade_outcomes.TRADE_PLAYER_PERIOD_EVIDENCE_VERSION:
+        raise ValueError("trade static package source version is unsupported")
+    if not re.fullmatch(r"[0-9a-f]{64}", source_hash):
+        raise ValueError("trade static package source hash is invalid")
+    if not isinstance(evidence, dict) or evidence.get("evidence_hash") != sandlot_trade_outcomes.static_package_evaluation_hash(evidence):
+        raise ValueError("trade static package evaluation hash is invalid")
+    scored_metrics = {
+        "give_package_points", "get_package_points", "static_package_asset_points_delta",
+        "give_asset_count", "get_asset_count", "give_entity_count", "get_entity_count",
+    }
+    required_metrics = scored_metrics if state == "scored" else set()
+    if not isinstance(metrics, dict) or set(metrics) != required_metrics or evidence.get("metrics") != metrics:
+        raise ValueError("trade static package metrics are incomplete")
+    if not all(math.isfinite(float(value)) for value in metrics.values()):
+        raise ValueError("trade static package metrics must be finite")
+    if state == "scored" and round(
+        float(metrics["get_package_points"]) - float(metrics["give_package_points"]), 4
+    ) != float(metrics["static_package_asset_points_delta"]):
+        raise ValueError("trade static package delta is contradictory")
+    for key in (
+        "causal_lift_claimed", "execution_claimed", "lineup_lift_claimed",
+        "ros_claimed", "dynasty_claimed", "autopilot_eligible",
+    ):
+        if evidence.get(key) is not False:
+            raise ValueError("trade static package evaluation contains an unsupported claim")
+    if evidence.get("execution_state") != "unknown":
+        raise ValueError("trade static package evaluation cannot infer execution")
+    embedded_source = evidence.get("source_evidence")
+    if not isinstance(embedded_source, dict) or embedded_source.get("version") != source_version:
+        raise ValueError("trade static package source lineage is invalid")
+    source_rows = embedded_source.get("rows") if state == "scored" else None
+    if state == "scored" and (not isinstance(source_rows, list) or not source_rows):
+        raise ValueError("trade static package source rows are missing")
+    if embedded_source.get("hash") != source_hash or (
+        state == "scored" and source_hash != sandlot_trade_outcomes.source_set_hash(source_rows)
+    ):
+        raise ValueError("trade static package source-set hash is invalid")
+
+    with connect() as conn:
+        receipt = conn.execute(
+            "SELECT * FROM recommendation_receipts WHERE receipt_id = %s FOR UPDATE",
+            (receipt_id,),
+        ).fetchone()
+        if not receipt:
+            raise LookupError("Recommendation receipt not found")
+        if receipt.get("builder_version") != sandlot_trade_outcomes.TRADE_ASSESSMENT_BUILDER_VERSION:
+            raise ValueError("trade static package receipt version is unsupported")
+        expected = {
+            "receipt_id": receipt.get("receipt_id"), "input_hash": receipt.get("input_hash"),
+            "league_id": receipt.get("league_id"), "team_id": receipt.get("team_id"),
+        }
+        if any(evidence.get(key) != value for key, value in expected.items()):
+            raise ValueError("trade static package evaluation does not match the receipt")
+        recommendation = receipt.get("recommendation") if isinstance(receipt.get("recommendation"), dict) else {}
+        contract = recommendation.get("outcome_contract") if isinstance(recommendation.get("outcome_contract"), dict) else {}
+        target = contract.get("target_period") if isinstance(contract.get("target_period"), dict) else {}
+        expected_target = {
+            "season": target.get("season"), "period_number": str(target.get("period_number")),
+            "start": target.get("start"), "end": target.get("end"),
+            "maturity_at": target.get("maturity_at"),
+        }
+        if evidence.get("target_period") != expected_target:
+            raise ValueError("trade static package target period contradicts the receipt")
+        if evidence.get("offer_cluster_key") != contract.get("offer_cluster_key"):
+            raise ValueError("trade static package offer cluster contradicts the receipt")
+        if state == "unavailable":
+            sandlot_trade_outcomes.validate_static_package_unavailable(
+                receipt=dict(receipt), evaluation=evaluation,
+            )
+            terminal_proof = evidence.get("terminal_proof")
+            if not isinstance(terminal_proof, dict):
+                raise ValueError("trade unavailable terminal proof is missing")
+            snapshot_id = int(terminal_proof.get("snapshot_id") or 0)
+            snapshot_row = conn.execute(
+                "SELECT id, taken_at, league_id, team_id, data FROM snapshots WHERE id = %s",
+                (snapshot_id,),
+            ).fetchone()
+            if not snapshot_row or not isinstance(snapshot_row.get("data"), dict):
+                raise ValueError("trade unavailable terminal snapshot was not found")
+            snapshot = snapshot_row["data"]
+            if (
+                str(snapshot_row.get("league_id") or "") != str(receipt.get("league_id") or "")
+                or str(snapshot_row.get("team_id") or "") != str(receipt.get("team_id") or "")
+                or str(snapshot.get("league_id") or "") != str(receipt.get("league_id") or "")
+                or str(snapshot.get("team_id") or "") != str(receipt.get("team_id") or "")
+            ):
+                raise ValueError("trade unavailable terminal snapshot identity is contradictory")
+            stored_taken_at = sandlot_trade_outcomes._utc_datetime(
+                snapshot_row.get("taken_at"), "stored snapshot taken_at",
+            )
+            payload_taken_at = sandlot_trade_outcomes._utc_datetime(
+                snapshot.get("timestamp"), "stored snapshot timestamp",
+            )
+            if stored_taken_at != payload_taken_at:
+                raise ValueError("trade unavailable terminal snapshot timestamp is contradictory")
+            observations = evidence.get("missing_observations")
+            if not isinstance(observations, list) or not observations:
+                raise ValueError("trade unavailable missing observations are absent")
+            replay_as_of = max(
+                sandlot_trade_outcomes._utc_datetime(
+                    item.get("observed_at") if isinstance(item, dict) else None,
+                    "trade unavailable observation time",
+                )
+                for item in observations
+            )
+            expected_evaluation = sandlot_trade_outcomes.build_static_package_unavailable(
+                receipt=dict(receipt), missing_observations=observations,
+                snapshot=snapshot, snapshot_id=snapshot_id, as_of=replay_as_of,
+            )
+            if expected_evaluation != evaluation:
+                raise ValueError("trade unavailable evaluation does not replay from the stored snapshot")
+        else:
+            archived_evidence: list[dict[str, Any]] = []
+            for source in source_rows:
+                if not isinstance(source, dict):
+                    raise ValueError("trade static package source row is invalid")
+                archive = conn.execute(
+                    """SELECT evidence_hash, evidence FROM trade_player_period_evidence
+                       WHERE league_id=%s AND season=%s AND period_number=%s
+                         AND period_start=%s AND period_end=%s AND fantrax_scorer_id=%s
+                         AND scoring_role=%s AND evidence_version=%s""",
+                    (
+                        source.get("league_id"), source.get("season"), source.get("period_number"),
+                        source.get("period_start"), source.get("period_end"),
+                        source.get("fantrax_scorer_id"), source.get("scoring_role"),
+                        source.get("evidence_version"),
+                    ),
+                ).fetchone()
+                if not archive or archive.get("evidence_hash") != source.get("hash"):
+                    raise ValueError("trade static package source row does not match the archive")
+                if not isinstance(archive.get("evidence"), dict):
+                    raise ValueError("trade static package source archive is incomplete")
+                archived_evidence.append(archive["evidence"])
+            replay_as_of = max(str(item.get("observed_at") or "") for item in archived_evidence)
+            expected_evaluation = sandlot_trade_outcomes.build_static_package_evaluation(
+                receipt=dict(receipt), player_period_evidence=archived_evidence, as_of=replay_as_of,
+            )
+            if expected_evaluation != evaluation:
+                raise ValueError("trade static package evaluation does not replay from stored evidence")
+        row = conn.execute(
+            """INSERT INTO recommendation_outcome_evaluations
+                 (receipt_id, scoring_version, state, source_evidence_version,
+                  source_evidence_hash, evidence_hash, metrics, evidence)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (receipt_id, scoring_version) DO NOTHING
+               RETURNING *""",
+            (
+                receipt_id, evaluation["scoring_version"], evaluation["state"],
+                source_version, source_hash, evidence["evidence_hash"],
+                Jsonb(metrics), Jsonb(evidence),
+            ),
+        ).fetchone()
+        if row:
+            return dict(row), True
+        existing = conn.execute(
+            """SELECT * FROM recommendation_outcome_evaluations
+               WHERE receipt_id=%s AND scoring_version=%s""",
+            (receipt_id, evaluation["scoring_version"]),
+        ).fetchone()
+        same = existing and all((
+            existing.get("state") == evaluation["state"],
+            existing.get("source_evidence_version") == source_version,
+            existing.get("source_evidence_hash") == source_hash,
+            existing.get("evidence_hash") == evidence["evidence_hash"],
+            existing.get("metrics") == metrics,
+            existing.get("evidence") == evidence,
+        ))
+        if same:
+            return dict(existing), False
+        raise ValueError("trade static package evaluation already has different immutable evidence")
 
 
 def score_recommendation_receipt_team_result(

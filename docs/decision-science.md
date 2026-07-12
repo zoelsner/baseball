@@ -97,20 +97,24 @@ a predeclared, first-complete-period measurement contract in
 Fantrax/MLB calendar hash, a strict first-scoring-event deadline, verified
 league scoring weights, an offer cluster, and exact Fantrax player-role scoring
 entities. It can be explicitly ineligible without blocking the useful trade
-review. This is measurement groundwork, not a trade model. Before training,
-Sandlot still needs append-only league-scored player-period evidence. Owner
+review. This is measurement groundwork, not a trade model. Sandlot now archives
+append-only league-scored player-period evidence for mature V4 trade receipts
+using exact Fantrax period and role queries. Owner
 intent, observed ownership transfer, and verified Fantrax execution must remain
 three different facts. The future asset-production label must be calculated for
 accepted, rejected, and undecided assessments alike so selection by owner intent
 does not masquerade as recommendation quality.
 
-The eventual first label is named `static_package_asset_points_delta`. Package
+The first label is named `static_package_asset_points_delta`. Package
 sizes and each scorer-role contribution must remain visible because a raw
 two-for-one package total does not account for the open roster slot,
 replacement level, lineup usage, or opportunity cost. It must never be
-presented as accept/reject value, weekly lineup impact, or dynasty value.
+presented as accept/reject value, weekly lineup impact, or dynasty value. Source
+evidence is shared per entity-period; receipt evaluations remain separate, and
+later analysis selects the earliest assessment per frozen offer cluster and
+horizon without filtering on intent or realized production.
 
-This evidence is structurally selected. V3 receipts exist only for packages
+This evidence is structurally selected. V4 receipts exist only for packages
 Zach chose to review, and today's deterministic grader admits player-only,
 adult, current-rate-gradeable offers while routing draft picks, protected or
 minor-league assets, players age 24 or younger, and missing age/FP/G evidence
