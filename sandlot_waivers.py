@@ -429,8 +429,9 @@ def _pair_card(
     weak_fit = sorted(add_tokens & set(weak_positions))
     same_group = _same_position_group(add_tokens, move_tokens)
     net_delta = round(float(add["fpg"]) - float(move["fpg"]), 2)
+    display_delta = round(net_delta, 1)
 
-    if net_delta <= 0 and not allow_nonpositive_rate:
+    if display_delta <= 0 and not allow_nonpositive_rate:
         return None
 
     if direct:
@@ -495,7 +496,7 @@ def _pair_card(
             "fpg": round(float(move["fpg"]), 1),
             "injury": move["injury"],
         },
-        "net_delta": round(net_delta, 1),
+        "net_delta": display_delta,
         "sort_score": round(sort_score, 2),
         "fills_position": fills_position,
         "fit": fit,

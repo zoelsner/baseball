@@ -702,6 +702,157 @@ class ReadOnlyMonitorTests(unittest.TestCase):
         matchup_check = next(check for check in report["checks"] if check["name"] == "matchup")
         self.assertEqual(matchup_check["state"], "paused")
 
+    def test_shifted_editable_period_plan_explains_missing_current_projection(self):
+        payloads = healthy_payloads()
+        snapshot = payloads["/api/snapshot/latest"]
+        snapshot["data_quality"].update({
+            "projection_ready": True,
+            "lineup_recommendations_ready": False,
+            "current_period": {
+                "state": "mismatch",
+                "editable_period": 17,
+                "matchup_period": 16,
+            },
+        })
+        snapshot["matchup"].update({
+            "period_number": 16,
+            "projection": None,
+            "recommendations": {
+                "model_version": "matchup_projection_v4",
+                "base_projection": None,
+                "recommendations": [],
+                "no_action": {"reason": "Current-period lineup slots are not editable."},
+            },
+        })
+        snapshot["win_this_week"]["planning_horizon"] = {
+            "mode": "editable_period",
+            "period_number": 17,
+            "shifted_from_period": 16,
+        }
+        snapshot["win_this_week"]["matchup"] = {
+            "projected_my": 253.5,
+            "projected_opponent": 256.0,
+            "projected_margin": -2.5,
+        }
+
+        failures = []
+        matchup_check = monitor._validate_matchup_surface(
+            snapshot,
+            str(snapshot["snapshot_id"]),
+            lambda code, message: failures.append({"code": code, "message": message}),
+        )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(matchup_check["state"], "paused")
+
+    def test_inconsistent_shifted_period_metadata_does_not_hide_missing_projection(self):
+        payloads = healthy_payloads()
+        snapshot = payloads["/api/snapshot/latest"]
+        snapshot["data_quality"].update({
+            "projection_ready": True,
+            "lineup_recommendations_ready": False,
+            "current_period": {
+                "state": "mismatch",
+                "editable_period": 18,
+                "matchup_period": 16,
+            },
+        })
+        snapshot["matchup"].update({
+            "period_number": 16,
+            "projection": None,
+            "recommendations": {
+                "model_version": "matchup_projection_v4",
+                "base_projection": None,
+                "recommendations": [],
+                "no_action": {"reason": "Current-period lineup slots are not editable."},
+            },
+        })
+        snapshot["win_this_week"].update({
+            "state": "ready",
+            "planning_horizon": {
+                "mode": "editable_period",
+                "period_number": 17,
+                "shifted_from_period": 16,
+            },
+            "matchup": {},
+        })
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertFalse(report["ok"])
+        self.assertIn(
+            "matchup_projection_missing",
+            {item["code"] for item in report["failures"]},
+        )
+
+    def test_shifted_no_action_plan_with_projection_passes_full_monitor(self):
+        payloads = healthy_payloads()
+        snapshot = payloads["/api/snapshot/latest"]
+        snapshot["data_quality"].update({
+            "projection_ready": True,
+            "lineup_recommendations_ready": False,
+            "current_period": {
+                "state": "mismatch",
+                "editable_period": 17,
+                "matchup_period": 16,
+            },
+        })
+        snapshot["matchup"].update({
+            "period_number": 16,
+            "projection": None,
+            "recommendations": {
+                "model_version": "matchup_projection_v4",
+                "base_projection": None,
+                "recommendations": [],
+                "no_action": {"reason": "Current-period lineup slots are not editable."},
+            },
+        })
+        target = {
+            "period_number": 17,
+            "start": "2026-07-13",
+            "end": "2026-07-26",
+            "matchup_key": 6,
+        }
+        for plan in (snapshot["win_this_week"], payloads["/api/win-this-week/latest"]):
+            plan.update({
+                "state": "no_action",
+                "actions": [],
+                "primary_action_id": None,
+                "planning_horizon": {
+                    "mode": "editable_period",
+                    "shifted_from_period": 16,
+                    **target,
+                },
+                "current_period": {
+                    "state": "ok",
+                    "editable_period": 17,
+                    "matchup_period": 17,
+                },
+                "matchup": {
+                    "complete": False,
+                    "projected_my": 253.5,
+                    "projected_opponent": 256.0,
+                    "projected_margin": -2.5,
+                },
+                "handoffs": {},
+                "monitoring_actions": [{
+                    "id": "monitor:future-period-waiver-boundary",
+                    "state": "blocked",
+                }],
+                "no_action": {
+                    "reason": "No legal lineup change clears the meaningful-gain threshold.",
+                    "alternatives": [],
+                },
+            })
+
+        report = monitor.evaluate_payloads(payloads, checked_at=NOW)
+
+        self.assertTrue(report["ok"])
+        self.assertNotIn(
+            "matchup_projection_missing",
+            {item["code"] for item in report["failures"]},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -493,7 +493,42 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
     quality = snapshot.get("data_quality") if isinstance(snapshot.get("data_quality"), dict) else {}
     projection = matchup.get("projection")
     if not isinstance(projection, dict):
-        if quality.get("projection_ready") is not False:
+        current_period = quality.get("current_period") if isinstance(quality.get("current_period"), dict) else {}
+        recommendation_block = matchup.get("recommendations") if isinstance(matchup.get("recommendations"), dict) else {}
+        no_action = recommendation_block.get("no_action") if isinstance(recommendation_block.get("no_action"), dict) else {}
+        win_plan = snapshot.get("win_this_week") if isinstance(snapshot.get("win_this_week"), dict) else {}
+        planning_horizon = win_plan.get("planning_horizon") if isinstance(win_plan.get("planning_horizon"), dict) else {}
+        shifted_matchup = win_plan.get("matchup") if isinstance(win_plan.get("matchup"), dict) else {}
+        editable_period = current_period.get("editable_period")
+        matchup_period = current_period.get("matchup_period")
+        shifted_projected_my = _number(shifted_matchup.get("projected_my"))
+        shifted_projected_opponent = _number(shifted_matchup.get("projected_opponent"))
+        shifted_projected_margin = _number(shifted_matchup.get("projected_margin"))
+        has_valid_shifted_projection = (
+            shifted_projected_my is not None
+            and shifted_projected_opponent is not None
+            and shifted_projected_margin is not None
+            and abs(shifted_projected_margin - (shifted_projected_my - shifted_projected_opponent)) <= 0.11
+        )
+        shifted_no_action = win_plan.get("no_action") if isinstance(win_plan.get("no_action"), dict) else {}
+        has_valid_shifted_state = win_plan.get("state") == "ready" or (
+            win_plan.get("state") == "no_action"
+            and bool(str(shifted_no_action.get("reason") or "").strip())
+            and isinstance(shifted_no_action.get("alternatives"), list)
+        )
+        shifted_to_editable_period = (
+            current_period.get("state") == "mismatch"
+            and quality.get("lineup_recommendations_ready") is False
+            and bool(str(no_action.get("reason") or "").strip())
+            and has_valid_shifted_state
+            and planning_horizon.get("mode") == "editable_period"
+            and planning_horizon.get("period_number") == editable_period
+            and planning_horizon.get("shifted_from_period") == matchup_period
+            and matchup.get("period_number") == matchup_period
+            and editable_period != matchup_period
+            and has_valid_shifted_projection
+        )
+        if quality.get("projection_ready") is not False and not shifted_to_editable_period:
             fail("matchup_projection_missing", "Matchup projection was missing despite no explicit pause state")
     else:
         if projection.get("scoring_basis") != "current_snapshot_fppg_x_remaining_games":

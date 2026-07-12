@@ -124,6 +124,32 @@ class WaiverSwapCandidateTests(unittest.TestCase):
         self.assertTrue(sandlot_waivers._has_status_issue(roster[0]))
         self.assertEqual(cards, [])
 
+    def test_positive_delta_that_displays_as_zero_never_emits_a_swap_card(self):
+        roster = [{
+            "id": "dtd1",
+            "name": "Day-to-day Starter",
+            "slot": "OF",
+            "positions": "OF",
+            "fppg": 4.0,
+            "age": 30,
+            "injury": "DTD",
+        }]
+        free_agents = [{
+            "id": "fa1",
+            "name": "Imperceptibly Better Free Agent",
+            "positions": "OF",
+            "age": 27,
+            "stats": {"FP/G": 4.04},
+        }]
+
+        cards, _diagnostics = sandlot_waivers.build_waiver_cards(
+            roster_rows=roster,
+            fa_players=free_agents,
+            snapshot_id=42,
+        )
+
+        self.assertEqual(cards, [])
+
     def test_explicit_keeper_and_minor_flags_are_hard_protected(self):
         flags = [
             "protected",
