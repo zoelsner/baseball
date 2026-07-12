@@ -14,9 +14,12 @@
   0/4 accepted-and-observed sample gates. The card always says `Autopilot
   locked`; reaching those sample counts still does not grant Fantrax write
   authority. Current verification: 461 Python tests pass (2 disposable-
-  Postgres tests skipped), 43 deterministic mobile browser tests pass (2
+  Postgres tests skipped), 44 deterministic mobile browser tests pass (2
   environment-specific tests skipped), and the populated card received a
-  visual screenshot check.
+  visual screenshot check. Follow-up #135 adds a single `Ask Skipper` handoff:
+  it creates an unsent draft from sanitized aggregate counts and the average
+  static-lineup edge, explicitly labels hindsight and locked autopilot, and
+  carries no player names, receipt IDs, hashes, or Fantrax write request.
 
 - **Counterfactual recommendation evaluation in progress (#130):** completed
   single-window Fantrax lineup evidence can now score the immutable Monday

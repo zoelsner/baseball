@@ -1787,7 +1787,30 @@ function V2RecommendationReceipt({ sync, onAskSkipper }) {
   );
 }
 
-function V2RecommendationLearning({ snapshotId }) {
+function v2RecommendationLearningPrompt(report) {
+  const summary = report?.summary || {};
+  const checkpoint = report?.evidence_checkpoint || {};
+  const requirements = Array.isArray(checkpoint.requirements) ? checkpoint.requirements : [];
+  const scored = Number(summary.scored || 0);
+  const aligned = Number(summary.accepted_and_observed || 0);
+  const scoredRequired = Number(requirements.find(item => item?.key === 'scored_evaluations')?.required || 8);
+  const alignedRequired = Number(requirements.find(item => item?.key === 'accepted_and_observed')?.required || 4);
+  const rawAverage = summary.average_counterfactual_gain;
+  const average = typeof rawAverage === 'number' && Number.isFinite(rawAverage)
+    ? `${v2Signed(rawAverage, 1)} points`
+    : 'not available yet';
+  return [
+    'Help me understand Sandlot’s recommendation learning report.',
+    '',
+    `Evidence checkpoint: ${scored} of ${scoredRequired} scored weeks; ${aligned} of ${alignedRequired} accepted-and-observed plans.`,
+    `Average retrospective static-lineup edge: ${average}.`,
+    `Autopilot state: ${report?.autopilot?.state || 'locked'}; eligible: ${report?.autopilot_eligible === true ? 'yes' : 'no'}.`,
+    '',
+    'Explain what this evidence does and does not prove, what the next completed weeks should teach us, and what would still need separate safety review before any automation. Treat the counterfactual as hindsight, not causal lift or proof that a Fantrax action executed. Do not propose or perform a Fantrax write from this report.',
+  ].join('\n');
+}
+
+function V2RecommendationLearning({ snapshotId, onAskSkipper }) {
   const [report, setReport] = React.useState(null);
   const [state, setState] = React.useState('loading');
 
@@ -1833,6 +1856,11 @@ function V2RecommendationLearning({ snapshotId }) {
     { label:'Accepted + observed', ...alignedRequirement },
   ];
   const cardShadow = '0 0 0 1px rgba(15,23,42,0.055), 0 1px 2px -1px rgba(15,23,42,0.07), 0 8px 22px rgba(31,20,12,0.045)';
+  const skipperLabel = scored ? 'Ask Skipper what Sandlot learned' : 'Ask Skipper why this is locked';
+  const askSkipper = event => {
+    event.currentTarget.style.transform = 'scale(1)';
+    onAskSkipper(v2RecommendationLearningPrompt(report));
+  };
 
   return (
     <section aria-labelledby="recommendation-learning-title" style={{ background:V2.surface, borderRadius:24, padding:'16px 18px', boxShadow:cardShadow }}>
@@ -1902,6 +1930,18 @@ function V2RecommendationLearning({ snapshotId }) {
       <div style={{ marginTop:12, paddingTop:10, borderTop:`1px solid ${V2.hairline2}`, color:V2.muted, fontSize:10.5, lineHeight:1.45, fontWeight:700, textWrap:'pretty' }}>
         Counterfactual only — this measures a static lineup in hindsight. It does not prove causality, execute Fantrax moves, or grant write authority.
       </div>
+
+      <button
+        type="button"
+        onClick={askSkipper}
+        onPointerDown={event => { event.currentTarget.style.transform = 'scale(0.96)'; }}
+        onPointerUp={event => { event.currentTarget.style.transform = 'scale(1)'; }}
+        onPointerCancel={event => { event.currentTarget.style.transform = 'scale(1)'; }}
+        onPointerLeave={event => { event.currentTarget.style.transform = 'scale(1)'; }}
+        style={{ marginTop:12, width:'100%', minHeight:44, border:'none', borderRadius:999, background:V2.ink, color:'#fff', padding:'10px 14px', fontFamily:'inherit', fontSize:12, fontWeight:850, cursor:'pointer', transform:'scale(1)', transitionProperty:'transform, opacity', transitionDuration:'150ms', transitionTimingFunction:'cubic-bezier(0.2, 0, 0, 1)' }}
+      >
+        {skipperLabel}
+      </button>
     </section>
   );
 }
@@ -1979,7 +2019,7 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
 
       <V2RecommendationReceipt sync={sync} onAskSkipper={onAskSkipper}/>
 
-      <V2RecommendationLearning snapshotId={model.snapshotId}/>
+      <V2RecommendationLearning snapshotId={model.snapshotId} onAskSkipper={onAskSkipper}/>
 
       <V2HotSwapsPanel
         items={hotSwapItems}

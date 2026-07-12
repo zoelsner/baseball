@@ -139,6 +139,42 @@ test.describe('Today recommendation receipt', () => {
     await expect(card.getByText('Autopilot locked', { exact:true })).toBeVisible();
   });
 
+  test('carries only sanitized learning evidence into an unsent Skipper draft', async ({ page }) => {
+    await page.unroute('**/api/recommendation-learning');
+    await page.route('**/api/recommendation-learning', route => route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({
+        ...emptyLearningReport,
+        summary:{
+          ...emptyLearningReport.summary,
+          evaluated:3, scored:2, unavailable:1, accepted_and_observed:1,
+          average_counterfactual_gain:5.5,
+        },
+        evidence_checkpoint:{
+          ...emptyLearningReport.evidence_checkpoint,
+          requirements:[
+            { key:'scored_evaluations', current:2, required:8, passed:false },
+            { key:'accepted_and_observed', current:1, required:4, passed:false },
+          ],
+        },
+        autopilot:{ state:'locked', eligible:false },
+      }),
+    }));
+    await page.route('http://127.0.0.1:8765/health', route => route.abort());
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    await page.getByRole('button', { name:'Ask Skipper what Sandlot learned' }).click();
+    const draft = page.getByPlaceholder(/Ask about your roster/i);
+    await expect(draft).toHaveValue(/2 of 8 scored weeks/);
+    await expect(draft).toHaveValue(/1 of 4 accepted-and-observed plans/);
+    await expect(draft).toHaveValue(/Average retrospective static-lineup edge: \+5\.5 points/);
+    await expect(draft).toHaveValue(/Autopilot state: locked; eligible: no/);
+    await expect(draft).toHaveValue(/Do not propose or perform a Fantrax write/);
+    await expect(draft).not.toHaveValue(/Bench Bat|Current Starter|Aaron Judge/);
+  });
+
   test('announces a learning-report failure without changing automation state', async ({ page }) => {
     await page.unroute('**/api/recommendation-learning');
     await page.route('**/api/recommendation-learning', route => route.fulfill({
