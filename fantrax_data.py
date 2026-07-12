@@ -353,10 +353,17 @@ def _table_scoring_contract(table: dict[str, Any]) -> tuple[str | None, str | No
         return None, None, None
     matches: list[tuple[str, str, int]] = []
     for index, header in enumerate(headers):
-        fingerprint = json.dumps(header, sort_keys=True)
-        for role, category in (("hitter", "SCORING_CATEGORY_10"), ("pitcher", "SCORING_CATEGORY_20")):
-            if category in fingerprint:
-                matches.append((role, category, index))
+        if not isinstance(header, dict):
+            continue
+        sort_key = str(header.get("sortKey") or "").strip()
+        exact = {
+            "SCORING_CATEGORY_10": ("hitter", "SCORING_CATEGORY_10"),
+            "SCORING_CATEGORY_10_FPTS": ("hitter", "SCORING_CATEGORY_10"),
+            "SCORING_CATEGORY_20": ("pitcher", "SCORING_CATEGORY_20"),
+            "SCORING_CATEGORY_20_FPTS": ("pitcher", "SCORING_CATEGORY_20"),
+        }.get(sort_key)
+        if exact:
+            matches.append((*exact, index))
     if len(matches) != 1:
         return None, None, None
     role, category, index = matches[0]

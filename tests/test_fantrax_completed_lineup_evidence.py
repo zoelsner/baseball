@@ -153,6 +153,17 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
         self.assertEqual(judge["period_fpts"], "260.5")
         self.assertEqual(judge["period_fpts_source"], "SCORING_CATEGORY_10:cells[0].content")
 
+    def test_near_collision_or_nested_category_metadata_is_rejected(self):
+        for header in (
+            {"sortKey": "SCORING_CATEGORY_100_FPTS"},
+            {"sortKey": "AGE", "metadata": {"key": "SCORING_CATEGORY_10_FPTS"}},
+        ):
+            with self.subTest(header=header):
+                raw = historical_roster()
+                raw["tables"][0]["headers"][1] = header
+                with patch.object(fantrax_data, "_direct_fxpa_request", return_value=raw), self.assertRaisesRegex(ValueError, "scoring role"):
+                    fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), raw), "me", completed_matchup())
+
     def test_reserve_points_are_archived_but_not_reconciled_as_active(self):
         raw = historical_roster()
         raw["miscData"]["statusTotals"].append({"id": "2", "name": "Bench", "shortName": "BN"})
