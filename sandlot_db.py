@@ -286,6 +286,7 @@ def init_schema() -> None:
             """
         )
         _init_recommendation_receipts_schema(conn)
+        _init_recommendation_outcome_evaluations_schema(conn)
         _init_lineup_period_evidence_schema(conn)
         conn.execute(
             """
@@ -374,6 +375,7 @@ def ensure_recommendation_receipts_schema() -> None:
     """Create only the ledger schema for standalone recommendation writers."""
     with connect() as conn:
         _init_recommendation_receipts_schema(conn)
+        _init_recommendation_outcome_evaluations_schema(conn)
 
 
 def _init_lineup_period_evidence_schema(conn: Any) -> None:
@@ -504,6 +506,32 @@ def _init_recommendation_receipts_schema(conn: Any) -> None:
         """
         CREATE INDEX IF NOT EXISTS recommendation_receipts_history_idx
         ON recommendation_receipts (league_id, team_id, action_type, period_start DESC, generated_at DESC)
+        """
+    )
+
+
+def _init_recommendation_outcome_evaluations_schema(conn: Any) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recommendation_outcome_evaluations (
+          receipt_id TEXT NOT NULL REFERENCES recommendation_receipts(receipt_id) ON DELETE CASCADE,
+          scoring_version TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('scored', 'unavailable')),
+          source_evidence_version TEXT NOT NULL,
+          source_evidence_hash TEXT NOT NULL CHECK (source_evidence_hash ~ '^[0-9a-f]{64}$'),
+          evidence_hash TEXT NOT NULL CHECK (evidence_hash ~ '^[0-9a-f]{64}$'),
+          metrics JSONB NOT NULL,
+          evidence JSONB NOT NULL,
+          evaluated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+          PRIMARY KEY (receipt_id, scoring_version)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS recommendation_outcome_evaluations_version_time_idx
+        ON recommendation_outcome_evaluations (scoring_version, evaluated_at DESC)
         """
     )
 
@@ -658,6 +686,159 @@ def recent_scored_recommendation_receipts(*, source: str, limit: int = 20) -> li
             (source, limit),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def receipts_missing_outcome_evaluation(
+    *, source: str, scoring_version: str, evidence_version: str
+) -> list[dict[str, Any]]:
+    """Return completed receipts with eligible archived evidence but no evaluation."""
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT r.*, l.evidence AS period_evidence
+            FROM recommendation_receipts r
+            JOIN lineup_period_evidence l
+              ON l.league_id = r.league_id
+             AND l.team_id = r.team_id
+             AND l.period_start = r.period_start
+             AND l.period_end = r.period_end
+             AND l.evidence_version = %s
+            LEFT JOIN recommendation_outcome_evaluations e
+              ON e.receipt_id = r.receipt_id AND e.scoring_version = %s
+            WHERE r.source = %s
+              AND r.period_end < CURRENT_DATE
+              AND r.expires_at <= clock_timestamp()
+              AND e.receipt_id IS NULL
+              AND l.evidence->'counterfactual_capability'->>'eligible' = 'true'
+            ORDER BY r.period_end, r.generated_at, r.receipt_id
+            """,
+            (evidence_version, scoring_version, source),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def record_recommendation_outcome_evaluation(
+    *, receipt_id: str, evaluation: dict[str, Any]
+) -> tuple[dict[str, Any], bool]:
+    """Append one immutable scorer version without touching legacy outcome columns."""
+    from sandlot_receipts import (
+        COUNTERFACTUAL_LINEUP_SCORING_VERSION,
+        COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION,
+        counterfactual_evidence_hash,
+    )
+
+    if evaluation.get("scoring_version") != COUNTERFACTUAL_LINEUP_SCORING_VERSION:
+        raise ValueError("unsupported recommendation evaluation scoring version")
+    state = evaluation.get("state")
+    if state not in {"scored", "unavailable"}:
+        raise ValueError("counterfactual recommendation evaluation state is invalid")
+    source_version = str(evaluation.get("source_evidence_version") or "")
+    source_hash = str(evaluation.get("source_evidence_hash") or "")
+    evidence = evaluation.get("evidence")
+    metrics = evaluation.get("metrics")
+    if not source_version or not re.fullmatch(r"[0-9a-f]{64}", source_hash):
+        raise ValueError("counterfactual source evidence identity is invalid")
+    if source_version != COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION:
+        raise ValueError("counterfactual source evidence version is unsupported")
+    if not isinstance(evidence, dict) or not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("evidence_hash") or "")):
+        raise ValueError("counterfactual evaluation evidence hash is required")
+    if evidence["evidence_hash"] != counterfactual_evidence_hash(evidence):
+        raise ValueError("counterfactual evaluation evidence hash is invalid")
+    required_metrics = {
+        "counterfactual_baseline_total",
+        "counterfactual_proposed_total",
+        "counterfactual_gain",
+        "observed_team_total",
+    }
+    expected_metrics = required_metrics if state == "scored" else set()
+    if not isinstance(metrics, dict) or set(metrics) != expected_metrics:
+        raise ValueError("counterfactual evaluation metrics are incomplete")
+    for value in metrics.values():
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("counterfactual evaluation metric must be finite") from exc
+        if not math.isfinite(number):
+            raise ValueError("counterfactual evaluation metric must be finite")
+    if evidence.get("metrics") != metrics:
+        raise ValueError("counterfactual evaluation metrics do not match evidence")
+    if evidence.get("autopilot_eligible") is not False:
+        raise ValueError("counterfactual evaluation cannot enable autopilot")
+    embedded_source = evidence.get("source_evidence")
+    if not isinstance(embedded_source, dict) or embedded_source != {
+        "version": source_version,
+        "hash": source_hash,
+    }:
+        raise ValueError("counterfactual evaluation source lineage is contradictory")
+    if evidence.get("scoring_version") != evaluation["scoring_version"]:
+        raise ValueError("counterfactual evaluation scoring lineage is contradictory")
+
+    with connect() as conn:
+        receipt = conn.execute(
+            "SELECT * FROM recommendation_receipts WHERE receipt_id = %s FOR UPDATE",
+            (receipt_id,),
+        ).fetchone()
+        if not receipt:
+            raise LookupError("Recommendation receipt not found")
+        expected = {
+            "receipt_id": receipt.get("receipt_id"),
+            "input_hash": receipt.get("input_hash"),
+            "league_id": receipt.get("league_id"),
+            "team_id": receipt.get("team_id"),
+        }
+        if any(evidence.get(key) != value for key, value in expected.items()):
+            raise ValueError("counterfactual evaluation does not match target receipt")
+        if evidence.get("decision_state") not in (None, receipt.get("decision_state")):
+            raise ValueError("counterfactual evaluation decision state is stale")
+        period = evidence.get("period") if isinstance(evidence.get("period"), dict) else {}
+        if str(period.get("start")) != str(receipt.get("period_start")) or str(period.get("end")) != str(receipt.get("period_end")):
+            raise ValueError("counterfactual evaluation period does not match target receipt")
+        archive = conn.execute(
+            """
+            SELECT evidence_hash FROM lineup_period_evidence
+            WHERE league_id=%s AND team_id=%s AND period_start=%s AND period_end=%s
+              AND evidence_version=%s
+            """,
+            (
+                receipt.get("league_id"), receipt.get("team_id"),
+                receipt.get("period_start"), receipt.get("period_end"), source_version,
+            ),
+        ).fetchone()
+        if not archive or archive.get("evidence_hash") != source_hash:
+            raise ValueError("counterfactual source archive does not match stored evidence")
+        row = conn.execute(
+            """
+            INSERT INTO recommendation_outcome_evaluations
+              (receipt_id, scoring_version, state, source_evidence_version,
+               source_evidence_hash, evidence_hash, metrics, evidence)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (receipt_id, scoring_version) DO NOTHING
+            RETURNING *
+            """,
+            (
+                receipt_id, evaluation["scoring_version"], state,
+                source_version, source_hash, evidence["evidence_hash"],
+                Jsonb(metrics), Jsonb(evidence),
+            ),
+        ).fetchone()
+        if row:
+            return dict(row), True
+        existing = conn.execute(
+            """SELECT * FROM recommendation_outcome_evaluations
+               WHERE receipt_id=%s AND scoring_version=%s""",
+            (receipt_id, evaluation["scoring_version"]),
+        ).fetchone()
+        same = existing and all((
+            existing.get("state") == evaluation["state"],
+            existing.get("source_evidence_version") == source_version,
+            existing.get("source_evidence_hash") == source_hash,
+            existing.get("evidence_hash") == evidence["evidence_hash"],
+            existing.get("metrics") == metrics,
+            existing.get("evidence") == evidence,
+        ))
+        if same:
+            return dict(existing), False
+        raise ValueError("recommendation evaluation version already has different immutable evidence")
 
 
 def score_recommendation_receipt_team_result(

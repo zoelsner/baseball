@@ -1,23 +1,34 @@
 import copy
 import hashlib
+import inspect
 import json
 import os
 import threading
 import time
 import unittest
+from collections import Counter
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 
 import sandlot_api
 import sandlot_db
 import sandlot_receipts
+import fantrax_data
+import sandlot_refresh
 from scripts import run_monday_lineup
 
 
 NOW = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+DEFAULT_UNFILLED = (
+    ["C", "1B", "2B", "3B", "SS"]
+    + ["OF"] * 2
+    + ["UT"] * 3
+    + ["SP"] * 5
+    + ["RP"] * 3
+)
 
 
 def receipt_fixture(*, entries=None, result=None, week_start=date(2026, 7, 13)):
@@ -50,7 +61,7 @@ def receipt_fixture(*, entries=None, result=None, week_start=date(2026, 7, 13)):
     result = result or {
         "lineup": [("SP", "Two Way"), ("OF", "Bench Bat")],
         "projected_total": 32.34567,
-        "unfilled": ["RP"],
+        "unfilled": list(DEFAULT_UNFILLED),
     }
     current = next((entry for entry in entries if entry.get("id") == "two-way"), entries[0])
     return sandlot_receipts.build_monday_lineup_receipt(
@@ -78,6 +89,72 @@ def receipt_fixture(*, entries=None, result=None, week_start=date(2026, 7, 13)):
     )
 
 
+def period_evidence_fixture(receipt, *, actual="proposed", capability=True):
+    players = [
+        {
+            "player_id": "bat", "player_name": "Bench Bat", "scoring_role": "hitter",
+            "slot": "OF" if actual == "proposed" else "RES", "slot_source": "raw.posId",
+            "raw_pos_id": "012", "raw_status_id": "1", "eligibility_pos_ids": ["012", "014"],
+            "period_fpts": "13", "period_fpts_source": "SCORE:fpts",
+        },
+        {
+            "player_id": "two-way", "player_name": "Two Way", "scoring_role": "pitcher",
+            "slot": "SP", "slot_source": "raw.posId", "raw_pos_id": "015", "raw_status_id": "1",
+            "eligibility_pos_ids": ["015"], "period_fpts": "21", "period_fpts_source": "SCORE:fpts",
+        },
+    ]
+    daily = [
+        {
+            "player_id": item["player_id"],
+            "scoring_role": item["scoring_role"],
+            "state": "active" if item["slot"] != "RES" else "bench",
+            "raw_pos_id": item["raw_pos_id"],
+        }
+        for item in players
+    ]
+    observed = "34" if actual == "proposed" else "21"
+    evidence = {
+        "evidence_version": fantrax_data.LINEUP_PERIOD_EVIDENCE_VERSION,
+        "league_id": receipt["league_id"],
+        "team_id": receipt["team_id"],
+        "period": {
+            "number": "17", "start": str(receipt["period_start"]), "end": str(receipt["period_end"]),
+        },
+        "source": {"method": "getTeamRosterInfo"},
+        "observed_team_total": observed,
+        "active_player_total": observed,
+        "active_player_count": sum(item["state"] == "active" for item in daily),
+        "players": players,
+        "parent_v1_evidence_hash": "a" * 64,
+        "parent_v1_state": "linked",
+        "counterfactual_capability": {
+            "eligible": capability,
+            "scope": "single_monday_lineup_window" if capability else None,
+            "reason": None if capability else "period_player_fpts_not_attributed_to_lineup_windows",
+        },
+        "final_assignment_potential_total": observed,
+        "final_assignment_total_state": "reconciled_single_window",
+        "lineup_policy": {"lineup_changes_executed": "Weekly every Monday"},
+        "participation": {
+            "source_method": "getLiveScoringStats",
+            "cadence": "monday_lineup_windows_with_daily_proof",
+            "stable_within_windows": True,
+            "window_count": 1 if capability else 2,
+            "windows": [{"start": str(receipt["period_start"]), "end": str(receipt["period_end"]), "stable": True}],
+            "observed_team_total": observed,
+            "days": [{
+                "date": str(receipt["period_end"]), "lineup_window_start": str(receipt["period_start"]),
+                "response_period": "17", "all_events_finished": True,
+                "active_count": sum(item["state"] == "active" for item in daily),
+                "bench_count": sum(item["state"] == "bench" for item in daily),
+                "credited_team_total": observed, "players": daily,
+            }],
+        },
+    }
+    evidence["evidence_hash"] = fantrax_data.lineup_period_evidence_hash(evidence)
+    return evidence
+
+
 class RecommendationReceiptBuilderTests(unittest.TestCase):
     def test_hash_is_stable_across_input_and_assignment_order(self):
         baseline = receipt_fixture()
@@ -102,7 +179,7 @@ class RecommendationReceiptBuilderTests(unittest.TestCase):
             result={
                 "lineup": [("OF", "Bench Bat"), ("SP", "Two Way")],
                 "projected_total": 32.34567,
-                "unfilled": ["RP"],
+                "unfilled": list(DEFAULT_UNFILLED),
             },
         )
 
@@ -334,6 +411,218 @@ class RecommendationOutcomeBuilderTests(unittest.TestCase):
         self.assertEqual(len(unavailable["evidence_hash"]), 64)
 
 
+class CounterfactualLineupEvaluationTests(unittest.TestCase):
+    def test_refresh_appends_counterfactual_even_after_legacy_team_result_scored(self):
+        receipt = {
+            **receipt_fixture(),
+            "decision_state": "accepted",
+            "outcome_state": "scored",
+            "scoring_version": "team_result_v1",
+        }
+        receipt["period_evidence"] = period_evidence_fixture(receipt)
+        with (
+            patch.dict(os.environ, {"DATABASE_URL": "postgres://test"}),
+            patch.object(sandlot_db, "receipts_missing_outcome_evaluation", return_value=[receipt]) as missing,
+            patch.object(sandlot_db, "record_recommendation_outcome_evaluation") as record,
+            patch.object(sandlot_db, "pending_recommendation_receipts", return_value=[]),
+        ):
+            sandlot_refresh._persist_recommendation_outcomes(
+                301, {"timestamp": "2026-07-20T12:00:00Z"}
+            )
+
+        missing.assert_called_once_with(
+            source="monday_lineup",
+            scoring_version="counterfactual_lineup_v1",
+            evidence_version="fantrax_period_lineup_v2",
+        )
+        evaluation = record.call_args.kwargs["evaluation"]
+        self.assertEqual(evaluation["metrics"]["counterfactual_gain"], 13.0)
+        self.assertFalse(evaluation["evidence"]["autopilot_eligible"])
+
+    def test_refresh_terminalizes_immutable_incompatibility_without_enabling_autopilot(self):
+        receipt = receipt_fixture()
+        receipt["period_evidence"] = period_evidence_fixture(receipt)
+        record = Mock()
+        with (
+            patch.dict(os.environ, {"DATABASE_URL": "postgres://test"}),
+            patch.object(sandlot_db, "receipts_missing_outcome_evaluation", return_value=[receipt]),
+            patch.object(
+                sandlot_receipts,
+                "build_counterfactual_lineup_evaluation",
+                side_effect=ValueError("missing archived player"),
+            ),
+            patch.object(sandlot_db, "record_recommendation_outcome_evaluation", record),
+            patch.object(sandlot_db, "pending_recommendation_receipts", return_value=[]),
+        ):
+            sandlot_refresh._persist_recommendation_outcomes(
+                301, {"timestamp": "2026-07-20T12:00:00Z"}
+            )
+
+        unavailable = record.call_args.kwargs["evaluation"]
+        self.assertEqual(unavailable["state"], "unavailable")
+        self.assertEqual(unavailable["metrics"], {})
+        self.assertFalse(unavailable["evidence"]["retryable"])
+        self.assertFalse(unavailable["evidence"]["autopilot_eligible"])
+
+    def test_refresh_does_not_terminalize_database_writer_failure(self):
+        receipt = receipt_fixture()
+        receipt["period_evidence"] = period_evidence_fixture(receipt)
+        record = Mock(side_effect=ValueError("database validation failed"))
+        with (
+            patch.dict(os.environ, {"DATABASE_URL": "postgres://test"}),
+            patch.object(sandlot_db, "receipts_missing_outcome_evaluation", return_value=[receipt]),
+            patch.object(sandlot_db, "record_recommendation_outcome_evaluation", record),
+            patch.object(sandlot_db, "pending_recommendation_receipts", return_value=[]),
+        ):
+            sandlot_refresh._persist_recommendation_outcomes(
+                301, {"timestamp": "2026-07-20T12:00:00Z"}
+            )
+
+        self.assertEqual(record.call_count, 1)
+        self.assertEqual(record.call_args.kwargs["evaluation"]["state"], "scored")
+
+    def test_repeated_real_slot_labels_and_partially_unfilled_type_are_valid(self):
+        base = receipt_fixture()
+        entries = [
+            {
+                "id": item["id"], "name": item["name"], "tokens": set(item["tokens"]),
+                "proj": item["projected_points"],
+                "hitter_proj": item["hitter_projected_points"],
+                "pitcher_proj": item["pitcher_projected_points"],
+                "basis": item["basis"], "slot": item["slot"],
+                "slot_source": item["slot_source"], "injury": item["injury"],
+            }
+            for item in base["recommendation"]["projection_inputs"]
+        ]
+        entries.append({
+            "id": "bat-2", "name": "Second Bat", "tokens": {"OF", "UT"},
+            "proj": 5.0, "hitter_proj": 5.0, "pitcher_proj": 0.0,
+            "basis": "test", "slot": "RES", "slot_source": "raw.statusId", "injury": None,
+        })
+        receipt = receipt_fixture(entries=entries, result={
+            "lineup": [("SP", "Two Way"), ("OF", "Bench Bat"), ("OF", "Second Bat")],
+            "projected_total": 37.34567,
+            "unfilled": (
+                ["C", "1B", "2B", "3B", "SS", "OF"]
+                + ["UT"] * 3
+                + ["SP"] * 5
+                + ["RP"] * 3
+            ),
+        })
+        archive = period_evidence_fixture(receipt)
+        archive["players"].append({
+            "player_id": "bat-2", "player_name": "Second Bat", "scoring_role": "hitter",
+            "slot": "OF", "slot_source": "raw.posId", "raw_pos_id": "012", "raw_status_id": "1",
+            "eligibility_pos_ids": ["012", "014"], "period_fpts": "5", "period_fpts_source": "SCORE:fpts",
+        })
+        archive["participation"]["days"][0]["players"].append({
+            "player_id": "bat-2", "scoring_role": "hitter", "state": "active", "raw_pos_id": "012",
+        })
+        archive["observed_team_total"] = "39"
+        archive["participation"]["observed_team_total"] = "39"
+        archive["evidence_hash"] = fantrax_data.lineup_period_evidence_hash(archive)
+
+        evaluation = sandlot_receipts.build_counterfactual_lineup_evaluation(
+            receipt=receipt, period_evidence=archive
+        )
+
+        self.assertEqual(evaluation["metrics"]["counterfactual_proposed_total"], 39.0)
+        self.assertEqual(Counter(evaluation["evidence"]["unfilled_slots"]), Counter({
+            "C": 1, "1B": 1, "2B": 1, "3B": 1, "SS": 1,
+            "OF": 1, "UT": 3, "SP": 5, "RP": 3,
+        }))
+
+    def test_scores_static_baseline_and_proposal_separately_from_observed_total(self):
+        receipt = {**receipt_fixture(), "decision_state": "accepted"}
+        evaluation = sandlot_receipts.build_counterfactual_lineup_evaluation(
+            receipt=receipt, period_evidence=period_evidence_fixture(receipt)
+        )
+
+        self.assertEqual(evaluation["scoring_version"], "counterfactual_lineup_v1")
+        self.assertEqual(evaluation["metrics"], {
+            "counterfactual_baseline_total": 21.0,
+            "counterfactual_proposed_total": 34.0,
+            "counterfactual_gain": 13.0,
+            "observed_team_total": 34.0,
+        })
+        evidence = evaluation["evidence"]
+        self.assertEqual(evidence["actual_assignment_match"], "proposed")
+        self.assertEqual(evidence["actual_slot_match"], "proposed")
+        self.assertEqual(evidence["decision_alignment"], "accepted_proposal_observed")
+        self.assertFalse(evidence["causal_lift_claimed"])
+        self.assertFalse(evidence["plan_execution_claimed"])
+        self.assertFalse(evidence["autopilot_eligible"])
+        self.assertEqual(len(evidence["evidence_hash"]), 64)
+
+    def test_pending_or_rejected_coincidence_is_not_decision_alignment(self):
+        for state in ("pending", "rejected"):
+            with self.subTest(state=state):
+                receipt = {**receipt_fixture(), "decision_state": state}
+                evaluation = sandlot_receipts.build_counterfactual_lineup_evaluation(
+                    receipt=receipt, period_evidence=period_evidence_fixture(receipt)
+                )
+                self.assertEqual(evaluation["evidence"]["actual_assignment_match"], "proposed")
+                self.assertEqual(evaluation["evidence"]["decision_alignment"], "not_established")
+
+    def test_baseline_actual_is_classified_without_rewriting_counterfactual(self):
+        receipt = {**receipt_fixture(), "decision_state": "accepted"}
+        evaluation = sandlot_receipts.build_counterfactual_lineup_evaluation(
+            receipt=receipt, period_evidence=period_evidence_fixture(receipt, actual="baseline")
+        )
+
+        self.assertEqual(evaluation["evidence"]["actual_assignment_match"], "baseline")
+        self.assertEqual(evaluation["metrics"]["counterfactual_gain"], 13.0)
+        self.assertEqual(evaluation["metrics"]["observed_team_total"], 21.0)
+        self.assertEqual(evaluation["evidence"]["decision_alignment"], "not_established")
+
+    def test_two_way_player_is_scored_by_slot_role_not_name(self):
+        receipt = receipt_fixture()
+        archive = period_evidence_fixture(receipt)
+        archive["players"].append({
+            "player_id": "two-way", "player_name": "Two Way", "scoring_role": "hitter",
+            "slot": "RES", "slot_source": "raw.posId", "raw_pos_id": "012", "raw_status_id": "2",
+            "eligibility_pos_ids": ["012"], "period_fpts": "99", "period_fpts_source": "SCORE:fpts",
+        })
+        archive["participation"]["days"][0]["players"].append({
+            "player_id": "two-way", "scoring_role": "hitter", "state": "bench", "raw_pos_id": "012",
+        })
+        archive["evidence_hash"] = fantrax_data.lineup_period_evidence_hash(archive)
+
+        evaluation = sandlot_receipts.build_counterfactual_lineup_evaluation(
+            receipt=receipt, period_evidence=archive
+        )
+
+        self.assertEqual(evaluation["metrics"]["counterfactual_proposed_total"], 34.0)
+
+    def test_incomplete_illegal_or_multiwindow_evidence_fails_closed(self):
+        receipt = receipt_fixture()
+        cases = []
+        missing = period_evidence_fixture(receipt)
+        missing["players"] = [item for item in missing["players"] if item["player_id"] != "bat"]
+        missing["evidence_hash"] = fantrax_data.lineup_period_evidence_hash(missing)
+        cases.append((missing, "absent from archived"))
+        illegal = period_evidence_fixture(receipt)
+        illegal["players"][0]["eligibility_pos_ids"] = ["003"]
+        illegal["evidence_hash"] = fantrax_data.lineup_period_evidence_hash(illegal)
+        cases.append((illegal, "not archive-eligible"))
+        multiwindow = period_evidence_fixture(receipt, capability=False)
+        cases.append((multiwindow, "not counterfactual eligible"))
+        for archive, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                sandlot_receipts.build_counterfactual_lineup_evaluation(
+                    receipt=receipt, period_evidence=archive
+                )
+
+    def test_proposal_and_unfilled_counts_must_equal_full_league_template(self):
+        receipt = receipt_fixture()
+        receipt["recommendation"]["unfilled_slots"].pop()
+
+        with self.assertRaisesRegex(ValueError, "do not match the league active template"):
+            sandlot_receipts.build_counterfactual_lineup_evaluation(
+                receipt=receipt, period_evidence=period_evidence_fixture(receipt)
+            )
+
+
 class RecommendationReceiptPersistenceTests(unittest.TestCase):
     def test_schema_is_durable_and_all_states_are_constrained(self):
         calls = []
@@ -351,10 +640,202 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
 
         sql = "\n".join(statement for statement, _params in calls)
         self.assertIn("CREATE TABLE IF NOT EXISTS recommendation_receipts", sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS recommendation_outcome_evaluations", sql)
+        self.assertIn("PRIMARY KEY (receipt_id, scoring_version)", sql)
         self.assertIn("snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL", sql)
         self.assertIn("CHECK (lifecycle_state IN ('active', 'superseded', 'expired'))", sql)
         self.assertIn("CHECK (decision_state IN ('pending', 'accepted', 'rejected'))", sql)
         self.assertIn("WHERE lifecycle_state = 'active'", sql)
+        self.assertIn("r.expires_at <= clock_timestamp()", inspect.getsource(
+            sandlot_db.receipts_missing_outcome_evaluation
+        ))
+
+    def test_counterfactual_evaluation_appends_without_touching_legacy_outcome(self):
+        receipt = {
+            **receipt_fixture(),
+            "decision_state": "accepted",
+            "outcome_state": "scored",
+            "scoring_version": "team_result_v1",
+            "actual_value": 34.0,
+        }
+        archive = period_evidence_fixture(receipt)
+        evaluation = sandlot_receipts.build_counterfactual_lineup_evaluation(
+            receipt=receipt, period_evidence=archive
+        )
+        calls = []
+
+        class Result:
+            def __init__(self, row):
+                self.row = row
+            def fetchone(self):
+                return self.row
+
+        inserted = {
+            "receipt_id": receipt["receipt_id"],
+            "scoring_version": evaluation["scoring_version"],
+            "state": "scored",
+            "source_evidence_version": evaluation["source_evidence_version"],
+            "source_evidence_hash": evaluation["source_evidence_hash"],
+            "evidence_hash": evaluation["evidence"]["evidence_hash"],
+            "metrics": evaluation["metrics"],
+            "evidence": evaluation["evidence"],
+        }
+
+        class FakeConn:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+                if "FROM recommendation_receipts" in sql:
+                    return Result(receipt)
+                if "SELECT evidence_hash FROM lineup_period_evidence" in sql:
+                    return Result({"evidence_hash": archive["evidence_hash"]})
+                if "INSERT INTO recommendation_outcome_evaluations" in sql:
+                    return Result(inserted)
+                raise AssertionError(sql)
+
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            row, changed = sandlot_db.record_recommendation_outcome_evaluation(
+                receipt_id=receipt["receipt_id"], evaluation=evaluation
+            )
+
+        self.assertTrue(changed)
+        self.assertEqual(row["metrics"]["counterfactual_gain"], 13.0)
+        self.assertFalse(any("UPDATE recommendation_receipts" in sql for sql, _ in calls))
+
+    def test_counterfactual_evaluation_replay_is_noop_and_conflict_fails(self):
+        receipt = {**receipt_fixture(), "decision_state": "accepted"}
+        archive = period_evidence_fixture(receipt)
+        evaluation = sandlot_receipts.build_counterfactual_lineup_evaluation(
+            receipt=receipt, period_evidence=archive
+        )
+        existing = {
+            "receipt_id": receipt["receipt_id"], "scoring_version": evaluation["scoring_version"],
+            "state": evaluation["state"], "source_evidence_version": evaluation["source_evidence_version"],
+            "source_evidence_hash": evaluation["source_evidence_hash"],
+            "evidence_hash": evaluation["evidence"]["evidence_hash"],
+            "metrics": evaluation["metrics"], "evidence": evaluation["evidence"],
+        }
+
+        class Result:
+            def __init__(self, row):
+                self.row = row
+            def fetchone(self):
+                return self.row
+
+        class FakeConn:
+            def __init__(self, conflict=False):
+                self.conflict = conflict
+            def execute(self, sql, params=None):
+                if "FROM recommendation_receipts" in sql:
+                    return Result(receipt)
+                if "SELECT evidence_hash FROM lineup_period_evidence" in sql:
+                    return Result({"evidence_hash": archive["evidence_hash"]})
+                if "INSERT INTO recommendation_outcome_evaluations" in sql:
+                    return Result(None)
+                if "SELECT * FROM recommendation_outcome_evaluations" in sql:
+                    return Result({**existing, "evidence_hash": "b" * 64} if self.conflict else existing)
+                raise AssertionError(sql)
+
+        @contextmanager
+        def replay_connect():
+            yield FakeConn()
+        with patch.object(sandlot_db, "connect", replay_connect):
+            _row, changed = sandlot_db.record_recommendation_outcome_evaluation(
+                receipt_id=receipt["receipt_id"], evaluation=evaluation
+            )
+        self.assertFalse(changed)
+
+        @contextmanager
+        def conflict_connect():
+            yield FakeConn(conflict=True)
+        with patch.object(sandlot_db, "connect", conflict_connect):
+            with self.assertRaisesRegex(ValueError, "different immutable evidence"):
+                sandlot_db.record_recommendation_outcome_evaluation(
+                    receipt_id=receipt["receipt_id"], evaluation=evaluation
+                )
+
+    def test_counterfactual_writer_rejects_contradictory_embedded_lineage(self):
+        receipt = receipt_fixture()
+        evaluation = sandlot_receipts.build_counterfactual_lineup_evaluation(
+            receipt=receipt, period_evidence=period_evidence_fixture(receipt)
+        )
+        evaluation["evidence"]["source_evidence"]["hash"] = "b" * 64
+        evaluation["evidence"]["evidence_hash"] = sandlot_receipts.counterfactual_evidence_hash(
+            evaluation["evidence"]
+        )
+
+        with self.assertRaisesRegex(ValueError, "source lineage is contradictory"):
+            sandlot_db.record_recommendation_outcome_evaluation(
+                receipt_id=receipt["receipt_id"], evaluation=evaluation
+            )
+
+    def test_counterfactual_writer_rejects_stale_decision_alignment(self):
+        evaluated_receipt = {**receipt_fixture(), "decision_state": "accepted"}
+        locked_receipt = {**evaluated_receipt, "decision_state": "rejected"}
+        archive = period_evidence_fixture(evaluated_receipt)
+        evaluation = sandlot_receipts.build_counterfactual_lineup_evaluation(
+            receipt=evaluated_receipt, period_evidence=archive
+        )
+
+        class Result:
+            def fetchone(self):
+                return locked_receipt
+        class FakeConn:
+            def execute(self, sql, params=None):
+                return Result()
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            with self.assertRaisesRegex(ValueError, "decision state is stale"):
+                sandlot_db.record_recommendation_outcome_evaluation(
+                    receipt_id=evaluated_receipt["receipt_id"], evaluation=evaluation
+                )
+
+    def test_counterfactual_writer_persists_terminal_unavailable_state(self):
+        receipt = receipt_fixture()
+        archive = period_evidence_fixture(receipt)
+        evaluation = sandlot_receipts.build_counterfactual_lineup_unavailable(
+            receipt=receipt, period_evidence=archive, detail="missing archived player"
+        )
+
+        class Result:
+            def __init__(self, row):
+                self.row = row
+            def fetchone(self):
+                return self.row
+
+        class FakeConn:
+            def execute(self, sql, params=None):
+                if "FROM recommendation_receipts" in sql:
+                    return Result(receipt)
+                if "SELECT evidence_hash FROM lineup_period_evidence" in sql:
+                    return Result({"evidence_hash": archive["evidence_hash"]})
+                if "INSERT INTO recommendation_outcome_evaluations" in sql:
+                    return Result({
+                        "receipt_id": receipt["receipt_id"],
+                        "scoring_version": evaluation["scoring_version"],
+                        "state": "unavailable",
+                        "metrics": {},
+                        "evidence": evaluation["evidence"],
+                    })
+                raise AssertionError(sql)
+
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            row, changed = sandlot_db.record_recommendation_outcome_evaluation(
+                receipt_id=receipt["receipt_id"], evaluation=evaluation
+            )
+
+        self.assertTrue(changed)
+        self.assertEqual(row["state"], "unavailable")
 
     def test_team_result_outcome_is_idempotent_and_counterfactual_fields_stay_null(self):
         receipt = {**receipt_fixture(), "outcome_state": "pending"}
