@@ -54,6 +54,13 @@ def trade_snapshot():
 
 
 class TradeCounterTests(unittest.TestCase):
+    def test_offer_preflight_requires_incoming_counterparty_ownership(self):
+        error = sandlot_trades.offer_validation_error(
+            trade_snapshot(), ["m1"], ["o1"], expected_get_owner_id="different-team",
+        )
+
+        self.assertEqual(error, "get players no longer belong to the incoming offer counterparty")
+
     def test_grade_offer_returns_three_honest_counter_bands(self):
         with patch.object(
             sandlot_trades,

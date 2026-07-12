@@ -154,6 +154,32 @@ test.describe('Trade page', () => {
     await expect(incoming.getByRole('button', { name:'Manual review required' })).toBeDisabled();
   });
 
+  test('explains a young-player dynasty policy block without generic stale copy', async ({ page }) => {
+    await mockTradeAdvisor(page);
+    await page.route('**/api/trades/incoming', route => route.fulfill({
+      status:200, contentType:'application/json',
+      body:JSON.stringify({
+        snapshot_id:321, freshness:{ state:'fresh' }, read_only:true, fantrax_changed:false, writes_enabled:false,
+        offers:[{
+          trade_id:'tx-young', proposed_by:'Other Team', gradeable:false, manual_only:true, status:'pending',
+          give:[{ player_id:'m1', player_name:'My Second Baseman' }],
+          get:[{ player_id:'o1', player_name:'Young Player' }],
+          blocked_reasons:['participant_policy'], includes_draft_pick:false,
+          manual_review_reason:'get player Young Player is age 24 and requires manual dynasty review',
+        }],
+      }),
+    }));
+    await page.goto('/');
+    await waitForAppMount(page);
+    await gotoTab(page, 'League');
+    await page.getByRole('button', { name:/Grade an offer/i }).click();
+
+    const incoming = page.getByRole('region', { name:'Incoming offers' });
+    await expect(incoming.getByText(/Young Player is 24.*can’t grade this dynasty trade reliably yet/i)).toBeVisible();
+    await expect(incoming.getByText(/incomplete, stale, or includes terms/i)).toHaveCount(0);
+    await expect(incoming.getByRole('button', { name:'Manual review required' })).toBeDisabled();
+  });
+
   test('discards an in-flight incoming grade when the Fantrax snapshot refreshes', async ({ page }) => {
     await mockTradeAdvisor(page);
     let snapshotId = 321;
