@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 
 BRIEF_TYPE_GRADE = "trade_grade"
 BRIEF_TYPE_COUNTER = "trade_counter"
-TRADE_ELIGIBILITY_POLICY_VERSION = "trade_eligibility_v1"
+TRADE_ELIGIBILITY_POLICY_VERSION = "trade_eligibility_v2"
 MIN_COUNTER_ADD_FPPG = 0.75
 MIN_VALID_DYNASTY_AGE = 16
 MAX_VALID_DYNASTY_AGE = 50
@@ -196,6 +196,7 @@ def _trade_eligibility_evidence(
                 "age": _number(row.get("age")),
                 "age_source": str(row.get("age_source") or "").strip() or None,
                 "protected_trade_player": _is_protected_trade_player(row),
+                "available_for_current_rate_grade": not _is_unavailable(row),
                 "requires_manual_dynasty_review": (_age(row) or 0) <= DYNASTY_MANUAL_REVIEW_MAX_AGE,
                 "fppg_valid": _number(row.get("fppg")) is not None,
             })
@@ -474,6 +475,12 @@ def _validate_trade_participants(
             if _is_protected_trade_player(row):
                 raise TradeGradeError(
                     f"{side} player {label} is protected as a keeper/minors asset and cannot be trade graded"
+                )
+            unavailable_reason = _unavailable_reason(row)
+            if unavailable_reason:
+                raise TradeGradeError(
+                    f"{side} player {label} is {unavailable_reason}; "
+                    "current-rate-only grading cannot establish actionable trade value"
                 )
             fppg = _number(row.get("fppg"))
             if fppg is None or not math.isfinite(fppg):
@@ -885,12 +892,34 @@ def _is_inactive(row: dict[str, Any]) -> bool:
 
 
 def _is_unavailable(row: dict[str, Any]) -> bool:
-    status = str(row.get("injury") or row.get("status") or "").strip().upper()
-    if status in {"OUT", "SUSP", "SUSPENDED", "IL", "IL10", "IL60", "IR"}:
-        return True
+    return _unavailable_reason(row) is not None
+
+
+def _unavailable_reason(row: dict[str, Any]) -> str | None:
+    """Return a stable user-facing reason when current FP/G is not actionable."""
+    unavailable_slots = {
+        "IL", "IL10", "IL15", "IL60", "IR", "INJ", "INJ RES", "INJURED RESERVE",
+    }
+    slot = str(row.get("slot") or "").strip().upper()
+    if slot in unavailable_slots:
+        return f"on {slot}"
+
+    for key in ("injury", "status"):
+        status = str(row.get(key) or "").strip().upper()
+        if status in {"SUSP", "SUSPENDED"}:
+            return "suspended"
+        if status in {"OUT", "IL", "IL10", "IL15", "IL60", "IR", "INJ"}:
+            return f"marked {status}"
+
     raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
     player = raw.get("player") if isinstance(raw.get("player"), dict) else {}
-    return any(_truthy(player.get(key)) for key in ("out", "injured_reserve", "suspended"))
+    if _truthy(player.get("suspended")):
+        return "suspended"
+    if _truthy(player.get("injured_reserve")):
+        return "on injured reserve"
+    if _truthy(player.get("out")):
+        return "marked OUT"
+    return None
 
 
 def _number(value: Any) -> float | None:

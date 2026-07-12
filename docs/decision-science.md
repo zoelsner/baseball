@@ -93,7 +93,7 @@ would be a modeling error.
 
 The trade path preserves exact incoming Fantrax offer identity and now freezes
 a predeclared, first-complete-period measurement contract in
-`trade_assessment_v3`. The contract binds assessment time, a decision-time
+`trade_assessment_v4`. The contract binds assessment time, a decision-time
 Fantrax/MLB calendar hash, a strict first-scoring-event deadline, verified
 league scoring weights, an offer cluster, and exact Fantrax player-role scoring
 entities. It can be explicitly ineligible without blocking the useful trade

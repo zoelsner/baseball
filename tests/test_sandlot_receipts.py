@@ -198,10 +198,10 @@ class RecommendationReceiptBuilderTests(unittest.TestCase):
                 {"key": "rest_of_season", "label": "Rest of season", "status": "unavailable", "value": None, "detail": "Not modeled."},
             ]},
             "eligibility_evidence": {
-                "policy_version": "trade_eligibility_v1", "all_checks_passed": True,
+                "policy_version": "trade_eligibility_v2", "all_checks_passed": True,
                 "participants": [
-                    {"side": "give", "player_id": "mine", "slot": "OF", "age": 30, "age_source": "fantrax", "protected_trade_player": False, "requires_manual_dynasty_review": False, "fppg_valid": True},
-                    {"side": "get", "player_id": "theirs", "slot": "2B", "age": 28, "age_source": "fantrax", "protected_trade_player": False, "requires_manual_dynasty_review": False, "fppg_valid": True},
+                    {"side": "give", "player_id": "mine", "slot": "OF", "age": 30, "age_source": "fantrax", "protected_trade_player": False, "available_for_current_rate_grade": True, "requires_manual_dynasty_review": False, "fppg_valid": True},
+                    {"side": "get", "player_id": "theirs", "slot": "2B", "age": 28, "age_source": "fantrax", "protected_trade_player": False, "available_for_current_rate_grade": True, "requires_manual_dynasty_review": False, "fppg_valid": True},
                 ],
             },
         }
@@ -220,8 +220,12 @@ class RecommendationReceiptBuilderTests(unittest.TestCase):
         self.assertTrue(receipt["recommendation"]["guardrails"]["manual_execution_only"])
         self.assertFalse(receipt["recommendation"]["guardrails"]["fantrax_write_authorized"])
         self.assertFalse(receipt["recommendation"]["guardrails"]["dynasty_complete"])
-        self.assertEqual(receipt["recommendation"]["guardrails"]["eligibility_policy_version"], "trade_eligibility_v1")
-        self.assertEqual(receipt["builder_version"], "trade_assessment_v3")
+        self.assertEqual(receipt["recommendation"]["guardrails"]["eligibility_policy_version"], "trade_eligibility_v2")
+        self.assertTrue(all(
+            participant["available_for_current_rate_grade"]
+            for participant in receipt["recommendation"]["guardrails"]["eligibility"]
+        ))
+        self.assertEqual(receipt["builder_version"], "trade_assessment_v4")
         self.assertFalse(receipt["recommendation"]["outcome_contract"]["eligible"])
         self.assertIn(
             {"code": "period_calendar_missing"},
@@ -279,6 +283,22 @@ class RecommendationReceiptBuilderTests(unittest.TestCase):
         overlap["my_get"][0]["id"] = "mine"
         with self.assertRaisesRegex(ValueError, "disjoint"):
             sandlot_receipts.build_trade_assessment_receipt(snapshot=snapshot, result=overlap, generated_at=NOW)
+
+        unavailable = copy.deepcopy(result)
+        unavailable["eligibility_evidence"]["participants"][1]["available_for_current_rate_grade"] = False
+        with self.assertRaisesRegex(ValueError, "did not pass all participant gates"):
+            sandlot_receipts.build_trade_assessment_receipt(
+                snapshot=snapshot, result=unavailable, generated_at=NOW,
+            )
+
+        for unsupported_policy in ("trade_eligibility_v1", "unknown"):
+            with self.subTest(unsupported_policy=unsupported_policy):
+                unsupported = copy.deepcopy(result)
+                unsupported["eligibility_evidence"]["policy_version"] = unsupported_policy
+                with self.assertRaisesRegex(ValueError, "policy version is unsupported"):
+                    sandlot_receipts.build_trade_assessment_receipt(
+                        snapshot=snapshot, result=unsupported, generated_at=NOW,
+                    )
 
     def test_hash_is_stable_across_input_and_assignment_order(self):
         baseline = receipt_fixture()
@@ -1468,10 +1488,10 @@ class RecommendationReceiptApiTests(unittest.TestCase):
             "my_get": [{"id": "theirs", "name": "Theirs", "team": "SEA", "positions": "2B", "fppg": 5.5, "age": 28}],
             "analysis": {"horizons": [{"key": "current_rate", "label": "Current rate", "status": "modeled", "value": 1.5, "unit": "FP/G", "detail": "Current snapshot."}]},
             "eligibility_evidence": {
-                "policy_version": "trade_eligibility_v1", "all_checks_passed": True,
+                "policy_version": "trade_eligibility_v2", "all_checks_passed": True,
                 "participants": [
-                    {"side": "give", "player_id": "mine", "slot": "OF", "age": 30, "age_source": "fantrax", "protected_trade_player": False, "requires_manual_dynasty_review": False, "fppg_valid": True},
-                    {"side": "get", "player_id": "theirs", "slot": "2B", "age": 28, "age_source": "fantrax", "protected_trade_player": False, "requires_manual_dynasty_review": False, "fppg_valid": True},
+                    {"side": "give", "player_id": "mine", "slot": "OF", "age": 30, "age_source": "fantrax", "protected_trade_player": False, "available_for_current_rate_grade": True, "requires_manual_dynasty_review": False, "fppg_valid": True},
+                    {"side": "get", "player_id": "theirs", "slot": "2B", "age": 28, "age_source": "fantrax", "protected_trade_player": False, "available_for_current_rate_grade": True, "requires_manual_dynasty_review": False, "fppg_valid": True},
                 ],
             },
         }
@@ -1500,7 +1520,7 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         persisted = record.call_args.args[0]
         self.assertTrue(persisted["receipt_id"].startswith("trade-assessment:"))
         self.assertEqual(len(persisted["input_hash"]), 64)
-        self.assertEqual(persisted["builder_version"], "trade_assessment_v3")
+        self.assertEqual(persisted["builder_version"], "trade_assessment_v4")
         self.assertFalse(persisted["recommendation"]["outcome_contract"]["eligible"])
 
     def test_trade_receipt_failure_does_not_expose_database_details(self):
@@ -1628,7 +1648,7 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         }
         stored = {
             "receipt_id": "trade-assessment:" + "a" * 64,
-            "builder_version": "trade_assessment_v3",
+            "builder_version": "trade_assessment_v4",
             "source": "trade_cockpit", "action_type": "trade_assessment",
             "recommendation": {
                 "offer": {"give": [{"player_id": "p1"}], "get": [{"player_id": "p2"}]},

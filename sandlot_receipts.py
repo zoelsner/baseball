@@ -18,7 +18,8 @@ import sandlot_trade_evidence
 
 
 MONDAY_LINEUP_BUILDER_VERSION = "monday_lineup_v2"
-TRADE_ASSESSMENT_BUILDER_VERSION = "trade_assessment_v3"
+TRADE_ASSESSMENT_BUILDER_VERSION = "trade_assessment_v4"
+SUPPORTED_TRADE_ELIGIBILITY_POLICY_VERSION = "trade_eligibility_v2"
 TEAM_RESULT_SCORING_VERSION = "team_result_v1"
 COUNTERFACTUAL_LINEUP_SCORING_VERSION = "counterfactual_lineup_v1"
 COUNTERFACTUAL_LINEUP_SOURCE_EVIDENCE_VERSION = "fantrax_period_lineup_v2"
@@ -146,6 +147,8 @@ def build_trade_assessment_receipt(
     if not isinstance(eligibility, dict) or eligibility.get("all_checks_passed") is not True:
         raise ValueError("trade result eligibility evidence is missing or failed")
     policy_version = _required_text(eligibility.get("policy_version"), "trade eligibility policy version")
+    if policy_version != SUPPORTED_TRADE_ELIGIBILITY_POLICY_VERSION:
+        raise ValueError("trade eligibility policy version is unsupported")
     safety_rows = eligibility.get("participants")
     if not isinstance(safety_rows, list) or len(safety_rows) != len(give_ids) + len(get_ids):
         raise ValueError("trade eligibility participant evidence is incomplete")
@@ -160,13 +163,19 @@ def build_trade_assessment_receipt(
             "age": _finite_number(item.get("age"), "trade eligibility age"),
             "age_source": str(item.get("age_source") or "").strip() or None,
             "protected_trade_player": item.get("protected_trade_player") is True,
+            "available_for_current_rate_grade": item.get("available_for_current_rate_grade") is True,
             "requires_manual_dynasty_review": item.get("requires_manual_dynasty_review") is True,
             "fppg_valid": item.get("fppg_valid") is True,
         }
         expected_ids = give_ids if participant["side"] == "give" else get_ids if participant["side"] == "get" else []
         if participant["player_id"] not in expected_ids:
             raise ValueError("trade eligibility participant does not match the exact offer")
-        if participant["protected_trade_player"] or participant["requires_manual_dynasty_review"] or not participant["fppg_valid"]:
+        if (
+            participant["protected_trade_player"]
+            or not participant["available_for_current_rate_grade"]
+            or participant["requires_manual_dynasty_review"]
+            or not participant["fppg_valid"]
+        ):
             raise ValueError("trade eligibility evidence did not pass all participant gates")
         normalized_safety.append(participant)
     if len({(item["side"], item["player_id"]) for item in normalized_safety}) != len(normalized_safety):

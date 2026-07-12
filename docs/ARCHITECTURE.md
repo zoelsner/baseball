@@ -126,6 +126,12 @@ The incoming projection also runs the grader's participant-policy preflight
 without AI work, so protected, missing-data, or age-24-and-younger dynasty
 assets are labeled for manual review before the user clicks. This is a
 temporary honest limitation until a richer dynasty/prospect model ships.
+The same preflight fails closed when either side is OUT, suspended, or in an
+injured-list slot. Sandlot's only modeled trade value is current snapshot FP/G,
+so a stale healthy rate cannot be presented as an actionable edge for an
+unavailable player. This does not claim the player lacks long-term value; the
+package remains a manual review until availability-aware weekly and long-term
+models exist.
 
 Trade assessment receipt v2 distinguishes manually entered packages from
 reviewed incoming Fantrax offers. Incoming receipts retain a sanitized upstream
@@ -145,6 +151,11 @@ calendar and identity hashes, and records bounded ineligibility instead of
 guessing. Multiple hitter/pitcher scoring entities are explicit for two-way
 assets. Optional MLB identity is supporting lineage; the exact Fantrax scorer
 ID and role remain authoritative for the planned Fantrax-scored label.
+
+Trade assessment receipt v4 preserves and revalidates the versioned
+participant-availability proof at the immutable receipt boundary. New receipts
+accept only `trade_eligibility_v2`; legacy receipts remain readable historical
+evidence but cannot be replayed into a new assessment.
 
 ### Skipper
 
