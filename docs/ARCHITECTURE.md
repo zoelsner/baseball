@@ -157,6 +157,31 @@ participant-availability proof at the immutable receipt boundary. New receipts
 accept only `trade_eligibility_v2`; legacy receipts remain readable historical
 evidence but cannot be replayed into a new assessment.
 
+Mature, outcome-eligible V4 receipts drive a separate targeted evidence loop.
+For each frozen `(Fantrax scorer ID, scoring role, period)` entity that is not
+already archived, Sandlot requests `getPlayerStats` with the exact
+`transactionPeriod`, `BY_PERIOD`/`PERIOD_ONLY` timeframe, `ALL` population, and
+hitter or pitcher role filter. The collector requires Fantrax to echo every
+scope field, prove the named search is one complete page, bind the advertised
+period dates, and expose exactly one FPts column. Exact zero is archived as an
+explicit zero; an absent ID stays pending and is never converted to zero.
+Every archived row commits to the canonical matched scorer/role/FPts slice,
+the exact query and response hashes, and hashes of the matched raw row and full
+response; archive and evaluation writes revalidate those bindings.
+
+`fantrax_player_period_fpts_v1` rows are append-only and shared across receipts.
+Once every frozen entity exists, `trade_static_package_asset_points_v1` records
+give total, get total, raw get-minus-give delta, package shape, and every asset
+and role contribution. The database replays the scorer from stored source rows
+before accepting the immutable evaluation. This retrospective label never
+claims execution, lineup usage, replacement-slot value, causal lift, ROS,
+dynasty value, or autopilot eligibility.
+If a complete targeted query still lacks the exact scorer after eight days,
+Sandlot records `unavailable` only when a newer authoritative Fantrax period is
+final. The terminal evidence retains the post-grace absence observation and
+newer-period proof with empty metrics; transient auth, HTTP, parse, or identity
+failures remain pending.
+
 ### Skipper
 
 Skipper is an explainer and Q&A layer over real snapshot context. It must not be

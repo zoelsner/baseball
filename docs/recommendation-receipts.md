@@ -116,12 +116,28 @@ their hash, and the exact minimum so the “first scoring event” claim remains
 auditable after the short-lived snapshot is pruned. Period maturity is the
 Fantrax period close plus a fixed 24-hour correction grace.
 
-Trade outcome scoring remains blocked until an immutable arbitrary-player
-period archive exists. The first honest target is
-the give/get packages' league-scored asset production in the first complete
-future scoring period. It is not lineup lift, causal value, or proof of a
-completed trade. Rest-of-season evidence must remain separate, and no numeric
-dynasty label is authorized by the current age/current-rate inputs.
+`fantrax_player_period_fpts_v1` supplies an immutable arbitrary-player archive
+for mature V4 receipts through exact targeted Fantrax period/role queries. The
+first label, `trade_static_package_asset_points_v1`, is the give/get packages'
+league-scored asset production in the first complete future scoring period. It
+is not lineup lift, causal value, or proof of a completed trade. Rest-of-season
+evidence must remain separate, and no numeric dynasty label is authorized by
+the current age/current-rate inputs.
+
+Targeted source collection is fail closed: Fantrax must echo the exact
+`transactionPeriod`, role filter, `ALL` population, period-only timeframe, and
+season selection, with one complete search page and one unambiguous FPts
+column. A present `0` row is valid evidence; a missing scorer ID remains
+retryable evidence pending and is never silently scored as zero. Collection
+runs only after the receipt's frozen correction-grace maturity time and never
+blocks a healthy refresh.
+
+After an additional eight-day finalization grace, a fresh complete targeted
+query may terminalize an exact-scorer absence only when the same snapshot proves
+a newer authoritative Fantrax period is final. That terminal state is
+`unavailable` with empty metrics and retained absence lineage—not a zero-point
+player. Network, authentication, pagination, parse, and response-identity
+failures never terminalize the label.
 
 ## Outcome telemetry
 
