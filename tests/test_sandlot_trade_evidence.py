@@ -85,10 +85,10 @@ def grade_result():
         "my_get": [{"id": "get", "name": "Get Player", "team": "SEA", "positions": "SP/RP", "fppg": 5.5, "age": 28}],
         "analysis": {"horizons": [{"key": "current_rate", "status": "modeled", "value": 1.5}]},
         "eligibility_evidence": {
-            "policy_version": "trade_eligibility_v1", "all_checks_passed": True,
+            "policy_version": "trade_eligibility_v2", "all_checks_passed": True,
             "participants": [
-                {"side": "give", "player_id": "give", "slot": "OF", "age": 30, "age_source": "fantrax", "protected_trade_player": False, "requires_manual_dynasty_review": False, "fppg_valid": True},
-                {"side": "get", "player_id": "get", "slot": "RES", "age": 28, "age_source": "fantrax", "protected_trade_player": False, "requires_manual_dynasty_review": False, "fppg_valid": True},
+                {"side": "give", "player_id": "give", "slot": "OF", "age": 30, "age_source": "fantrax", "protected_trade_player": False, "available_for_current_rate_grade": True, "requires_manual_dynasty_review": False, "fppg_valid": True},
+                {"side": "get", "player_id": "get", "slot": "RES", "age": 28, "age_source": "fantrax", "protected_trade_player": False, "available_for_current_rate_grade": True, "requires_manual_dynasty_review": False, "fppg_valid": True},
             ],
         },
     }
@@ -230,7 +230,7 @@ class TradeOutcomeContractTests(unittest.TestCase):
         )
         contract = receipt["recommendation"]["outcome_contract"]
 
-        self.assertEqual(receipt["builder_version"], "trade_assessment_v3")
+        self.assertEqual(receipt["builder_version"], "trade_assessment_v4")
         self.assertTrue(contract["eligible"])
         self.assertEqual(contract["target_period"]["period_number"], "17")
         self.assertEqual(contract["target_period"]["candidate_game_count"], 2)

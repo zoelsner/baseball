@@ -157,6 +157,84 @@ class TradeCounterTests(unittest.TestCase):
             "raw": {"player": {"suspended": "false"}},
         }))
 
+    def test_get_player_on_ir_is_not_graded_from_stale_current_rate(self):
+        snapshot = trade_snapshot()
+        acquired = snapshot["data"]["all_team_rosters"]["opp"]["rows"][0]
+        acquired.update({"slot": "IR", "injury": "OUT", "fppg": 8.25})
+
+        with self.assertRaisesRegex(
+            sandlot_trades.TradeGradeError,
+            "get player Their Outfielder is on IR; current-rate-only grading cannot establish actionable trade value",
+        ):
+            sandlot_trades.grade_offer(snapshot, ["m1"], ["o1"])
+
+    def test_unavailable_give_player_also_requires_manual_trade_review(self):
+        snapshot = trade_snapshot()
+        outgoing = snapshot["data"]["roster"]["rows"][0]
+        outgoing.update({"injury": "SUSP", "fppg": 7.5})
+
+        with self.assertRaisesRegex(
+            sandlot_trades.TradeGradeError,
+            "give player My Second Baseman is suspended; current-rate-only grading cannot establish actionable trade value",
+        ):
+            sandlot_trades.grade_offer(snapshot, ["m1"], ["o1"])
+
+    def test_offer_preflight_surfaces_unavailable_player_policy(self):
+        snapshot = trade_snapshot()
+        snapshot["data"]["all_team_rosters"]["opp"]["rows"][0].update({
+            "slot": "OF", "injury": "OUT", "fppg": 8.25,
+        })
+
+        reason = sandlot_trades.offer_validation_error(snapshot, ["m1"], ["o1"])
+
+        self.assertEqual(
+            reason,
+            "get player Their Outfielder is marked OUT; current-rate-only grading cannot establish actionable trade value",
+        )
+
+    def test_day_to_day_player_remains_current_rate_gradeable(self):
+        snapshot = trade_snapshot()
+        snapshot["data"]["all_team_rosters"]["opp"]["rows"][0]["injury"] = "DTD"
+
+        with patch.object(
+            sandlot_trades,
+            "_load_or_generate_rationale",
+            return_value=("Deterministic grade rationale.", "", False),
+        ), patch.object(sandlot_trades, "_overlay_counter_rationales"):
+            result = sandlot_trades.grade_offer(snapshot, ["m1"], ["o1"])
+
+        self.assertEqual(result["eligibility_evidence"]["policy_version"], "trade_eligibility_v2")
+        self.assertTrue(all(
+            participant["available_for_current_rate_grade"]
+            for participant in result["eligibility_evidence"]["participants"]
+        ))
+
+    def test_unavailable_detection_checks_conflicts_slots_statuses_and_raw_flags(self):
+        unavailable_rows = (
+            {"injury": "DTD", "status": "OUT"},
+            {"slot": "IL10"},
+            {"slot": "IL15"},
+            {"slot": "IL60"},
+            {"status": "IL10"},
+            {"status": "IL15"},
+            {"status": "IL60"},
+            {"raw": {"player": {"out": True}}},
+            {"raw": {"player": {"injured_reserve": True}}},
+            {"raw": {"player": {"suspended": True}}},
+        )
+        for row in unavailable_rows:
+            with self.subTest(row=row):
+                self.assertTrue(sandlot_trades._is_unavailable(row))
+
+        for value in (False, "false", "0", 0, None):
+            with self.subTest(false_value=value):
+                self.assertFalse(sandlot_trades._is_unavailable({
+                    "injury": "DTD",
+                    "raw": {"player": {
+                        "out": value, "injured_reserve": value, "suspended": value,
+                    }},
+                }))
+
     def test_counter_bands_target_fair_packages_instead_of_biggest_star(self):
         candidates = [
             {"row": {"id": "star", "name": "Star"}, "counter_delta": 18.0, "score": 20.0},

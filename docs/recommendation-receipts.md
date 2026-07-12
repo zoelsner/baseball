@@ -99,7 +99,10 @@ both sides. The resulting grade then creates the normal immutable trade
 assessment receipt. Draft picks and incomplete identities require manual
 review rather than a partial or guessed receipt.
 
-`trade_assessment_v3` freezes the assessment-availability cutoff, a canonical
+`trade_assessment_v4` retains the v3 outcome contract and additionally requires
+the exact `trade_eligibility_v2` participant evidence, including a true
+current-rate availability proof for every player. It freezes the
+assessment-availability cutoff, a canonical
 regular-season Fantrax period calendar observed before the receipt, the exact
 first MLB scoring event for the selected period, an offer-cluster key, verified
 2026 league scoring rules, and each asset's exact Fantrax scorer ID plus one or
