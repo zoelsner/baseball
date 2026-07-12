@@ -6,7 +6,8 @@ probables, then an exact assignment to the league's full 20-slot template.
 
 Usage: DATABASE_URL=postgres://... python scripts/run_monday_lineup.py
 Output: markdown lineup card to stdout (and $GITHUB_STEP_SUMMARY if set),
-        full JSON to monday_lineup.json. Read-only against the database.
+        full JSON to monday_lineup.json, and one immutable recommendation
+        receipt in Postgres. No Fantrax writes.
 """
 from __future__ import annotations
 
@@ -24,7 +25,10 @@ import psycopg  # noqa: E402
 import requests  # noqa: E402
 
 import mlb_stats  # noqa: E402
+import sandlot_data_quality  # noqa: E402
+import sandlot_db  # noqa: E402
 import sandlot_lineup as lineup  # noqa: E402
+import sandlot_receipts  # noqa: E402
 import sandlot_scoring as scoring  # noqa: E402
 from sandlot_autopsy import INJURED_SLOTS, PROTECTED_SLOTS, eligibility_tokens  # noqa: E402
 
@@ -113,6 +117,25 @@ def scored_game_log(mlb_id: int, tokens: set[str], season: int) -> list[dict]:
     return games
 
 
+def require_trusted_roster_slots(rows: list[dict]) -> None:
+    if not rows:
+        raise RuntimeError("Monday lineup receipt paused: roster is empty")
+    untrusted = []
+    for row in rows:
+        if not isinstance(row, dict):
+            untrusted.append("unknown")
+            continue
+        source = str(row.get("slot_source") or "").strip().casefold()
+        if source in sandlot_data_quality.UNTRUSTED_SLOT_SOURCES:
+            untrusted.append(str(row.get("name") or row.get("id") or "unknown"))
+    if untrusted:
+        examples = ", ".join(untrusted[:5])
+        raise RuntimeError(
+            f"Monday lineup receipt paused: trusted Fantrax slots missing for "
+            f"{len(untrusted)}/{len(rows)} roster players ({examples})"
+        )
+
+
 def run():
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
@@ -122,19 +145,23 @@ def run():
         conn.read_only = True
         row = conn.execute(
             """
-            SELECT id, taken_at, data->'roster' AS roster, data->>'team_name'
+            SELECT id, taken_at, source, status, league_id, team_id, team_name,
+                   data->'roster' AS roster
             FROM snapshots WHERE status='success'
             ORDER BY taken_at DESC LIMIT 1
             """
         ).fetchone()
         if not row:
             sys.exit("No successful snapshots found")
-        snap_id, taken_at, roster, team_name = row
+        snap_id, taken_at, snapshot_source, snapshot_status, league_id, team_id, team_name, roster = row
         id_map = dict(conn.execute(
             "SELECT fantrax_id, mlb_id FROM player_id_map WHERE mlb_id IS NOT NULL"
         ).fetchall())
 
     rows = roster.get("rows") or []
+    require_trusted_roster_slots(rows)
+    if not league_id or not team_id:
+        raise RuntimeError("Monday lineup receipt requires snapshot league and team identity")
     today = datetime.now(ET).date()
     season = today.year
     monday, sunday = coming_week(today)
@@ -219,7 +246,8 @@ def run():
         basis += "" if fid in mlb_ids else " [no MLB data]"
         entry = {"id": fid, "name": name, "tokens": tokens, "proj": proj,
                  "hitter_proj": hitter_proj, "pitcher_proj": pitcher_proj,
-                 "basis": basis, "slot": slot, "injury": injury}
+                 "basis": basis, "slot": slot, "slot_source": r.get("slot_source"),
+                 "injury": injury}
         if slot in INJURED_SLOTS or injury in lineup.BLOCKED_INJURIES:
             excluded.append(entry)
             continue
@@ -236,6 +264,10 @@ def run():
         sum(lineup.projected_for_slot(entry, entry["slot"]) for entry in current_active),
         1,
     )
+    receipt_current_active = [
+        {**entry, "assigned_projection": lineup.projected_for_slot(entry, entry["slot"])}
+        for entry in current_active
+    ]
     proposed_names = {name for _, name in result["lineup"]}
     ins = sorted(n for n in proposed_names if n not in {e["name"] for e in current_active})
     outs = sorted(e["name"] for e in current_active if e["name"] not in proposed_names)
@@ -272,7 +304,30 @@ def run():
               "games (schedule, rotation cadence, posted probables). No AI in "
               "this path._"]
     summary = "\n".join(lines)
+
+    receipt = sandlot_receipts.build_monday_lineup_receipt(
+        snapshot={
+            "id": snap_id,
+            "taken_at": taken_at,
+            "source": snapshot_source,
+            "status": snapshot_status,
+            "league_id": league_id,
+            "team_id": team_id,
+        },
+        week_start=monday,
+        week_end=sunday,
+        result=result,
+        entries=entries,
+        current_active=receipt_current_active,
+        current_total=current_total,
+    )
+    sandlot_db.ensure_recommendation_receipts_schema()
+    persisted_receipt, created = sandlot_db.record_recommendation_receipt(receipt)
     print("\n" + summary)
+    print(
+        f"\nreceipt {persisted_receipt['receipt_id']} "
+        f"({'created' if created else 'already recorded'})"
+    )
 
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if step_summary:
@@ -281,7 +336,13 @@ def run():
     with open("monday_lineup.json", "w", encoding="utf-8") as fh:
         json.dump({"week": [monday.isoformat(), sunday.isoformat()],
                    "proposal": result, "entries": entries, "excluded": excluded,
-                   "current_total": current_total}, fh, indent=1, default=str)
+                   "current_total": current_total,
+                   "receipt": {
+                       "receipt_id": persisted_receipt["receipt_id"],
+                       "input_hash": persisted_receipt["input_hash"],
+                       "scope_key": persisted_receipt["scope_key"],
+                       "created": created,
+                   }}, fh, indent=1, default=str)
     print("\nfull detail written to monday_lineup.json")
 
 

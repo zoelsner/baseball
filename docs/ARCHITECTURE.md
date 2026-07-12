@@ -16,7 +16,7 @@ be the only way important information reaches the user.
 - Railway web service: `uvicorn sandlot_api:app`
 - Railway cron service: `python sandlot_cron.py`
 - Postgres: snapshots, refresh runs, chat messages, player profile caches, AI
-  briefs, player takes
+  briefs, player takes, and durable recommendation receipts
 - Frontend: static `web/sandlot/index.html` plus in-browser Babel JSX files
 - Scrape layer: `fantrax_data.py`, `auth.py`, `sandlot_refresh.py`
 - Player context: `player_service.py`, `mlb_stats.py`
@@ -41,6 +41,20 @@ If these disagree, resolve the conflict before implementation.
 5. `web/sandlot/v2-pages.jsx` renders the mobile app from that payload.
 6. Optional warmers populate player profiles, media, takes, waiver AI briefs,
    and trade explanations without blocking the core snapshot path.
+
+## Recommendation Evidence
+
+`recommendation_receipts` preserves immutable decision-time evidence beyond the
+short snapshot retention window. The first writer is the deterministic Monday
+lineup optimizer. Receipts are versioned, scoped to an exact league/team/week,
+and superseded rather than overwritten when inputs change. See
+`docs/recommendation-receipts.md` for identity, lifecycle, and execution
+boundaries.
+
+The receipt ledger is not an execution log. `execution_requests` remains the
+separate dry-run control plane, and any future link between them must preserve
+exact confirmation, visible live preflight, protected-player enforcement, and
+post-write verification.
 
 ## Product Boundaries
 

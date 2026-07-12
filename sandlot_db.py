@@ -283,6 +283,7 @@ def init_schema() -> None:
             )
             """
         )
+        _init_recommendation_receipts_schema(conn)
         conn.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS execution_requests_proposal_instance_key
@@ -364,6 +365,197 @@ def insert_snapshot(
             ),
         ).fetchone()
     return int(row["id"])
+
+
+def ensure_recommendation_receipts_schema() -> None:
+    """Create only the ledger schema for standalone recommendation writers."""
+    with connect() as conn:
+        _init_recommendation_receipts_schema(conn)
+
+
+def _init_recommendation_receipts_schema(conn: Any) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recommendation_receipts (
+          receipt_id TEXT PRIMARY KEY,
+          builder_version TEXT NOT NULL,
+          scope_key TEXT NOT NULL,
+          source TEXT NOT NULL,
+          action_type TEXT NOT NULL,
+          league_id TEXT NOT NULL,
+          team_id TEXT NOT NULL,
+          season INTEGER NOT NULL,
+          period_start DATE NOT NULL,
+          period_end DATE NOT NULL,
+          proposal_id TEXT NOT NULL,
+          input_hash TEXT NOT NULL,
+          snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL,
+          recommendation JSONB NOT NULL,
+          evaluation_horizon TEXT NOT NULL,
+          metric_name TEXT NOT NULL,
+          metric_unit TEXT NOT NULL,
+          baseline_value DOUBLE PRECISION,
+          projected_value DOUBLE PRECISION,
+          projected_gain DOUBLE PRECISION,
+          lifecycle_state TEXT NOT NULL DEFAULT 'active'
+            CHECK (lifecycle_state IN ('active', 'superseded', 'expired')),
+          superseded_by TEXT REFERENCES recommendation_receipts(receipt_id),
+          decision_state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (decision_state IN ('pending', 'accepted', 'rejected')),
+          decision_source TEXT,
+          decision_reason TEXT,
+          decided_at TIMESTAMPTZ,
+          outcome_state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (outcome_state IN ('pending', 'scored', 'unavailable')),
+          actual_baseline DOUBLE PRECISION,
+          actual_value DOUBLE PRECISION,
+          actual_gain DOUBLE PRECISION,
+          scoring_version TEXT,
+          outcome_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+          evaluated_at TIMESTAMPTZ,
+          generated_at TIMESTAMPTZ NOT NULL,
+          expires_at TIMESTAMPTZ NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          CHECK (period_end >= period_start),
+          CHECK (expires_at > generated_at)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS recommendation_receipts_active_scope_key
+        ON recommendation_receipts (scope_key)
+        WHERE lifecycle_state = 'active'
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS recommendation_receipts_history_idx
+        ON recommendation_receipts (league_id, team_id, action_type, period_start DESC, generated_at DESC)
+        """
+    )
+
+
+def record_recommendation_receipt(receipt: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Persist immutable evidence and supersede a changed active scope atomically."""
+    from sandlot_receipts import immutable_receipt_fields
+
+    immutable = immutable_receipt_fields(receipt)
+    required_keys = (
+        *immutable.keys(),
+        "snapshot_id",
+        "generated_at",
+        "expires_at",
+    )
+    missing = [key for key in required_keys if receipt.get(key) is None]
+    if missing:
+        raise ValueError(f"Recommendation receipt missing immutable fields: {', '.join(missing)}")
+
+    with connect() as conn:
+        existing = conn.execute(
+            "SELECT * FROM recommendation_receipts WHERE receipt_id = %s FOR UPDATE",
+            (receipt["receipt_id"],),
+        ).fetchone()
+        if existing:
+            existing = dict(existing)
+            if immutable_receipt_fields(existing) != immutable:
+                raise RuntimeError("Recommendation receipt identity collision with different immutable evidence")
+            if existing.get("lifecycle_state") != "active":
+                raise RuntimeError("A superseded or expired recommendation receipt cannot be reactivated")
+            return existing, False
+
+        active = conn.execute(
+            """
+            SELECT * FROM recommendation_receipts
+            WHERE scope_key = %s AND lifecycle_state = 'active'
+            FOR UPDATE
+            """,
+            (receipt["scope_key"],),
+        ).fetchone()
+        if active and active.get("decision_state") != "pending":
+            raise RuntimeError("A decided recommendation receipt cannot be superseded")
+        if active:
+            conn.execute(
+                """
+                UPDATE recommendation_receipts
+                SET lifecycle_state = 'superseded', updated_at = now()
+                WHERE receipt_id = %s AND lifecycle_state = 'active'
+                """,
+                (active["receipt_id"],),
+            )
+
+        row = conn.execute(
+            """
+            INSERT INTO recommendation_receipts (
+              receipt_id, builder_version, scope_key, source, action_type,
+              league_id, team_id, season, period_start, period_end,
+              proposal_id, input_hash, snapshot_id, recommendation,
+              evaluation_horizon, metric_name, metric_unit,
+              baseline_value, projected_value, projected_gain,
+              generated_at, expires_at
+            )
+            VALUES (
+              %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s,
+              %s, %s, %s, %s,
+              %s, %s, %s,
+              %s, %s, %s,
+              %s, %s
+            )
+            RETURNING *
+            """,
+            (
+                receipt["receipt_id"],
+                receipt["builder_version"],
+                receipt["scope_key"],
+                receipt["source"],
+                receipt["action_type"],
+                receipt["league_id"],
+                receipt["team_id"],
+                receipt["season"],
+                receipt["period_start"],
+                receipt["period_end"],
+                receipt["proposal_id"],
+                receipt["input_hash"],
+                receipt["snapshot_id"],
+                Jsonb(receipt["recommendation"]),
+                receipt["evaluation_horizon"],
+                receipt["metric_name"],
+                receipt["metric_unit"],
+                receipt["baseline_value"],
+                receipt["projected_value"],
+                receipt["projected_gain"],
+                receipt["generated_at"],
+                receipt["expires_at"],
+            ),
+        ).fetchone()
+        if active:
+            conn.execute(
+                """
+                UPDATE recommendation_receipts
+                SET superseded_by = %s, updated_at = now()
+                WHERE receipt_id = %s AND lifecycle_state = 'superseded'
+                """,
+                (receipt["receipt_id"], active["receipt_id"]),
+            )
+    if not row:
+        raise RuntimeError("Recommendation receipt insert returned no row")
+    return dict(row), True
+
+
+def list_recommendation_receipts(*, limit: int = 50) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit), 200))
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM recommendation_receipts
+            ORDER BY generated_at DESC, receipt_id DESC
+            LIMIT %s
+            """,
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def latest_successful_snapshot() -> dict[str, Any] | None:

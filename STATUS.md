@@ -1,9 +1,18 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-12** (one-click exact proposal dry-run confirmation UI).
+> Last updated: **2026-07-12** (recommendation receipt foundation in progress).
 
 ## Where things stand
+
+- **Recommendation receipt foundation in progress (#92):** branch
+  `feature/92-proposal-ledger` adds durable, versioned decision-time evidence
+  for the Monday lineup optimizer. Receipts are scoped to an exact target week,
+  retain projection inputs and baseline/proposed assignments after snapshot
+  pruning, fail closed on untrusted Fantrax slot provenance, and supersede
+  changed pending evidence rather than overwriting it. This slice does not yet
+  expose accept/reject controls or outcome scoring; those remain the next
+  receipt loops before any action type can earn autopilot.
 
 - **One-click proposal safety check in progress:** the exact-action review
   sheet can connect to a loopback-only owner bridge and submit the immutable
