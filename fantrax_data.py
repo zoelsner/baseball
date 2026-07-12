@@ -210,16 +210,20 @@ def extract_completed_lineup_evidence(
     displayed = raw.get("displayedSelections") if isinstance(raw.get("displayedSelections"), dict) else {}
     displayed_period = _raw_period_value(displayed, "displayedPeriod")
     displayed_scoring_period = _raw_period_value(displayed, "displayedScoringPeriod")
-    if displayed_period in (None, "") or displayed_scoring_period in (None, ""):
+    if displayed_period in (None, ""):
         raise ValueError("historical Fantrax roster response identity is incomplete")
-    if str(displayed_period) != str(displayed_scoring_period):
+    if displayed_scoring_period not in (None, "") and str(displayed_period) != str(displayed_scoring_period):
         raise ValueError("historical Fantrax roster returned conflicting periods")
     if str(displayed_period or "") != period_number:
         raise ValueError("historical Fantrax roster returned a different period")
     displayed_code = _selection_code(displayed.get("displayedSeasonOrProjection"))
     if displayed_code != by_period_code:
         raise ValueError("historical Fantrax roster returned a different stats selection")
-    timeframe = str(displayed.get("timeframeTypeCode") or raw.get("timeframeTypeCode") or "")
+    displayed_selection = displayed.get("displayedSeasonOrProjection")
+    selection_timeframe = (
+        displayed_selection.get("timeframeTypeCode") if isinstance(displayed_selection, dict) else None
+    )
+    timeframe = str(selection_timeframe or "")
     if timeframe != "BY_PERIOD":
         raise ValueError("historical Fantrax roster is not period-scoped")
 
@@ -282,7 +286,7 @@ def extract_completed_lineup_evidence(
     league_id = str(getattr(api, "league_id", "") or "").strip()
     if not league_id:
         raise ValueError("Fantrax league identity is unavailable")
-    response_team = str(displayed.get("teamId") or displayed.get("displayedTeamId") or "").strip()
+    response_team = str(displayed.get("displayedFantasyTeamId") or "").strip()
     if not response_team:
         raise ValueError("historical Fantrax roster response team identity is missing")
     if response_team != str(team_id):
@@ -348,26 +352,32 @@ def _by_period_season_code(raw: dict[str, Any]) -> str:
 
 
 def _table_scoring_contract(table: dict[str, Any]) -> tuple[str | None, str | None, int | None]:
-    headers = table.get("headers") or table.get("header") or table.get("columns") or []
+    header_group = table.get("headers") or table.get("header") or table.get("columns") or []
+    headers = header_group.get("cells") if isinstance(header_group, dict) else header_group
     if not isinstance(headers, list):
         return None, None, None
-    matches: list[tuple[str, str, int]] = []
+    fpts_indexes: list[int] = []
+    roles: set[str] = set()
     for index, header in enumerate(headers):
         if not isinstance(header, dict):
             continue
         sort_key = str(header.get("sortKey") or "").strip()
-        exact = {
-            "SCORING_CATEGORY_10": ("hitter", "SCORING_CATEGORY_10"),
-            "SCORING_CATEGORY_10_FPTS": ("hitter", "SCORING_CATEGORY_10"),
-            "SCORING_CATEGORY_20": ("pitcher", "SCORING_CATEGORY_20"),
-            "SCORING_CATEGORY_20_FPTS": ("pitcher", "SCORING_CATEGORY_20"),
-        }.get(sort_key)
-        if exact:
-            matches.append((*exact, index))
-    if len(matches) != 1:
+        if (
+            sort_key == "SCORE"
+            and header.get("key") == "fpts"
+            and header.get("shortName") == "FPts"
+            and header.get("name") == "Fantasy Points"
+        ):
+            fpts_indexes.append(index)
+        if re.fullmatch(r"SCORING_CATEGORY_10#[^#]+#-?\d+", sort_key):
+            roles.add("hitter")
+        elif re.fullmatch(r"SCORING_CATEGORY_20#[^#]+#-?\d+", sort_key):
+            roles.add("pitcher")
+    if len(fpts_indexes) != 1 or len(roles) != 1:
         return None, None, None
-    role, category, index = matches[0]
-    return role, f"{category}:cells[{index}].content", index
+    role = next(iter(roles))
+    index = fpts_indexes[0]
+    return role, f"SCORE:fpts:cells[{index}].content", index
 
 
 def _period_points(row: dict[str, Any], column_index: int | None) -> str | None:

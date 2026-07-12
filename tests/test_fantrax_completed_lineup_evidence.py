@@ -48,19 +48,27 @@ def historical_roster():
     return {
         "displayedSelections": {
             "displayedPeriod": "15",
-            "displayedScoringPeriod": "15",
-            "teamId": "me",
-            "displayedSeasonOrProjection": {"code": "SEASON_147_BY_PERIOD"},
-            "timeframeTypeCode": "BY_PERIOD",
+            "displayedFantasyTeamId": "me",
+            "displayedSeasonOrProjection": {
+                "code": "SEASON_147_BY_PERIOD", "timeframeTypeCode": "BY_PERIOD"
+            },
         },
         "miscData": {"statusTotals": [{"id": "1", "name": "Active"}]},
         "tables": [
             {
-                "headers": [{"sortKey": "AGE"}, {"sortKey": "SCORING_CATEGORY_10_FPTS"}],
+                "headers": {"cells": [
+                    {"sortKey": "AGE"},
+                    {"sortKey": "SCORE", "key": "fpts", "shortName": "FPts", "name": "Fantasy Points"},
+                    {"sortKey": "SCORING_CATEGORY_10#0010#-1"},
+                ]},
                 "rows": [player("judge", "Aaron Judge", "012", "260.5")],
             },
             {
-                "headers": [{"sortKey": "AGE"}, {"sortKey": "SCORING_CATEGORY_20_FPTS"}],
+                "headers": {"cells": [
+                    {"sortKey": "AGE"},
+                    {"sortKey": "SCORE", "key": "fpts", "shortName": "FPts", "name": "Fantasy Points"},
+                    {"sortKey": "SCORING_CATEGORY_20#0220#-1"},
+                ]},
                 "rows": [player("gausman", "Kevin Gausman", "015", "4")],
             },
         ],
@@ -113,7 +121,6 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
     def test_wrong_returned_period_fails_closed(self):
         raw = historical_roster()
         raw["displayedSelections"]["displayedPeriod"] = "16"
-        raw["displayedSelections"]["displayedScoringPeriod"] = "16"
         with patch.object(fantrax_data, "_direct_fxpa_request", return_value=raw), self.assertRaisesRegex(ValueError, "different period"):
             fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), raw), "me", completed_matchup())
 
@@ -125,13 +132,13 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
 
     def test_ambiguous_role_fails_closed(self):
         raw = historical_roster()
-        raw["tables"][0]["headers"] = [{"sortKey": "FPTS"}]
+        raw["tables"][0]["headers"]["cells"] = [{"sortKey": "FPTS"}]
         with patch.object(fantrax_data, "_direct_fxpa_request", return_value=raw), self.assertRaisesRegex(ValueError, "stable identity or scoring role"):
             fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), raw), "me", completed_matchup())
 
     def test_missing_and_conflicting_response_identity_fail_closed(self):
         missing = historical_roster()
-        del missing["displayedSelections"]["teamId"]
+        del missing["displayedSelections"]["displayedFantasyTeamId"]
         with patch.object(fantrax_data, "_direct_fxpa_request", return_value=missing), self.assertRaisesRegex(ValueError, "team identity"):
             fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), missing), "me", completed_matchup())
         conflict = historical_roster()
@@ -141,8 +148,9 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
 
     def test_scoring_value_follows_exact_header_index(self):
         raw = historical_roster()
-        raw["tables"][0]["headers"] = [
-            {"sortKey": "SCORING_CATEGORY_10_FPTS"}, {"sortKey": "AGE"}
+        raw["tables"][0]["headers"]["cells"] = [
+            {"sortKey": "SCORE", "key": "fpts", "shortName": "FPts", "name": "Fantasy Points"},
+            {"sortKey": "AGE"}, {"sortKey": "SCORING_CATEGORY_10#0010#-1"},
         ]
         raw["tables"][0]["rows"][0]["cells"] = [{"content": "260.5"}, {"content": "30"}]
         with patch.object(fantrax_data, "_direct_fxpa_request", return_value=raw):
@@ -151,16 +159,16 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
             )
         judge = next(item for item in evidence["players"] if item["player_id"] == "judge")
         self.assertEqual(judge["period_fpts"], "260.5")
-        self.assertEqual(judge["period_fpts_source"], "SCORING_CATEGORY_10:cells[0].content")
+        self.assertEqual(judge["period_fpts_source"], "SCORE:fpts:cells[0].content")
 
     def test_near_collision_or_nested_category_metadata_is_rejected(self):
         for header in (
-            {"sortKey": "SCORING_CATEGORY_100_FPTS"},
-            {"sortKey": "AGE", "metadata": {"key": "SCORING_CATEGORY_10_FPTS"}},
+            {"sortKey": "SCORING_CATEGORY_100#0010#-1"},
+            {"sortKey": "AGE", "metadata": {"key": "SCORING_CATEGORY_10#0010#-1"}},
         ):
             with self.subTest(header=header):
                 raw = historical_roster()
-                raw["tables"][0]["headers"][1] = header
+                raw["tables"][0]["headers"]["cells"][2] = header
                 with patch.object(fantrax_data, "_direct_fxpa_request", return_value=raw), self.assertRaisesRegex(ValueError, "scoring role"):
                     fantrax_data.extract_completed_lineup_evidence(EvidenceApi(current_roster(), raw), "me", completed_matchup())
 
