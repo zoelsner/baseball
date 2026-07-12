@@ -128,7 +128,9 @@ For PRs:
 ## Exceptions Register
 
 - The app is single-user and mostly unauthenticated by design. `/api/refresh` is
-  token-gated when configured.
+  token-gated when configured. Execution-control routes are the exception:
+  they fail closed behind an explicit feature flag and separate SHA-256 owner
+  and runner credential digests.
 - Local app routes that need `DATABASE_URL` may return 503. `/api/health` is the
   no-DB-friendly probe.
 - IL/IR players are protected from waiver-drop suggestions until a richer

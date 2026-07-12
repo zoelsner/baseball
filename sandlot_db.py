@@ -256,6 +256,48 @@ def init_schema() -> None:
             ON projection_logs (model_version, matchup_key, surface, shown_date)
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS execution_requests (
+              request_id TEXT PRIMARY KEY,
+              mode TEXT NOT NULL CHECK (mode = 'dry_run'),
+              snapshot_id BIGINT NOT NULL,
+              proposal_id TEXT NOT NULL,
+              input_hash TEXT NOT NULL,
+              contract JSONB NOT NULL,
+              expected_roster_ids JSONB NOT NULL,
+              safety JSONB NOT NULL,
+              state TEXT NOT NULL CHECK (state IN (
+                'pending', 'claimed', 'preflight_passed', 'preflight_failed',
+                'expired', 'cancelled'
+              )),
+              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+              expires_at TIMESTAMPTZ NOT NULL,
+              claimed_at TIMESTAMPTZ,
+              lease_expires_at TIMESTAMPTZ,
+              completed_at TIMESTAMPTZ,
+              claimed_by TEXT,
+              lease_token_hash TEXT,
+              evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+              failure_reason TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS execution_requests_proposal_instance_key
+            ON execution_requests (mode, snapshot_id, proposal_id, input_hash)
+            """
+        )
+        conn.execute(
+            "ALTER TABLE execution_requests ADD COLUMN IF NOT EXISTS safety JSONB NOT NULL DEFAULT '{}'::jsonb"
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS execution_requests_claim_queue_idx
+            ON execution_requests (state, expires_at, created_at)
+            """
+        )
 
 
 def create_refresh_run(source: str) -> int:
@@ -435,6 +477,163 @@ def get_fantrax_cookies() -> list[dict[str, Any]] | None:
         return None
     cookies = row["cookies_json"]
     return cookies if isinstance(cookies, list) else None
+
+
+def create_execution_request(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Create one immutable request or return its idempotent existing row."""
+    with connect() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO execution_requests (
+              request_id, mode, snapshot_id, proposal_id, input_hash,
+              contract, expected_roster_ids, safety, state, expires_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)
+            ON CONFLICT (mode, snapshot_id, proposal_id, input_hash) DO NOTHING
+            RETURNING *, TRUE AS created
+            """,
+            (
+                payload["request_id"],
+                payload["mode"],
+                payload["snapshot_id"],
+                payload["proposal_id"],
+                payload["input_hash"],
+                Jsonb(payload["contract"]),
+                Jsonb(payload["expected_roster_ids"]),
+                Jsonb(payload["safety"]),
+                payload["expires_at"],
+            ),
+        ).fetchone()
+        if row:
+            result = dict(row)
+            result.pop("created", None)
+            return result, True
+        _expire_execution_requests(conn)
+        row = conn.execute(
+            """
+            SELECT *
+            FROM execution_requests
+            WHERE mode = %s AND snapshot_id = %s AND proposal_id = %s AND input_hash = %s
+            """,
+            (
+                payload["mode"],
+                payload["snapshot_id"],
+                payload["proposal_id"],
+                payload["input_hash"],
+            ),
+        ).fetchone()
+    if not row:
+        raise RuntimeError("Execution request insert lost its idempotency row")
+    return dict(row), False
+
+
+def execution_request_by_id(request_id: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        _expire_execution_requests(conn, request_id=request_id)
+        row = conn.execute(
+            "SELECT * FROM execution_requests WHERE request_id = %s",
+            (request_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def claim_next_execution_request(
+    *,
+    runner_id: str,
+    lease_token_hash: str,
+    lease_seconds: int,
+) -> dict[str, Any] | None:
+    """Atomically claim one request once; expired claims are never requeued."""
+    with connect() as conn:
+        _expire_execution_requests(conn)
+        row = conn.execute(
+            """
+            WITH candidate AS (
+              SELECT request_id
+              FROM execution_requests
+              WHERE state = 'pending' AND expires_at > now()
+              ORDER BY created_at ASC, request_id ASC
+              FOR UPDATE SKIP LOCKED
+              LIMIT 1
+            )
+            UPDATE execution_requests request
+            SET state = 'claimed',
+                claimed_at = now(),
+                claimed_by = %s,
+                lease_token_hash = %s,
+                lease_expires_at = LEAST(
+                  request.expires_at,
+                  now() + (%s * interval '1 second')
+                )
+            FROM candidate
+            WHERE request.request_id = candidate.request_id
+              AND request.state = 'pending'
+            RETURNING request.*
+            """,
+            (runner_id, lease_token_hash, lease_seconds),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def finish_execution_preflight(
+    *,
+    request_id: str,
+    lease_token_hash: str,
+    outcome: str,
+    evidence: dict[str, Any],
+    failure_reason: str | None,
+) -> dict[str, Any] | None:
+    target_state = "preflight_passed" if outcome == "passed" else "preflight_failed"
+    with connect() as conn:
+        _expire_execution_requests(conn, request_id=request_id)
+        row = conn.execute(
+            """
+            UPDATE execution_requests
+            SET state = %s,
+                evidence = %s,
+                failure_reason = %s,
+                lease_token_hash = NULL,
+                completed_at = now()
+            WHERE request_id = %s
+              AND state = 'claimed'
+              AND lease_token_hash = %s
+              AND lease_expires_at > now()
+              AND expires_at > now()
+            RETURNING *
+            """,
+            (
+                target_state,
+                Jsonb(evidence),
+                failure_reason,
+                request_id,
+                lease_token_hash,
+            ),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _expire_execution_requests(conn: Any, *, request_id: str | None = None) -> None:
+    request_filter = " AND request_id = %s" if request_id is not None else ""
+    params: tuple[Any, ...] = (request_id,) if request_id is not None else ()
+    conn.execute(
+        f"""
+        UPDATE execution_requests
+        SET state = 'expired',
+            completed_at = now(),
+            lease_token_hash = NULL,
+            failure_reason = CASE
+              WHEN state = 'claimed' THEN 'Runner lease expired before preflight completion'
+              ELSE 'Execution request expired before claim'
+            END
+        WHERE state IN ('pending', 'claimed')
+          AND (
+            expires_at <= now()
+            OR (state = 'claimed' AND lease_expires_at <= now())
+          )
+          {request_filter}
+        """,
+        params,
+    )
 
 
 DEFAULT_CHAT_SESSION_TITLE = "Skipper"

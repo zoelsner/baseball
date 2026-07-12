@@ -238,6 +238,30 @@ approval locally while the browser is visible, treat any post-click crash as
 uncertain without retry, and verify the complete final slot mapping plus an
 unchanged roster set.
 
+### Authenticated dry-run control plane
+
+Sandlot now has a disabled-by-default control plane for proving that exact
+review contracts can survive a live Fantrax preflight. It does not execute a
+Fantrax action. An owner-authenticated client can create one short-lived
+`dry_run` request by submitting the canonical confirmation object field-for-field
+equivalent to the server-derived proposal. The server rejects stale identities,
+multi-step chains, non-lineup actions, expired deadlines, and any contract that
+does not remain explicitly read-only.
+
+A separately authenticated local Mac runner claims a request once, receives a
+single-use lease, opens Fantrax visibly, and performs zero-click checks against
+both the rendered roster DOM and authenticated read APIs. It proves the exact
+editable period, complete unchanged roster ID set, participant from-slots,
+destination eligibility, and deadline. A passing report includes every
+contract-derived live check, the exact full-roster digest, and a timestamp
+inside the one-time lease window. The request then becomes terminal as
+`preflight_passed` or `preflight_failed`; an expired claim is never requeued.
+The database stores only credential and lease digests, never their plaintext,
+and preflight evidence rejects cookie, token, session, password, or auth fields.
+
+See `docs/sandlot-execution-dry-run.md` for the API, state machine, kill
+switches, and local runner procedure.
+
 ## Verification
 
 - deterministic unit tests cover cross-surface ranking, lower-rate streaming,
