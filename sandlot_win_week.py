@@ -41,7 +41,12 @@ def build_plan(
         "snapshot_taken_at": snapshot_row.get("taken_at") or raw_data.get("snapshot_taken_at"),
         "movability_now": now.isoformat(),
     }
-    quality = data_quality or sandlot_data_quality.snapshot_data_quality(snapshot)
+    initial_quality = data_quality or sandlot_data_quality.snapshot_data_quality(snapshot)
+    current_matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
+    snapshot, quality, planning_horizon = _select_planning_horizon(snapshot, initial_quality)
+    shifted_to_editable_period = planning_horizon.get("mode") == "editable_period"
+    if shifted_to_editable_period:
+        lineup_recommendations = None
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
     base_projection = sandlot_matchup.compute_projection(snapshot, quality)
     period_actions_ready = quality.get("current_period_actions_ready") is True
@@ -51,15 +56,26 @@ def build_plan(
             snapshot,
             quality,
         )
-        waiver_payload = sandlot_waivers.payload_for_snapshot(
-            {**snapshot_row, "data": snapshot},
-            overlay_cached_ai=False,
+        waiver_payload = (
+            {
+                "cards": [],
+                "message": "Future-period add/drop actions stay blocked until transaction timing is proven.",
+            }
+            if shifted_to_editable_period
+            else sandlot_waivers.payload_for_snapshot(
+                {**snapshot_row, "data": snapshot},
+                overlay_cached_ai=False,
+            )
         )
     else:
         lineup_payload = {"recommendations": [], "no_action": {"reason": period_reason}}
         waiver_payload = {"cards": [], "message": period_reason}
     waiver_cards = waiver_payload.get("cards") or []
-    if period_actions_ready and quality.get("add_drop_recommendations_ready") is True:
+    if (
+        period_actions_ready
+        and not shifted_to_editable_period
+        and quality.get("add_drop_recommendations_ready") is True
+    ):
         roster_rows = ((snapshot.get("roster") or {}).get("rows") or [])
         free_agent_rows = ((snapshot.get("free_agents") or {}).get("players") or [])
         # Preserve the complete deterministic card frontier until remaining-
@@ -87,6 +103,8 @@ def build_plan(
     monitoring: list[dict[str, Any]] = (
         [] if period_actions_ready else [_current_period_monitor(quality)]
     )
+    if shifted_to_editable_period:
+        monitoring.append(_future_waiver_monitor(planning_horizon))
 
     for recommendation in lineup_payload.get("recommendations") or []:
         action, monitor, diagnostic = _lineup_action(recommendation)
@@ -138,6 +156,7 @@ def build_plan(
     actions = rankable[: max(0, limit)]
     for index, action in enumerate(actions, start=1):
         action["rank"] = index
+        action["target_period"] = _target_period(planning_horizon)
 
     primary = actions[0] if actions else None
     if primary and isinstance(primary.get("deadline"), dict):
@@ -190,11 +209,17 @@ def build_plan(
         "taken_at": snapshot.get("snapshot_taken_at"),
         "read_only": True,
         "writes_enabled": False,
-        "handoffs": _fantrax_handoffs(snapshot) if period_actions_ready else {},
+        "handoffs": _fantrax_handoffs(snapshot, planning_horizon) if period_actions_ready else {},
         "schedule_optimizer": _schedule_optimizer_status(quality),
         "current_period": quality.get("current_period"),
+        "planning_horizon": planning_horizon,
+        "current_matchup": (
+            _matchup_context(current_matchup, None)
+            if shifted_to_editable_period
+            else None
+        ),
         "matchup": _matchup_context(matchup, base_projection),
-        "summary": _summary(matchup, base_projection, primary, no_action_reason),
+        "summary": _summary(matchup, base_projection, primary, no_action_reason, planning_horizon),
         "primary_action_id": primary.get("id") if primary else None,
         "actions": actions,
         "monitoring_actions": monitoring,
@@ -209,6 +234,94 @@ def build_plan(
                 and base_projection.get("probability_calibrated") is True
             ),
         },
+    }
+
+
+def _select_planning_horizon(
+    snapshot: dict[str, Any],
+    current_quality: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    current = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
+    editable = snapshot.get("editable_matchup") if isinstance(snapshot.get("editable_matchup"), dict) else {}
+    current_period = current.get("period_number")
+    editable_period = editable.get("period_number")
+    roster = snapshot.get("roster") if isinstance(snapshot.get("roster"), dict) else {}
+    roster_period = roster.get("period_number")
+    normal = {
+        "mode": "current_matchup",
+        "period_number": current_period,
+        "start": current.get("start"),
+        "end": current.get("end"),
+        "matchup_key": current.get("matchup_key"),
+        "evidence_source": current.get("source"),
+    }
+    if (current_quality.get("current_period") or {}).get("state") != "mismatch":
+        return snapshot, current_quality, normal
+    if not editable or str(editable_period or "") != str(roster_period or ""):
+        return snapshot, current_quality, normal
+    if editable.get("complete") is True:
+        return snapshot, current_quality, normal
+    if editable.get("score_state") != "not_started":
+        return snapshot, current_quality, {
+            **normal,
+            "blocked_editable_period": editable_period,
+            "blocked_reason": "The editable matchup is not proven to be an unstarted future period.",
+        }
+    opponent_id = str(editable.get("opponent_team_id") or "")
+    all_rosters = snapshot.get("all_team_rosters") if isinstance(snapshot.get("all_team_rosters"), dict) else {}
+    opponent_roster = all_rosters.get(opponent_id) if isinstance(all_rosters.get(opponent_id), dict) else {}
+    opponent_period = opponent_roster.get("period_number")
+    opponent_source = opponent_roster.get("period_source")
+    if (
+        opponent_source != "fantrax.getTeamRosterInfo.displayedSelections"
+        or str(opponent_period or "") != str(editable_period or "")
+    ):
+        return snapshot, current_quality, {
+            **normal,
+            "blocked_editable_period": editable_period,
+            "blocked_reason": "The editable opponent roster is not proven to match Fantrax's target period.",
+        }
+    planning_snapshot = copy.deepcopy(snapshot)
+    planning_snapshot["matchup"] = copy.deepcopy(editable)
+    planning_quality = sandlot_data_quality.snapshot_data_quality(planning_snapshot)
+    if planning_quality.get("current_period_actions_ready") is not True:
+        return snapshot, current_quality, normal
+    return planning_snapshot, planning_quality, {
+        "mode": "editable_period",
+        "period_number": editable_period,
+        "start": editable.get("start"),
+        "end": editable.get("end"),
+        "matchup_key": editable.get("matchup_key"),
+        "opponent_team_id": editable.get("opponent_team_id"),
+        "opponent_team_name": editable.get("opponent_team_name"),
+        "score_state": editable.get("score_state"),
+        "evidence_source": "fantrax_schedule+fantrax.getTeamRosterInfo.displayedSelections",
+        "shifted_from_period": current_period,
+        "lineup_actions_enabled": True,
+        "waiver_actions_enabled": False,
+    }
+
+
+def _target_period(planning_horizon: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: planning_horizon.get(key)
+        for key in ("period_number", "start", "end", "matchup_key")
+    }
+
+
+def _future_waiver_monitor(planning_horizon: dict[str, Any]) -> dict[str, Any]:
+    period = planning_horizon.get("period_number")
+    reason = (
+        f"Period {period} add/drop timing is not proven; review Adds as research until the current period closes."
+    )
+    return {
+        "id": "monitor:future-period-waiver-boundary",
+        "kind": "monitor",
+        "state": "blocked",
+        "title": "Future-period waivers remain research-only",
+        "reason": reason,
+        "deadline": {"state": "unknown", "at": None, "reason": reason},
+        "expected_points": {"estimate": None, "basis": "transaction timing unproven; not additive"},
     }
 
 
@@ -270,7 +383,10 @@ def _schedule_optimizer_status(data_quality: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _fantrax_handoffs(snapshot: dict[str, Any]) -> dict[str, Any]:
+def _fantrax_handoffs(
+    snapshot: dict[str, Any],
+    planning_horizon: dict[str, Any],
+) -> dict[str, Any]:
     league_id = str(snapshot.get("league_id") or "").strip()
     team_id = str(snapshot.get("team_id") or "").strip()
     if not league_id or not team_id:
@@ -281,11 +397,16 @@ def _fantrax_handoffs(snapshot: dict[str, Any]) -> dict[str, Any]:
     )
     return {
         "lineup": {
-            "label": "Open Fantrax lineup",
+            "label": (
+                f"Open Fantrax Period {planning_horizon.get('period_number')} lineup"
+                if planning_horizon.get("mode") == "editable_period"
+                else "Open Fantrax lineup"
+            ),
             "url": url,
             "method": "GET",
             "read_only": True,
             "writes_enabled": False,
+            "target_period": _target_period(planning_horizon),
         },
     }
 
@@ -1067,6 +1188,7 @@ def _summary(
     projection: dict[str, Any] | None,
     primary: dict[str, Any] | None,
     no_action_reason: str | None,
+    planning_horizon: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     my_score = _number(matchup.get("my_score"))
     opponent_score = _number(matchup.get("opponent_score"))
@@ -1095,7 +1217,7 @@ def _summary(
             outlook = f"{prefix} puts you {outlook_margin:.1f} points ahead."
         else:
             outlook = f"{prefix} has the matchup tied."
-    return {
+    summary = {
         "headline": headline,
         "outlook": outlook,
         "best_action_id": primary.get("id") if primary else None,
@@ -1111,6 +1233,17 @@ def _summary(
             else None
         ),
     }
+    if (planning_horizon or {}).get("mode") == "editable_period":
+        period = planning_horizon.get("period_number")
+        points = _number((primary or {}).get("expected_points", {}).get("estimate"))
+        summary["headline"] = (
+            f"Planning Period {period}: the best legal lineup path adds about {points:.1f} projected points."
+            if primary and points is not None
+            else f"Planning Period {period}: {no_action_reason or 'no worthwhile lineup change is available yet.'}"
+        )
+        if summary.get("outlook"):
+            summary["outlook"] = str(summary["outlook"]).replace("remaining-week estimate", f"Period {period} estimate")
+    return summary
 
 
 def _projected_margin(projection: dict[str, Any] | None) -> float | None:

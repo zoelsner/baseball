@@ -1140,6 +1140,9 @@ function V2WinThisWeekPanel({ plan, sync={}, onNav, onAskSkipper, onRefresh }) {
   const kindLabel = primary?.kind === 'waiver' ? 'Waiver move' : 'Lineup move';
   const stateLabel = refreshRequired ? 'Refresh required' : primary?.state === 'review_now' ? 'Review now' : 'Best move now';
   const dynastyLevel = primary?.dynasty_cost?.level || 'unknown';
+  const planningNextPeriod = plan.planning_horizon?.mode === 'editable_period';
+  const targetPeriod = plan.planning_horizon?.period_number;
+  const panelLabel = planningNextPeriod && targetPeriod ? `Plan Period ${targetPeriod}` : 'Win This Week';
   const tone = refreshRequired
     ? { fg:V2.warn, bg:V2.warnSoft }
     : plan.state === 'ready'
@@ -1158,9 +1161,11 @@ function V2WinThisWeekPanel({ plan, sync={}, onNav, onAskSkipper, onRefresh }) {
     }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
         <div>
-          <V2Eyebrow color={tone.fg}>Win This Week</V2Eyebrow>
+          <V2Eyebrow color={tone.fg}>{panelLabel}</V2Eyebrow>
           <div style={{ marginTop:7, color:V2.ink, fontSize:25, lineHeight:1.03, fontWeight:850, fontFamily:V2.fontDisplay, textWrap:'balance' }}>
-            {primary ? stateLabel : plan.state === 'paused' ? 'Plan paused' : 'No worthwhile move'}
+            {primary
+              ? planningNextPeriod ? 'Best next-period lineup' : stateLabel
+              : plan.state === 'paused' ? 'Plan paused' : 'No worthwhile move'}
           </div>
         </div>
         <span style={{ flexShrink:0, background:tone.bg, color:tone.fg, borderRadius:999, padding:'6px 10px', fontSize:11, fontWeight:900 }}>

@@ -1317,6 +1317,12 @@ def _lineup_swap_contract(
         "snapshot_taken_at": snapshot.get("snapshot_taken_at") or snapshot.get("taken_at"),
         "league_id": snapshot.get("league_id"),
         "team_id": snapshot.get("team_id"),
+        "target_period": {
+            "period_number": (snapshot.get("matchup") or {}).get("period_number"),
+            "matchup_key": (snapshot.get("matchup") or {}).get("matchup_key"),
+            "start": (snapshot.get("matchup") or {}).get("start"),
+            "end": (snapshot.get("matchup") or {}).get("end"),
+        },
         "move_out": _contract_player(move_out),
         "move_in": _contract_player(move_in),
         "target_slot": move_in.get("to_slot"),
@@ -1359,12 +1365,14 @@ def _lineup_swap_contract(
             "proposal_id",
             "input_hash",
             "snapshot_id",
+            "target_period",
             "slot_moves",
         ],
         "expected": {
             "proposal_id": contract["proposal_id"],
             "input_hash": contract["input_hash"],
             "snapshot_id": contract["snapshot_id"],
+            "target_period": contract["target_period"],
             "slot_moves": contract["slot_moves"],
         },
     }

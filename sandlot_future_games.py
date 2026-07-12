@@ -40,7 +40,9 @@ def enrich_snapshot_future_games(
     if not isinstance(snapshot, dict):
         return snapshot
     now = _aware_now(now)
-    matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
+    current_matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else {}
+    editable_matchup = snapshot.get("editable_matchup") if isinstance(snapshot.get("editable_matchup"), dict) else {}
+    matchup = editable_matchup or current_matchup
     window = _schedule_window(matchup, now)
     diagnostics = _empty_diagnostics(window)
 

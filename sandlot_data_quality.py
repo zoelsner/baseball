@@ -157,36 +157,6 @@ def _current_period_quality(
             "state": "missing",
             "reason": "Fantrax's canonical editable roster period is missing.",
         }
-    if editable_start and matchup_start and editable_start != matchup_start:
-        return {
-            **common,
-            "state": "mismatch",
-            "reason": _period_mismatch_reason(common),
-        }
-    if editable_end and matchup_end and editable_end != matchup_end:
-        return {
-            **common,
-            "state": "mismatch",
-            "reason": _period_mismatch_reason(common),
-        }
-    if editable_start and editable_end and matchup_start and matchup_end:
-        dates_match = editable_start == matchup_start and editable_end == matchup_end
-        numbers_match = (
-            editable_period is None
-            or matchup_period is None
-            or editable_period == matchup_period
-        )
-        if dates_match and numbers_match:
-            return {
-                **common,
-                "state": "ok",
-                "reason": "Fantrax's editable roster period matches the projected matchup.",
-            }
-        return {
-            **common,
-            "state": "mismatch",
-            "reason": _period_mismatch_reason(common),
-        }
     if editable_period is not None and matchup_period is not None:
         if editable_period == matchup_period:
             return {
@@ -241,10 +211,10 @@ def _period_mismatch_reason(period: dict[str, Any]) -> str:
 
 
 def _period_label(number: Any, start: Any, end: Any) -> str:
-    label = f"Period {number}" if number is not None else "a roster period"
-    if start and end:
-        return f"{label} ({start} through {end})"
-    return label
+    # Fantrax's roster displayedStartDate/displayedEndDate are view bounds, not
+    # proven scoring-period dates. Only the canonical displayed period number
+    # is used in actionability decisions or user-facing explanations.
+    return f"Period {number}" if number is not None else "a roster period"
 
 
 def _lineup_change_policy_quality(league_rules: Any) -> dict[str, Any]:

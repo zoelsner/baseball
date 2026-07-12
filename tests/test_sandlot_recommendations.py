@@ -107,6 +107,12 @@ class MatchupRecommendationTests(unittest.TestCase):
         self.assertEqual(contract["target_slot"], "3B")
         self.assertFalse(contract["executable"])
         self.assertFalse(contract["writes_enabled"])
+        self.assertEqual(contract["target_period"], {
+            "period_number": 4,
+            "matchup_key": None,
+            "start": None,
+            "end": "2026-05-20",
+        })
         self.assertEqual(len(contract["input_hash"]), 64)
         self.assertTrue(contract["freshness_policy"]["requires_live_preflight"])
         self.assertEqual(contract["freshness_policy"]["preflight_snapshot_max_age_minutes"], 5)
@@ -121,7 +127,7 @@ class MatchupRecommendationTests(unittest.TestCase):
         )
         self.assertEqual(
             contract["confirmation"]["match_fields"],
-            ["proposal_id", "input_hash", "snapshot_id", "slot_moves"],
+            ["proposal_id", "input_hash", "snapshot_id", "target_period", "slot_moves"],
         )
         self.assertTrue(contract["requires_multi_step"])
         self.assertEqual(

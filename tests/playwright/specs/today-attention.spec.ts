@@ -481,6 +481,50 @@ test.describe('Today — Attention Queue', () => {
     await expect(panel.getByRole('link', { name: 'Open Fantrax lineup' })).toHaveCount(0);
   });
 
+  test('labels a safe future-period lineup plan separately from the live matchup', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Future-period planning UI is verified against the rebuilt local bundle.');
+    const future = baseSnapshot();
+    future.win_this_week.planning_horizon = {
+      mode: 'editable_period',
+      period_number: 17,
+      start: '2026-07-13',
+      end: '2026-07-26',
+      matchup_key: 'period-17',
+      lineup_actions_enabled: true,
+      waiver_actions_enabled: false,
+    };
+    future.win_this_week.actions[0].kind = 'lineup';
+    future.win_this_week.actions[0].title = 'Start Bench Bat over Cold Corner';
+    future.win_this_week.actions[0].target_period = {
+      period_number: 17,
+      start: '2026-07-13',
+      end: '2026-07-26',
+      matchup_key: 'period-17',
+    };
+    future.win_this_week.summary.headline = 'Planning Period 17: the best legal lineup path adds about 5.8 projected points.';
+    future.win_this_week.handoffs.lineup.label = 'Open Fantrax Period 17 lineup';
+    future.win_this_week.handoffs.lineup.target_period = future.win_this_week.actions[0].target_period;
+    future.win_this_week.monitoring_actions = [{
+      id: 'monitor:future-period-waiver-boundary',
+      kind: 'monitor',
+      state: 'blocked',
+      title: 'Future-period waivers remain research-only',
+      reason: 'Period 17 add/drop timing is not proven.',
+    }];
+    await mockSnapshot(page, future);
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name: 'Win This Week' });
+    await expect(panel.getByText('Plan Period 17', { exact: true })).toBeVisible();
+    await expect(panel.getByText('Best next-period lineup', { exact: true })).toBeVisible();
+    await expect(panel.getByText(/Planning Period 17: the best legal lineup path/)).toBeVisible();
+    await expect(panel.getByRole('link', { name: 'Open Fantrax Period 17 lineup' })).toBeVisible();
+    await expect(panel.getByRole('button', { name: 'Open waiver board' })).toHaveCount(0);
+    await expect(panel.getByText(/Monitor: Future-period waivers remain research-only/)).toBeVisible();
+  });
+
   test('silently refetches when the primary action deadline arrives', async ({ page }) => {
     test.skip(!isLocalBundle, 'Deadline-triggered refetch is verified against the rebuilt local bundle.');
     const expiring = baseSnapshot();

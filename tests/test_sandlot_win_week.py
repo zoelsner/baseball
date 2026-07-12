@@ -104,6 +104,95 @@ def snapshot_row(*, roster=None, free_agents=None):
 
 
 class WinThisWeekTests(unittest.TestCase):
+    def test_plans_future_editable_period_lineup_without_enabling_waivers(self):
+        row = snapshot_row()
+        row["data"]["roster"].update({
+            "period_number": 6,
+            "period_start": None,
+            "period_end": None,
+        })
+        row["data"]["editable_matchup"] = {
+            "source": "fantrax_schedule",
+            "period_number": 6,
+            "start": "2026-05-18",
+            "end": "2026-05-24",
+            "complete": False,
+            "score_state": "not_started",
+            "matchup_key": "period-6",
+            "my_score": 0,
+            "opponent_score": 0,
+            "opponent_team_id": "opp",
+            "opponent_team_name": "Next Opponent",
+        }
+        row["data"]["all_team_rosters"]["opp"].update({
+            "period_number": 6,
+            "period_source": "fantrax.getTeamRosterInfo.displayedSelections",
+        })
+        for player in row["data"]["roster"]["rows"]:
+            player["future_games"] = [game(18)]
+        row["data"]["all_team_rosters"]["opp"]["rows"][0]["future_games"] = [game(18)]
+
+        with patch("sandlot_win_week.sandlot_waivers.payload_for_snapshot") as waiver_planner:
+            plan = sandlot_win_week.build_plan(row, now=NOW)
+
+        waiver_planner.assert_not_called()
+        self.assertEqual(plan["planning_horizon"]["mode"], "editable_period")
+        self.assertEqual(plan["planning_horizon"]["period_number"], 6)
+        self.assertEqual(plan["state"], "ready")
+        self.assertTrue(plan["actions"])
+        self.assertTrue(all(action["kind"] in {"lineup", "lineup_plan"} for action in plan["actions"]))
+        self.assertTrue(all(action["target_period"]["period_number"] == 6 for action in plan["actions"]))
+        self.assertEqual(plan["current_matchup"]["my_score"], 40.0)
+        self.assertEqual(plan["matchup"]["my_score"], 0.0)
+        self.assertIn("Planning Period 6", plan["summary"]["headline"])
+        self.assertIn("research-only", plan["monitoring_actions"][0]["title"])
+        self.assertEqual(plan["handoffs"]["lineup"]["target_period"]["period_number"], 6)
+
+    def test_future_period_plan_requires_matching_opponent_roster_period(self):
+        row = snapshot_row()
+        row["data"]["roster"]["period_number"] = 6
+        row["data"]["editable_matchup"] = {
+            "source": "fantrax_schedule",
+            "period_number": 6,
+            "start": "2026-05-18",
+            "end": "2026-05-24",
+            "complete": False,
+            "score_state": "not_started",
+            "matchup_key": "period-6",
+            "my_score": 0,
+            "opponent_score": 0,
+            "opponent_team_id": "opp",
+        }
+
+        plan = sandlot_win_week.build_plan(row, now=NOW)
+
+        self.assertEqual(plan["state"], "paused")
+        self.assertEqual(plan["actions"], [])
+        self.assertEqual(plan["planning_horizon"]["blocked_editable_period"], 6)
+        self.assertIn("opponent roster", plan["planning_horizon"]["blocked_reason"])
+
+    def test_future_period_plan_rejects_unproven_started_score(self):
+        row = snapshot_row()
+        row["data"]["roster"]["period_number"] = 6
+        row["data"]["editable_matchup"] = {
+            "source": "fantrax_schedule",
+            "period_number": 6,
+            "start": "2026-05-18",
+            "end": "2026-05-24",
+            "complete": False,
+            "score_state": "invalid_future_score",
+            "matchup_key": "period-6",
+            "my_score": 1,
+            "opponent_score": 0,
+            "opponent_team_id": "opp",
+        }
+
+        plan = sandlot_win_week.build_plan(row, now=NOW)
+
+        self.assertEqual(plan["state"], "paused")
+        self.assertEqual(plan["actions"], [])
+        self.assertIn("not proven", plan["planning_horizon"]["blocked_reason"])
+
     def test_mismatched_editable_period_pauses_actions_before_planners_run(self):
         row = snapshot_row()
         row["data"]["roster"].update({
@@ -157,6 +246,12 @@ class WinThisWeekTests(unittest.TestCase):
             "method": "GET",
             "read_only": True,
             "writes_enabled": False,
+            "target_period": {
+                "period_number": 5,
+                "start": "2026-05-11",
+                "end": "2026-05-17",
+                "matchup_key": None,
+            },
         })
         self.assertEqual(plan["summary"]["headline"], "Down 10.0; the best current path adds about 9.0 projected points.")
         self.assertEqual(plan["summary"]["projected_margin_before_action"], -11.0)
