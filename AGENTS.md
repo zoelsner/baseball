@@ -47,10 +47,11 @@ guessing.
   queue and rankings.
 - Trade workflows live under League until they earn a separate primary surface.
 - The product UI is recommend-first: it surfaces decisions, it does not fire
-  Fantrax writes. Fantrax-write actions are allowed only through the
-  token-gated machine API (`POST /api/actions`), and every action must be
-  explicitly confirmed by Zach upstream (e.g., a Telegram yes relayed by his
-  agent). Never add autonomous or implicit execution paths.
+  Fantrax writes. The current execution control plane is dry-run only and uses
+  separately hashed owner and local-runner credentials. Never add autonomous
+  or implicit execution paths. A future Fantrax write must remain a distinct
+  slice with exact confirmation, fresh visible preflight, protected-player
+  enforcement, no blind retry, and post-write verification.
 - The Town integration is downstream of the structured Attention Queue.
 
 ## Frontend Rules

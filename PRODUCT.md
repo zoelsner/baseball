@@ -18,7 +18,7 @@ Sandlot turns Fantrax league data and baseball context into a small attention qu
 
 The core job is not to be a general dashboard. The core job is to answer: what changed, what needs attention, what should I inspect next, and why should I trust that read?
 
-The app is recommend-first. The product UI surfaces decisions clearly enough that Zach can act on them; it does not fire Fantrax writes itself. Execution exists only through a token-gated machine API (`POST /api/actions`) used by Zach's external agent, and every action requires Zach's explicit per-action confirmation (e.g., a Telegram yes) before it runs. Trade accepts are out of scope for execution entirely — trades stay a manual, human activity.
+The app is recommend-first. The product UI surfaces decisions clearly enough that Zach can act on them; it does not fire Fantrax writes itself. Sandlot can create a short-lived dry-run request only after an owner-authenticated client confirms the exact immutable proposal. A separately authenticated visible local runner can then prove live Fantrax period, roster, slot, eligibility, and deadline state without clicking or writing. Any future mutation remains a separate supervised capability and requires fresh visible preflight, exact local approval, protected-player enforcement, and post-write verification. Trade accepts are out of scope for execution entirely — trades stay a manual, human activity.
 
 Success means Zach can read the morning brief or open Today and quickly know:
 
@@ -58,9 +58,10 @@ Skipper is a helper and explainer, not the hidden command center. Important work
    Python/Fantrax/MLB data should produce the core queue and rankings. AI can explain, summarize, and help with context, but it should not be the only way important information appears.
 
 4. Recommend first; execute only on explicit confirmation.
-   Sandlot suggests, compares, and explains. Fantrax writes happen only through
-   the token-gated actions API after Zach confirms the specific action — never
-   autonomously, and never hidden behind an ambiguous boundary.
+   Sandlot suggests, compares, and explains. The current control plane stops at
+   a zero-click dry-run. A future Fantrax write may happen only after Zach
+   confirms the exact action and a visible local runner passes fresh preflight
+   — never autonomously, and never behind an ambiguous boundary.
 
 5. Fewer primary surfaces.
    Bottom navigation should reflect durable workflows: Today, Roster, Adds, League, and Skipper. Trade belongs inside League context until it earns a separate primary surface.

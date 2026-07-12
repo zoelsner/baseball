@@ -8,12 +8,12 @@ import os
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -22,6 +22,7 @@ import sandlot_attention
 import sandlot_config
 import sandlot_data_quality
 import sandlot_db
+import sandlot_execution
 import sandlot_matchup
 import sandlot_skipper
 import sandlot_trades
@@ -37,6 +38,61 @@ FRESH_SNAPSHOT_MINUTES = 18 * 60
 OLD_SNAPSHOT_MINUTES = 36 * 60
 
 app = FastAPI(title="Sandlot", version="0.1.0")
+
+
+class StrictModel(BaseModel):
+    class Config:
+        extra = "forbid"
+
+
+class ExecutionTargetPeriod(StrictModel):
+    period_number: int
+    matchup_key: str | int | None = None
+    start: str | None = None
+    end: str | None = None
+
+
+class ExecutionSlotMove(StrictModel):
+    order: int
+    player_id: str
+    player_name: str
+    from_slot: str
+    to_slot: str
+
+
+class ExactExecutionConfirmation(StrictModel):
+    proposal_id: str
+    input_hash: str
+    snapshot_id: int
+    target_period: ExecutionTargetPeriod
+    slot_moves: list[ExecutionSlotMove]
+
+
+class ExecutionRequestCreate(StrictModel):
+    mode: Literal["dry_run"] = "dry_run"
+    proposal_id: str
+    snapshot_id: int
+    input_hash: str
+    confirmation: ExactExecutionConfirmation
+
+
+class ExecutionClaim(StrictModel):
+    runner_id: str = Field(min_length=1, max_length=80)
+
+
+class PreflightCheck(StrictModel):
+    key: str
+    state: Literal["passed", "failed"]
+    detail: str = ""
+
+
+class ExecutionPreflightResult(StrictModel):
+    lease_token: str = Field(min_length=16, max_length=256)
+    outcome: Literal["passed", "failed"]
+    checks: list[PreflightCheck]
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    observed_at: datetime
+    writes_attempted: bool
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -165,35 +221,7 @@ def latest_action_proposal(
     input_hash: str,
 ) -> dict[str, Any]:
     """Return one server-derived immutable action review; never execute it."""
-    try:
-        row = sandlot_db.latest_successful_snapshot()
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
-    if not row:
-        raise HTTPException(status_code=404, detail="No successful Fantrax snapshot has been stored yet")
-    plan = _matchup_decisions(row)["win_this_week"]
-    action = next(
-        (
-            candidate
-            for candidate in plan.get("actions") or []
-            if isinstance(candidate, dict)
-            and str(((candidate.get("review") or {}).get("proposal_id")) or candidate.get("id") or "") == proposal_id
-        ),
-        None,
-    )
-    if not action:
-        raise HTTPException(
-            status_code=404,
-            detail="That proposal is not part of the latest actionable plan; refresh and review the replacement.",
-        )
-    review = action.get("review") if isinstance(action.get("review"), dict) else {}
-    if review.get("state") != "reviewable":
-        raise HTTPException(status_code=409, detail=review.get("reason") or "Proposal is not reviewable")
-    if int(review.get("snapshot_id") or 0) != snapshot_id or str(review.get("input_hash") or "") != input_hash:
-        raise HTTPException(
-            status_code=409,
-            detail="That proposal instance is stale or replaced; refresh and review the latest contract.",
-        )
+    row, action, review = _latest_reviewed_action(proposal_id, snapshot_id, input_hash)
     return jsonable_encoder({
         "snapshot_id": row.get("id"),
         "taken_at": row.get("taken_at"),
@@ -209,6 +237,121 @@ def latest_action_proposal(
             "reason": "A trusted local headful runner and owner authentication are required before execution requests can be created.",
         },
     })
+
+
+@app.post("/api/execution-requests", status_code=201)
+def create_execution_request(
+    payload: ExecutionRequestCreate,
+    request: Request,
+    response: Response,
+) -> dict[str, Any]:
+    """Create one authenticated, immutable, dry-run-only preflight request."""
+    _require_execution_role(request, "SANDLOT_OWNER_ACTION_TOKEN_SHA256")
+    submitted = payload.model_dump()
+    row, action, _review = _latest_reviewed_action(
+        payload.proposal_id,
+        payload.snapshot_id,
+        payload.input_hash,
+    )
+    try:
+        prepared = sandlot_execution.prepare_dry_run_request(
+            snapshot_row=row,
+            action=action,
+            submitted=submitted,
+        )
+        stored, created = sandlot_db.create_execution_request(prepared)
+    except sandlot_execution.ExecutionContractError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Execution request unavailable: {exc}") from exc
+    result = sandlot_execution.public_request(stored, include_contract=False)
+    result["created"] = created
+    result["request_enabled"] = stored.get("state") in {"pending", "claimed"}
+    if not created:
+        response.status_code = 200
+    return jsonable_encoder(result)
+
+
+@app.get("/api/execution-requests/{request_id}")
+def execution_request_status(request_id: str, request: Request) -> dict[str, Any]:
+    _require_execution_role(request, "SANDLOT_OWNER_ACTION_TOKEN_SHA256")
+    try:
+        row = sandlot_db.execution_request_by_id(request_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Execution request unavailable: {exc}") from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="Execution request not found")
+    return jsonable_encoder(sandlot_execution.public_request(row, include_contract=False))
+
+
+@app.post("/api/execution-requests/claim")
+def claim_execution_request(payload: ExecutionClaim, request: Request) -> dict[str, Any]:
+    """Atomically claim one request for the separately authenticated local runner."""
+    _require_execution_role(request, "SANDLOT_RUNNER_TOKEN_SHA256")
+    lease_token, lease_hash = sandlot_execution.new_lease()
+    try:
+        row = sandlot_db.claim_next_execution_request(
+            runner_id=payload.runner_id,
+            lease_token_hash=lease_hash,
+            lease_seconds=sandlot_execution.LEASE_TTL_SECONDS,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Execution claim unavailable: {exc}") from exc
+    if not row:
+        return {"request": None, "writes_enabled": False}
+    claimed = sandlot_execution.public_request(row, include_contract=True)
+    claimed["lease_token"] = lease_token
+    claimed["lease_expires_at"] = row.get("lease_expires_at")
+    return jsonable_encoder({"request": claimed, "writes_enabled": False})
+
+
+@app.post("/api/execution-requests/{request_id}/preflight")
+def finish_execution_preflight(
+    request_id: str,
+    payload: ExecutionPreflightResult,
+    request: Request,
+) -> dict[str, Any]:
+    _require_execution_role(request, "SANDLOT_RUNNER_TOKEN_SHA256")
+    try:
+        claimed = sandlot_db.execution_request_by_id(request_id)
+        if not claimed or claimed.get("state") != "claimed":
+            raise HTTPException(
+                status_code=409,
+                detail="Request is not currently claimed or is already terminal.",
+            )
+        report = sandlot_execution.validate_preflight_report(
+            payload.model_dump(exclude={"lease_token"}),
+            request_row=claimed,
+        )
+        failure_reason = None
+        if report["outcome"] == "failed":
+            failure_reason = next(
+                (
+                    f"Live preflight failed: {check['key']}"
+                    for check in report["checks"]
+                    if check["state"] == "failed"
+                ),
+                "Live preflight failed",
+            )
+        row = sandlot_db.finish_execution_preflight(
+            request_id=request_id,
+            lease_token_hash=sandlot_execution.token_digest(payload.lease_token),
+            outcome=report["outcome"],
+            evidence=report,
+            failure_reason=failure_reason,
+        )
+    except sandlot_execution.ExecutionContractError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Preflight result unavailable: {exc}") from exc
+    if not row:
+        raise HTTPException(
+            status_code=409,
+            detail="Request is not claimed by this live lease, has expired, or is already terminal.",
+        )
+    return jsonable_encoder(sandlot_execution.public_request(row, include_contract=False))
 
 
 @app.post("/api/refresh")
@@ -649,6 +792,45 @@ def _matchup_decisions(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _latest_reviewed_action(
+    proposal_id: str,
+    snapshot_id: int,
+    input_hash: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Re-derive and exact-match one proposal from the latest snapshot."""
+    try:
+        row = sandlot_db.latest_successful_snapshot()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="No successful Fantrax snapshot has been stored yet")
+    plan = _matchup_decisions(row)["win_this_week"]
+    action = next(
+        (
+            candidate
+            for candidate in plan.get("actions") or []
+            if isinstance(candidate, dict)
+            and str(((candidate.get("review") or {}).get("proposal_id")) or candidate.get("id") or "")
+            == proposal_id
+        ),
+        None,
+    )
+    if not action:
+        raise HTTPException(
+            status_code=404,
+            detail="That proposal is not part of the latest actionable plan; refresh and review the replacement.",
+        )
+    review = action.get("review") if isinstance(action.get("review"), dict) else {}
+    if review.get("state") != "reviewable":
+        raise HTTPException(status_code=409, detail=review.get("reason") or "Proposal is not reviewable")
+    if int(review.get("snapshot_id") or 0) != snapshot_id or str(review.get("input_hash") or "") != input_hash:
+        raise HTTPException(
+            status_code=409,
+            detail="That proposal instance is stale or replaced; refresh and review the latest contract.",
+        )
+    return row, action, review
+
+
 def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     data = row.get("data") or {}
     roster_meta = data.get("roster") or {}
@@ -863,6 +1045,22 @@ def _require_refresh_token(request: Request) -> None:
         provided = auth[7:].strip()
     if provided != expected:
         raise HTTPException(status_code=401, detail="Missing or invalid refresh token")
+
+
+def _require_execution_role(request: Request, digest_env: str) -> None:
+    if not sandlot_execution.dry_run_enabled():
+        raise HTTPException(status_code=503, detail="Execution dry-run control plane is disabled")
+    if not sandlot_execution.distinct_role_credentials_configured():
+        raise HTTPException(status_code=503, detail="Distinct execution credentials are not configured")
+    try:
+        sandlot_execution.require_hashed_bearer(
+            request.headers.get("authorization"),
+            digest_env=digest_env,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except sandlot_execution.ExecutionContractError as exc:
+        raise HTTPException(status_code=503, detail="Execution credential is not configured") from exc
 
 
 @app.get("/", include_in_schema=False)
