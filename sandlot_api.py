@@ -732,6 +732,7 @@ def _incoming_offers_from_snapshot(snapshot_row: dict[str, Any]) -> list[dict[st
         give.sort(key=lambda item: str(item.get("player_id") or ""))
         get.sort(key=lambda item: str(item.get("player_id") or ""))
         manual_review_reason = None
+        manual_review = None
         if give and get and not unsupported:
             manual_review_reason = sandlot_trades.offer_validation_error(
                 snapshot_row,
@@ -741,6 +742,16 @@ def _incoming_offers_from_snapshot(snapshot_row: dict[str, Any]) -> list[dict[st
             )
             if manual_review_reason:
                 unsupported.append("participant_policy")
+                try:
+                    manual_review = sandlot_trades.build_manual_review(
+                        snapshot_row,
+                        [item["player_id"] for item in give],
+                        [item["player_id"] for item in get],
+                        expected_get_owner_id=next(iter(counterparties)),
+                        scheduled_execution_at_label=str(raw.get("executed") or "").strip() or None,
+                    )
+                except sandlot_trades.TradeGradeError:
+                    manual_review = None
         gradeable = bool(give and get and not unsupported)
         offers.append({
             "trade_id": str(raw.get("trade_id") or "").strip() or None,
@@ -755,6 +766,7 @@ def _incoming_offers_from_snapshot(snapshot_row: dict[str, Any]) -> list[dict[st
             "blocked_reasons": sorted(set(unsupported + ([] if give else ["missing_give_side"]) + ([] if get else ["missing_get_side"]))),
             "includes_draft_pick": "draft_pick" in unsupported,
             "manual_review_reason": manual_review_reason,
+            "manual_review": manual_review,
             "manual_only": True,
         })
     return offers

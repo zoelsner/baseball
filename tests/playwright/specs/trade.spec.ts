@@ -166,6 +166,24 @@ test.describe('Trade page', () => {
           get:[{ player_id:'o1', player_name:'Young Player' }],
           blocked_reasons:['participant_policy'], includes_draft_pick:false,
           manual_review_reason:'get player Young Player is age 24 and requires manual dynasty review',
+          manual_review:{
+            state:'manual_review_required',
+            recommendation:{ action:'hold', title:'Hold this offer for now', detail:'Sandlot cannot safely compare the package while Young Player has unresolved dynasty value.' },
+            uncertainty:{ level:'high', label:'Value withheld', detail:'A current-rate grade would overstate certainty.' },
+            deadline:{ state:'unknown', label:'Not provided', fantrax_schedule_label:'Pending', detail:'No verified deadline.' },
+            do_nothing:{ title:'Keep My Second Baseman', current_rate_preserved:2.0, unit:'FP/G' },
+            horizons:[
+              { key:'current_matchup', label:'Current matchup', status:'withheld', detail:'Current-period value withheld.' },
+              { key:'rest_of_season', label:'Rest of season', status:'withheld', detail:'Future role is not verified.' },
+              { key:'dynasty', label:'Dynasty', status:'manual_review', detail:'Manual dynasty valuation required.' },
+            ],
+            roster_consequences:{ label:'Moves out 2B; brings in OF.', detail:'Roster shape only.' },
+            replacement_value:{ status:'directional', label:'Best reserve cover: Bench Bat (-0.80 FP/G vs outgoing)', detail:'Reserve-only, same-position comparison.' },
+            counteroffer:{ state:'direction_only', title:'Counter direction: value the long-term assets first', detail:'Do not name an exact counter yet.' },
+            blockers:[{ player_id:'o1', player_name:'Young Player', kind:'young_asset', reason:'Age 24 requires manual dynasty valuation.' }],
+            skipper_prompt:'Review this exact incoming Fantrax offer. I give My Second Baseman; I get Young Player. Clearly separate verified facts from assumptions.',
+            manual_only:true, read_only:true, fantrax_changed:false, writes_enabled:false,
+          },
         }],
       }),
     }));
@@ -175,9 +193,21 @@ test.describe('Trade page', () => {
     await page.getByRole('button', { name:/Grade an offer/i }).click();
 
     const incoming = page.getByRole('region', { name:'Incoming offers' });
-    await expect(incoming.getByText(/Young Player is 24.*can’t grade this dynasty trade reliably yet/i)).toBeVisible();
+    const review = incoming.getByRole('region', { name:'Manual trade review' });
+    await expect(review.getByRole('heading', { name:'Hold this offer for now' })).toBeVisible();
+    await expect(review.getByText('Current matchup')).toBeVisible();
+    await expect(review.getByText('Rest of season')).toBeVisible();
+    await expect(review.getByText('Dynasty', { exact:true })).toBeVisible();
+    await expect(review.getByText('Current-period value withheld.')).toBeVisible();
+    await expect(review.getByText('Future role is not verified.')).toBeVisible();
+    await expect(review.getByText('Manual dynasty valuation required.')).toBeVisible();
+    await expect(review.getByText(/Keep My Second Baseman/)).toBeVisible();
+    await expect(review.getByText(/Best reserve cover: Bench Bat/)).toBeVisible();
+    await expect(review.getByText(/Counter direction: value the long-term assets first/)).toBeVisible();
+    await expect(review.getByText(/no trade was accepted, rejected, or sent/i)).toBeVisible();
     await expect(incoming.getByText(/incomplete, stale, or includes terms/i)).toHaveCount(0);
-    await expect(incoming.getByRole('button', { name:'Manual review required' })).toBeDisabled();
+    await review.getByRole('button', { name:'Ask Skipper to pressure-test it' }).click();
+    await expect(page.getByPlaceholder('Ask about your roster, waivers, matchups...')).toHaveValue(/I give My Second Baseman; I get Young Player/);
   });
 
   test('discards an in-flight incoming grade when the Fantrax snapshot refreshes', async ({ page }) => {

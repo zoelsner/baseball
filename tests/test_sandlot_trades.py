@@ -61,6 +61,97 @@ class TradeCounterTests(unittest.TestCase):
 
         self.assertEqual(error, "get players no longer belong to the incoming offer counterparty")
 
+    def test_manual_review_turns_blocked_offer_into_read_only_decision_brief(self):
+        snapshot = trade_snapshot()
+        snapshot["data"]["roster"]["rows"].append(
+            player("m4", "Reserve Second Baseman", slot="RES", positions="2B", fppg=1.2, team="ME", age=29),
+        )
+        acquired = snapshot["data"]["all_team_rosters"]["opp"]["rows"][0]
+        acquired.update({"slot": "IR", "injury": "OUT", "age": 24, "fppg": 8.25})
+
+        review = sandlot_trades.build_manual_review(
+            snapshot,
+            ["m1"],
+            ["o1"],
+            expected_get_owner_id="opp",
+            scheduled_execution_at_label="Pending",
+        )
+
+        self.assertEqual(review["state"], "manual_review_required")
+        self.assertEqual(review["recommendation"]["action"], "hold")
+        self.assertEqual(review["recommendation"]["title"], "Hold this offer for now")
+        self.assertEqual(review["deadline"]["label"], "Not provided")
+        self.assertEqual(review["deadline"]["fantrax_schedule_label"], "Pending")
+        self.assertEqual(review["do_nothing"]["title"], "Keep My Second Baseman")
+        self.assertEqual(review["do_nothing"]["current_rate_preserved"], 2.0)
+        self.assertEqual(
+            {item["key"]: item["status"] for item in review["horizons"]},
+            {"current_matchup": "withheld", "rest_of_season": "withheld", "dynasty": "manual_review"},
+        )
+        self.assertEqual(review["replacement_value"]["status"], "directional")
+        self.assertIn("Reserve Second Baseman", review["replacement_value"]["label"])
+        self.assertIn("healthy, gradeable value", review["counteroffer"]["title"])
+        self.assertEqual(
+            {(item["kind"], item["player_name"]) for item in review["blockers"]},
+            {("unavailable", "Their Outfielder"), ("young_asset", "Their Outfielder")},
+        )
+        self.assertIn("My Second Baseman", review["skipper_prompt"])
+        self.assertIn("Their Outfielder", review["skipper_prompt"])
+        self.assertTrue(review["manual_only"])
+        self.assertTrue(review["read_only"])
+        self.assertFalse(review["fantrax_changed"])
+        self.assertFalse(review["writes_enabled"])
+
+    def test_manual_review_refuses_a_gradeable_offer(self):
+        with self.assertRaisesRegex(
+            sandlot_trades.TradeGradeError,
+            "manual review requires a fail-closed participant-policy reason",
+        ):
+            sandlot_trades.build_manual_review(trade_snapshot(), ["m1"], ["o1"], expected_get_owner_id="opp")
+
+    def test_manual_review_withholds_stale_outgoing_rate_and_uses_side_aware_counter(self):
+        snapshot = trade_snapshot()
+        snapshot["data"]["roster"]["rows"].append(
+            player("m4", "Reserve Second Baseman", slot="RES", positions="2B", fppg=1.2, team="ME", age=29),
+        )
+        snapshot["data"]["roster"]["rows"][0].update({"slot": "IR", "injury": "OUT", "fppg": 7.5})
+
+        review = sandlot_trades.build_manual_review(snapshot, ["m1"], ["o1"], expected_get_owner_id="opp")
+
+        self.assertIsNone(review["do_nothing"]["current_rate_preserved"])
+        self.assertIn("current-rate value is withheld", review["do_nothing"]["detail"])
+        self.assertIn("current package rate withheld", review["skipper_prompt"])
+        self.assertEqual(review["counteroffer"]["title"], "Counter direction: value your unavailable player first")
+        self.assertIn("Do not sell from a stale rate", review["counteroffer"]["detail"])
+        self.assertEqual(review["replacement_value"]["comparisons"][0]["gap_fppg"], None)
+        self.assertIn("numeric gap withheld", review["replacement_value"]["label"])
+        self.assertNotIn("7.50 FP/G", review["skipper_prompt"])
+
+    def test_manual_review_does_not_turn_missing_outgoing_rate_into_zero(self):
+        snapshot = trade_snapshot()
+        snapshot["data"]["roster"]["rows"][0].pop("fppg")
+
+        review = sandlot_trades.build_manual_review(snapshot, ["m1"], ["o1"], expected_get_owner_id="opp")
+
+        self.assertIsNone(review["do_nothing"]["current_rate_preserved"])
+        self.assertIn("current package rate withheld", review["skipper_prompt"])
+        self.assertEqual(review["counteroffer"]["title"], "Counter direction: verify the missing evidence first")
+        self.assertNotIn("0.00 FP/G", review["skipper_prompt"])
+
+    def test_manual_review_ranks_best_cover_across_multi_player_outgoing_package(self):
+        snapshot = trade_snapshot()
+        my_rows = snapshot["data"]["roster"]["rows"]
+        my_rows.extend([
+            player("m4", "Reserve Second Baseman", slot="RES", positions="2B", fppg=1.2, team="ME", age=29),
+            player("m5", "Reserve Outfielder", slot="RES", positions="OF", fppg=5.8, team="ME", age=29),
+        ])
+        snapshot["data"]["all_team_rosters"]["opp"]["rows"][0]["age"] = 24
+
+        review = sandlot_trades.build_manual_review(snapshot, ["m1", "m3"], ["o1"], expected_get_owner_id="opp")
+
+        self.assertIn("Reserve Outfielder", review["replacement_value"]["label"])
+        self.assertIn("-0.20 FP/G", review["replacement_value"]["label"])
+
     def test_grade_offer_returns_three_honest_counter_bands(self):
         with patch.object(
             sandlot_trades,

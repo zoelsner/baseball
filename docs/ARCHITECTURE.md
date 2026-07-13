@@ -125,7 +125,13 @@ reviewing an offer never answers it in Fantrax.
 The incoming projection also runs the grader's participant-policy preflight
 without AI work, so protected, missing-data, or age-24-and-younger dynasty
 assets are labeled for manual review before the user clicks. This is a
-temporary honest limitation until a richer dynasty/prospect model ships.
+temporary honest limitation until a richer dynasty/prospect model ships. An
+exact player offer that fails this preflight now receives a deterministic,
+read-only `manual_review` decision brief rather than a grade: hold, uncertainty,
+deadline state, current-matchup/ROS/dynasty evidence states, do-nothing value,
+roster-shape and reserve-replacement consequences, directional counter advice,
+the complete blocker list, and an exact Skipper prompt. The brief does not call
+AI during refresh, propose an exact package, write a receipt, or change Fantrax.
 The same preflight fails closed when either side is OUT, suspended, or in an
 injured-list slot. Sandlot's only modeled trade value is current snapshot FP/G,
 so a stale healthy rate cannot be presented as an actionable edge for an

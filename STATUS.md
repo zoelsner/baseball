@@ -1,9 +1,20 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-12** (recommendation learning report in progress).
+> Last updated: **2026-07-13** (incoming trade decision brief in progress).
 
 ## Where things stand
+
+- **Incoming trade decision brief in progress:** an exact Fantrax player offer
+  that fails the health, evidence, or young-asset policy no longer dead-ends at
+  `Manual review required`. The read-only API now returns a deterministic
+  `Hold this offer for now` brief with uncertainty, the unverified deadline,
+  current-matchup/ROS/dynasty evidence states, the do-nothing alternative,
+  roster-shape and reserve-replacement consequences, counter direction, every
+  blocker, and an exact Skipper handoff. It still withholds the grade, exact
+  counter package, and all trade mutations. Current verification: 560 Python
+  tests pass (2 disposable-Postgres tests skipped), and the focused mobile
+  browser flow passes through the Skipper draft handoff.
 
 - **Verified starter cadence in progress:** `matchup_projection_v5` can now
   supplement missing posted probables with a frozen `verified_gs_cadence_v1`
