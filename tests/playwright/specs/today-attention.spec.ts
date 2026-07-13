@@ -588,6 +588,11 @@ test.describe('Today — Attention Queue', () => {
     await expect(review.getByText('Exact action review', { exact: true })).toBeVisible();
     await expect(review.getByText('Start Bench Bat over Cold Corner', { exact: true })).toBeVisible();
     await expect(review.getByText('Period 17', { exact: true })).toBeVisible();
+    await expect(review.getByText('Projected matchup leverage', { exact: true })).toBeVisible();
+    await expect(review.getByText('4.0 ahead', { exact: true })).toBeVisible();
+    await expect(review.getByText('9.8 ahead', { exact: true })).toBeVisible();
+    await expect(review.getByText('Win odds withheld', { exact: true })).toBeVisible();
+    await expect(review.getByText(/3 pitcher\(s\) have no posted probable start/)).toBeVisible();
     await expect(review.getByText('BN → UT', { exact: true })).toBeVisible();
     await expect(review.getByText('UT → BN', { exact: true })).toBeVisible();
     await expect(review.getByText(/Local owner bridge connected/)).toBeVisible();
