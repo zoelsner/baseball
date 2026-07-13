@@ -67,12 +67,22 @@ idempotent; stale, expired, superseded, or conflicting decisions return a
 conflict instead of changing history.
 
 The Today card shows the projected gain and exact start/bench delta. Decision
-controls are desktop-owner-only: the production browser sends the exact
-receipt decision to the loopback owner bridge, which retains the bearer token
-locally and revalidates the upstream identity and no-write boundary. Mobile or
-bridge-offline sessions remain useful and read-only instead of showing dead
-controls. Accepting means “I intend to use this plan”; it does not claim the
-lineup was changed.
+controls are desktop-owner-only: when the browser can reach the loopback owner
+bridge directly, it sends the exact receipt decision there. When Chromium's
+public-HTTPS-to-loopback policy blocks that fetch, Today links to a normal
+top-level review page served by the same loopback bridge. The local page
+refetches and revalidates the exact active receipt, shows its period, impact,
+assignment changes, and any unfilled lineup slots, and requires a second
+explicit “use” or “pass” click. Malformed, duplicate, or otherwise lossy
+assignment payloads fail closed instead of showing decision controls. The
+bridge must already be running; Today says so explicitly before offering the
+local link.
+Both paths retain the bearer token locally and enforce the same identity and
+no-write boundary. A nonce-bound same-origin form, loopback Host validation,
+no-store responses, frame denial, and a restrictive CSP keep the fallback from
+becoming an implicit or cross-origin action surface. Mobile or bridge-absent
+sessions remain useful and read-only. Accepting means “I intend to use this
+plan”; it does not claim the lineup was changed.
 
 The League trade cockpit creates a sanitized `trade_assessment` receipt when an
 exact offer is graded. With the local owner bridge, Zach can record “intent to

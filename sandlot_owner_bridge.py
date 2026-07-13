@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import html
 import json
 import os
 import re
 import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import requests
 
@@ -135,6 +136,21 @@ class OwnerBridge:
             return 502, {"detail": error}
         return status, _sanitize_public_decision(body)
 
+    def recommendation(self, receipt_id: str, input_hash: str) -> tuple[int, dict[str, Any]]:
+        if not RECEIPT_ID_RE.fullmatch(receipt_id) or not receipt_id.startswith("monday-lineup:"):
+            return 400, {"detail": "Invalid lineup recommendation receipt id"}
+        if not re.fullmatch(r"[A-Fa-f0-9]{64}", input_hash):
+            return 400, {"detail": "Recommendation review hash is malformed"}
+        status, body = self._request("GET", "/api/recommendation-receipts/latest")
+        if status != 200:
+            return 409 if status in {204, 404} else status, {
+                "detail": str(body.get("detail") or "No active lineup recommendation is available")
+            }
+        error = _validate_review_receipt(body, receipt_id=receipt_id, input_hash=input_hash)
+        if error:
+            return 409, {"detail": error}
+        return 200, _sanitize_public_decision(body)
+
     def _request(self, method: str, path: str, **kwargs: Any) -> tuple[int, dict[str, Any]]:
         try:
             response = self.http.request(
@@ -194,9 +210,45 @@ def make_handler(bridge: OwnerBridge):
             self.end_headers()
             self.wfile.write(raw)
 
+        def _send_html(self, status: int, markup: str) -> None:
+            raw = markup.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+            )
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
         def _authorized_browser(self) -> bool:
             if not self._host_is_loopback() or not self._origin_allowed():
                 self._send(403, {"detail": "Origin or loopback host is not allowed"})
+                return False
+            return True
+
+        def _authorized_local_navigation(self) -> bool:
+            if not self._host_is_loopback():
+                self._send_html(403, _review_error_page("This review page is available only on this Mac."))
+                return False
+            mode = self.headers.get("Sec-Fetch-Mode", "")
+            destination = self.headers.get("Sec-Fetch-Dest", "")
+            if mode not in {"", "navigate"} or destination not in {"", "document"}:
+                self._send_html(403, _review_error_page("Open this review as a normal browser page."))
+                return False
+            return True
+
+        def _authorized_local_form(self) -> bool:
+            if not self._host_is_loopback():
+                self._send_html(403, _review_error_page("This decision can be recorded only on this Mac."))
+                return False
+            expected_origin = f"http://{self.headers.get('Host', '')}".rstrip("/")
+            if self.headers.get("Origin", "").rstrip("/") != expected_origin:
+                self._send_html(403, _review_error_page("The local decision form origin did not match this bridge."))
                 return False
             return True
 
@@ -219,6 +271,20 @@ def make_handler(bridge: OwnerBridge):
             self.end_headers()
 
         def do_GET(self) -> None:  # noqa: N802
+            parsed = urlsplit(self.path)
+            review_prefix = "/recommendation-receipts/"
+            if parsed.path.startswith(review_prefix) and parsed.path.endswith("/review"):
+                if not self._authorized_local_navigation():
+                    return
+                receipt_id = unquote(parsed.path[len(review_prefix):-len("/review")])
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                input_hash = str((query.get("input_hash") or [""])[0])
+                status, payload = bridge.recommendation(receipt_id, input_hash)
+                if status != 200:
+                    self._send_html(status, _review_error_page(str(payload.get("detail") or "Review unavailable")))
+                    return
+                self._send_html(200, _review_page(payload, nonce=bridge.nonce))
+                return
             if not self._authorized_browser():
                 return
             if self.path == "/health":
@@ -235,11 +301,46 @@ def make_handler(bridge: OwnerBridge):
             self._send(404, {"detail": "Not found"})
 
         def do_POST(self) -> None:  # noqa: N802
+            parsed = urlsplit(self.path)
+            review_prefix = "/recommendation-receipts/"
+            is_review = parsed.path.startswith(review_prefix) and parsed.path.endswith("/review")
+            if is_review:
+                if not self._authorized_local_form():
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                except ValueError:
+                    length = 0
+                if length < 2 or length > MAX_BODY_BYTES:
+                    self._send_html(413, _review_error_page("Decision form size is invalid."))
+                    return
+                if self.headers.get_content_type() != "application/x-www-form-urlencoded":
+                    self._send_html(415, _review_error_page("Decision form encoding is invalid."))
+                    return
+                try:
+                    form = parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
+                except Exception:
+                    self._send_html(400, _review_error_page("Decision form is invalid."))
+                    return
+                nonce = str((form.get("nonce") or [""])[0])
+                if not bridge.nonce_matches(nonce):
+                    self._send_html(403, _review_error_page("This review expired. Reopen it from Sandlot."))
+                    return
+                receipt_id = unquote(parsed.path[len(review_prefix):-len("/review")])
+                decision = str((form.get("decision") or [""])[0])
+                input_hash = str((form.get("input_hash") or [""])[0])
+                status, result = bridge.decide(receipt_id, {"decision": decision, "input_hash": input_hash})
+                if status != 200:
+                    self._send_html(status, _review_error_page(str(result.get("detail") or "Decision was not recorded.")))
+                    return
+                message = "Decision recorded. Fantrax was not changed."
+                self._send_html(200, _review_page(result, nonce=bridge.nonce, message=message))
+                return
             if not self._authorized_browser():
                 return
             decision_prefix = "/recommendation-receipts/"
-            is_execution = self.path == "/execution-requests"
-            is_decision = self.path.startswith(decision_prefix) and self.path.endswith("/decision")
+            is_execution = parsed.path == "/execution-requests"
+            is_decision = parsed.path.startswith(decision_prefix) and parsed.path.endswith("/decision")
             if not is_execution and not is_decision:
                 self._send(404, {"detail": "Not found"})
                 return
@@ -267,7 +368,7 @@ def make_handler(bridge: OwnerBridge):
             if is_execution:
                 status, result = bridge.create(payload)
             else:
-                receipt_id = unquote(self.path[len(decision_prefix):-len("/decision")])
+                receipt_id = unquote(parsed.path[len(decision_prefix):-len("/decision")])
                 status, result = bridge.decide(receipt_id, payload)
             self._send(status, result)
 
@@ -349,6 +450,164 @@ def _validate_public_decision(
 
 def _sanitize_public_decision(body: dict[str, Any]) -> dict[str, Any]:
     return {key: body[key] for key in PUBLIC_DECISION_FIELDS if key in body}
+
+
+def _validate_review_receipt(body: dict[str, Any], *, receipt_id: str, input_hash: str) -> str | None:
+    if body.get("fantrax_changed") is not False or body.get("writes_enabled") is not False:
+        return "Sandlot did not preserve the no-Fantrax-write review boundary"
+    if body.get("read_only") is not True:
+        return "Sandlot did not return a read-only recommendation receipt"
+    if str(body.get("receipt_id") or "") != receipt_id:
+        return "A newer lineup recommendation is available. Reopen the review from Sandlot."
+    if str(body.get("input_hash") or "").casefold() != input_hash.casefold():
+        return "The lineup recommendation changed. Reopen the review from Sandlot."
+    if body.get("source") != "monday_lineup" or body.get("lifecycle_state") != "active":
+        return "This lineup recommendation is no longer active."
+    if body.get("decision_state") not in {"pending", "accepted", "rejected"}:
+        return "The lineup recommendation has an invalid decision state."
+    if not isinstance(body.get("period"), dict) or not isinstance(body.get("evaluation"), dict):
+        return "The lineup recommendation is missing its measurable period or impact."
+    if not isinstance(body.get("baseline_assignment"), list) or not isinstance(body.get("proposed_assignment"), list):
+        return "The lineup recommendation is missing its exact assignments."
+    for label in ("baseline_assignment", "proposed_assignment"):
+        seen: set[str] = set()
+        for item in body[label]:
+            if not isinstance(item, dict):
+                return f"The lineup recommendation contains an invalid {label.replace('_', ' ')} row."
+            player_id = str(item.get("player_id") or "").strip()
+            player_name = str(item.get("player_name") or "").strip()
+            slot = str(item.get("slot") or "").strip()
+            if not player_id or not player_name or not slot:
+                return f"The lineup recommendation contains an incomplete {label.replace('_', ' ')} row."
+            if player_id in seen:
+                return f"The lineup recommendation contains a duplicate player in its {label.replace('_', ' ')}."
+            seen.add(player_id)
+    unfilled = body.get("unfilled_slots")
+    if not isinstance(unfilled, list) or any(not isinstance(slot, str) or not slot.strip() for slot in unfilled):
+        return "The lineup recommendation is missing its exact unfilled slots."
+    baseline_slots = {
+        str(item["player_id"]): str(item["slot"])
+        for item in body["baseline_assignment"]
+    }
+    proposed_slots = {
+        str(item["player_id"]): str(item["slot"])
+        for item in body["proposed_assignment"]
+    }
+    if baseline_slots == proposed_slots and not unfilled:
+        return "The lineup recommendation does not contain a reviewable assignment change."
+    return None
+
+
+def _review_page(receipt: dict[str, Any], *, nonce: str, message: str | None = None) -> str:
+    receipt_id = str(receipt.get("receipt_id") or "")
+    input_hash = str(receipt.get("input_hash") or "")
+    period = receipt.get("period") if isinstance(receipt.get("period"), dict) else {}
+    evaluation = receipt.get("evaluation") if isinstance(receipt.get("evaluation"), dict) else {}
+    baseline = receipt.get("baseline_assignment") if isinstance(receipt.get("baseline_assignment"), list) else []
+    proposed = receipt.get("proposed_assignment") if isinstance(receipt.get("proposed_assignment"), list) else []
+    unfilled = receipt.get("unfilled_slots") if isinstance(receipt.get("unfilled_slots"), list) else []
+    baseline_by_player = {
+        str(item.get("player_id") or ""): item
+        for item in baseline if isinstance(item, dict) and item.get("player_id")
+    }
+    proposed_by_player = {
+        str(item.get("player_id") or ""): item
+        for item in proposed if isinstance(item, dict) and item.get("player_id")
+    }
+    starts: list[str] = []
+    benches: list[str] = []
+    slot_changes: list[str] = []
+    inactive_slots = {"BN", "BE", "BENCH", "IL", "IR", "RES", "RESERVE", "MIN", "MINORS"}
+    for item in proposed:
+        if not isinstance(item, dict) or not item.get("player_id"):
+            continue
+        player_id = str(item.get("player_id"))
+        destination = str(item.get("slot") or "—")
+        baseline_item = baseline_by_player.get(player_id)
+        if baseline_item is None:
+            starts.append(f"Start {str(item.get('player_name') or player_id)} in {destination}")
+            continue
+        origin = str(baseline_item.get("slot") or "—")
+        if origin == destination:
+            continue
+        player_name = str(item.get("player_name") or player_id)
+        if origin.upper() in inactive_slots and destination.upper() not in inactive_slots:
+            starts.append(f"Start {player_name} in {destination}")
+            continue
+        if origin.upper() not in inactive_slots and destination.upper() in inactive_slots:
+            benches.append(f"Bench {player_name} from {origin}")
+            continue
+        slot_changes.append(f"{player_name}: {origin} → {destination}")
+    for item in baseline:
+        if not isinstance(item, dict) or not item.get("player_id"):
+            continue
+        player_id = str(item.get("player_id"))
+        if player_id in proposed_by_player:
+            continue
+        benches.append(f"Bench {str(item.get('player_name') or player_id)} from {str(item.get('slot') or 'lineup')}")
+    lineup_holes = [f"Leave {str(slot)} unfilled (lineup hole)" for slot in unfilled]
+    changes = starts + benches + slot_changes + lineup_holes
+    gain = evaluation.get("projected_gain")
+    try:
+        gain_label = f"{float(gain):+.1f} projected points"
+    except (TypeError, ValueError):
+        gain_label = "Projected impact unavailable"
+    period_label = " → ".join(
+        value for value in (str(period.get("start") or ""), str(period.get("end") or "")) if value
+    ) or "Current scoring period"
+    change_markup = "".join(f"<li>{html.escape(change)}</li>" for change in changes)
+    if not change_markup:
+        change_markup = "<li>Keep the current assignment.</li>"
+    decision_state = str(receipt.get("decision_state") or "pending")
+    status_label = {
+        "accepted": "Using this plan",
+        "rejected": "Passed on this plan",
+    }.get(decision_state, "Awaiting your call")
+    action = f"/recommendation-receipts/{quote(receipt_id, safe='')}/review"
+    controls = ""
+    if decision_state == "pending":
+        hidden = (
+            f'<input type="hidden" name="nonce" value="{html.escape(nonce, quote=True)}">'
+            f'<input type="hidden" name="input_hash" value="{html.escape(input_hash, quote=True)}">'
+        )
+        controls = f"""
+          <div class="actions">
+            <form method="post" action="{action}">{hidden}<input type="hidden" name="decision" value="accepted"><button class="primary" type="submit">I’ll use this lineup</button></form>
+            <form method="post" action="{action}">{hidden}<input type="hidden" name="decision" value="rejected"><button class="secondary" type="submit">Pass</button></form>
+          </div>
+        """
+    notice = f'<div class="success" role="status">{html.escape(message)}</div>' if message else ""
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sandlot lineup review</title>
+<style>
+  :root {{ color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background:#efe8dc; color:#0f172a; }}
+  * {{ box-sizing:border-box; }} body {{ margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; }}
+  main {{ width:min(100%,560px); background:#fffaf2; border:1px solid #e2d7c6; border-radius:24px; padding:22px; box-shadow:0 18px 48px rgba(31,20,12,.10); }}
+  .eyebrow {{ color:#df7042; font-size:11px; font-weight:850; letter-spacing:.11em; text-transform:uppercase; }}
+  h1 {{ margin:8px 0 0; font-family:Georgia,'Times New Roman',serif; font-size:30px; line-height:1.02; letter-spacing:-.025em; }}
+  .impact {{ margin-top:16px; display:flex; justify-content:space-between; gap:14px; padding:13px 14px; border-radius:16px; background:#f1e8da; font-weight:800; }}
+  .impact span:last-child {{ color:#df7042; }}
+  ul {{ margin:14px 0 0; padding:0; list-style:none; border-top:1px solid #eadfce; }}
+  li {{ padding:11px 0; border-bottom:1px solid #eadfce; color:#334155; font-size:14px; font-weight:700; }}
+    .boundary,.success {{ margin-top:14px; border-radius:14px; padding:12px 13px; font-size:13px; line-height:1.45; font-weight:750; }}
+  .boundary {{ background:#f8dfce; color:#334155; }} .success {{ background:#dcf2e3; color:#14532d; }}
+  .status {{ margin-top:13px; color:#64748b; font-size:12px; font-weight:800; }}
+  .actions {{ margin-top:16px; display:grid; grid-template-columns:1fr 1fr; gap:9px; }} form {{ margin:0; }}
+  button {{ width:100%; min-height:48px; border-radius:999px; padding:12px 14px; font:inherit; font-size:13px; font-weight:850; cursor:pointer; }}
+  .primary {{ border:1px solid #0f172a; background:#0f172a; color:#fff; }} .secondary {{ border:1px solid #e2d7c6; background:#fffaf2; color:#334155; }}
+  @media (max-width:440px) {{ body {{ padding:14px; }} main {{ padding:18px; }} .actions {{ grid-template-columns:1fr; }} }}
+</style></head><body><main>
+  <div class="eyebrow">Local owner review</div><h1>Review this lineup plan</h1>
+  <div class="impact"><span>{html.escape(period_label)}</span><span>{html.escape(gain_label)}</span></div>
+  <ul>{change_markup}</ul>
+  <div class="boundary">Recording your intent only. This page cannot change Fantrax, and the owner token stays on this Mac.</div>
+  <div class="status">{html.escape(status_label)}</div>{notice}{controls}
+</main></body></html>"""
+
+
+def _review_error_page(message: str) -> str:
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sandlot review unavailable</title>
+<style>:root{{font-family:Inter,system-ui,sans-serif;background:#efe8dc;color:#0f172a}}body{{min-height:100vh;margin:0;display:grid;place-items:center;padding:24px}}main{{max-width:520px;background:#fffaf2;border:1px solid #e2d7c6;border-radius:24px;padding:22px}}h1{{margin:0;font-family:Georgia,serif}}p{{color:#334155;line-height:1.5;font-weight:650}}</style></head><body><main><h1>Review unavailable</h1><p>{html.escape(message)}</p><p>Return to Sandlot and reopen the latest lineup plan.</p></main></body></html>"""
 
 
 def _validate_public_request(
