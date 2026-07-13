@@ -1100,6 +1100,13 @@ function v2WinWeekDeadlineExpired(deadline) {
   return !Number.isNaN(parsed.getTime()) && parsed.getTime() <= Date.now();
 }
 
+function v2ProjectedMarginPosition(value) {
+  const margin = v2Number(value);
+  if (margin === null) return null;
+  if (Math.abs(margin) < 0.05) return 'Tied';
+  return margin > 0 ? `${margin.toFixed(1)} ahead` : `${Math.abs(margin).toFixed(1)} behind`;
+}
+
 function v2WinWeekPrompt(action, plan) {
   const points = v2Number(action?.expected_points?.estimate);
   const deadline = v2WinWeekDeadline(action?.deadline);
@@ -1395,6 +1402,10 @@ function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
   const moves = Array.isArray(review.slot_moves) ? review.slot_moves : [];
   const hash = String(review.input_hash || '');
   const points = v2Number(action?.expected_points?.estimate);
+  const marginBefore = v2ProjectedMarginPosition(plan?.summary?.projected_margin_before_action);
+  const marginAfter = v2ProjectedMarginPosition(plan?.summary?.projected_margin_after_action);
+  const probabilityReason = plan?.summary?.win_probability_excluded_reason || null;
+  const projectionCaveat = plan?.summary?.projection_caveat || null;
   const confirmation = review?.contract?.confirmation?.expected || null;
   const bridge = useV2OwnerBridge(`${review.proposal_id || ''}:${review.input_hash || ''}`);
   const [requestState, setRequestState] = React.useState({ state:'idle', requestId:null, error:null });
@@ -1495,6 +1506,32 @@ function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
             <div style={{ marginTop:3, color:V2.muted, fontSize:11.5, fontWeight:700 }}>{action.confidence || 'unknown'} confidence</div>
           </div>
         </div>
+
+        {(marginBefore && marginAfter) || probabilityReason ? (
+          <div role="group" aria-label="Projected matchup leverage" style={{ marginTop:12, background:V2.surface, borderRadius:18, padding:'14px', boxShadow:'0 0 0 1px rgba(0,0,0,0.055), 0 1px 2px -1px rgba(31,20,12,0.06)' }}>
+            <div style={{ color:V2.muted, fontSize:10, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>Projected matchup leverage</div>
+            {marginBefore && marginAfter ? (
+              <div style={{ marginTop:10, display:'grid', gridTemplateColumns:'1fr auto 1fr', alignItems:'center', gap:10 }}>
+                <div style={{ minWidth:0 }}>
+                  <div style={{ color:V2.muted, fontSize:10.5, lineHeight:1, fontWeight:800 }}>Before</div>
+                  <div style={{ marginTop:5, color:V2.body, fontFamily:V2.fontMono, fontSize:14, lineHeight:1.15, fontWeight:900, fontVariantNumeric:'tabular-nums' }}>{marginBefore}</div>
+                </div>
+                <span aria-hidden="true" style={{ color:V2.accent, fontSize:18, lineHeight:1, fontWeight:900 }}>→</span>
+                <div style={{ minWidth:0, textAlign:'right' }}>
+                  <div style={{ color:V2.muted, fontSize:10.5, lineHeight:1, fontWeight:800 }}>After</div>
+                  <div style={{ marginTop:5, color:V2.accent, fontFamily:V2.fontMono, fontSize:14, lineHeight:1.15, fontWeight:900, fontVariantNumeric:'tabular-nums' }}>{marginAfter}</div>
+                </div>
+              </div>
+            ) : null}
+            {probabilityReason ? (
+              <div style={{ marginTop:12, background:V2.warnSoft, color:V2.warn, borderRadius:12, padding:'10px 11px', textWrap:'pretty' }}>
+                <div style={{ fontSize:11.5, lineHeight:1.2, fontWeight:900 }}>Win odds withheld</div>
+                <div style={{ marginTop:4, fontSize:11, lineHeight:1.4, fontWeight:750 }}>{probabilityReason}</div>
+                {projectionCaveat ? <div style={{ marginTop:4, fontSize:10.5, lineHeight:1.4, fontWeight:700 }}>{projectionCaveat}</div> : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         <div style={{ marginTop:12, background:V2.surface, borderRadius:18, padding:'14px 14px 13px', boxShadow:'0 0 0 1px rgba(0,0,0,0.055)' }}>
           <div style={{ color:V2.muted, fontSize:10, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>Exact final slot mapping</div>
