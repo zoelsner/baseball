@@ -792,7 +792,29 @@ function v2MatchupInfo(matchup) {
   if (daysLeft === null && matchup.daysLeft !== undefined) daysLeft = v2Number(matchup.daysLeft);
   if (daysLeft === null && matchup.days_left !== undefined) daysLeft = v2Number(matchup.days_left);
   const leading = margin > 0;
-  return { my, opp, margin, opponent, week, daysLeft, leading, projection:matchup.projection || null };
+  const periodDays = (() => {
+    const explicit = Number(matchup.days);
+    if (Number.isFinite(explicit) && explicit > 0) return Math.round(explicit);
+    if (!matchup.start || !matchup.end) return null;
+    const start = new Date(`${matchup.start}T00:00:00Z`);
+    const end = new Date(`${matchup.end}T00:00:00Z`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return null;
+    return Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+  })();
+  return {
+    my,
+    opp,
+    margin,
+    opponent,
+    week,
+    daysLeft,
+    leading,
+    projection:matchup.projection || null,
+    periodDays,
+    periodStart:matchup.start || null,
+    periodEnd:matchup.end || null,
+    latestCompleted:matchup.latest_completed || null,
+  };
 }
 
 function v2ProjectionInfo(projection) {
@@ -821,12 +843,47 @@ function v2ProjectionInfo(projection) {
     shortBand,
     color,
     dash: probability === null ? null : (probability * 188.5).toFixed(1),
+    projectedMyValue: projectedMy,
+    projectedOppValue: projectedOpp,
     projectedMy: projectedMy.toFixed(1),
     projectedOpp: projectedOpp.toFixed(1),
     projectedMargin,
     probabilityCalibrated,
-    probabilityLabel: projection.probability_calibrated === false ? 'probability uncalibrated' : 'probability unavailable',
+    probabilityLabel: projection.probability_calibrated === false ? 'not calibrated' : 'probability unavailable',
     complete: Boolean(projection.complete),
+  };
+}
+
+function v2ProjectionContext(matchup, projectionInfo) {
+  const periodDays = Number(matchup?.periodDays);
+  if (!projectionInfo || !Number.isFinite(periodDays) || periodDays <= 0) return null;
+  const periodDates = matchup?.periodStart && matchup?.periodEnd
+    ? `${v2ShortDate(matchup.periodStart)}–${v2ShortDate(matchup.periodEnd)}`
+    : null;
+  const periodLabel = `${periodDays}-day scoring period${periodDates ? ` · ${periodDates}` : ''}`;
+  const projectedMyDaily = projectionInfo.projectedMyValue / periodDays;
+  const projectedOppDaily = projectionInfo.projectedOppValue / periodDays;
+  const latest = matchup?.latestCompleted;
+  const latestDays = Number(latest?.days);
+  const latestMy = Number(latest?.my_score);
+  const latestOpp = Number(latest?.opponent_score);
+  const hasLatest = Number.isFinite(latestDays) && latestDays > 0
+    && Number.isFinite(latestMy) && Number.isFinite(latestOpp);
+  const paceLabel = hasLatest
+    ? `≈ ${Math.round(projectedMyDaily)}–${Math.round(projectedOppDaily)} FP/day · last: ${Math.round(latestMy / latestDays)}–${Math.round(latestOpp / latestDays)}/day (${Math.round(latestMy)}–${Math.round(latestOpp)}, ${Math.round(latestDays)}d)`
+    : `≈ ${Math.round(projectedMyDaily)}–${Math.round(projectedOppDaily)} FP/day`;
+  const estimatedPitchers = Math.max(0, Math.round(v2Number(matchup?.projection?.pitchers_with_cadence_estimate)));
+  const unmodeledPitchers = Math.max(0, Math.round(v2Number(matchup?.projection?.pitchers_without_opportunity_model)));
+  const coverageParts = [
+    estimatedPitchers > 0 ? `${estimatedPitchers} cadence-estimated` : null,
+    unmodeledPitchers > 0 ? `${unmodeledPitchers} unmodeled` : null,
+  ].filter(Boolean);
+  return {
+    periodLabel,
+    paceLabel,
+    coverageLabel: coverageParts.length
+      ? `Both rosters: ${coverageParts.join(' · ')} pitcher${estimatedPitchers + unmodeledPitchers === 1 ? '' : 's'}${unmodeledPitchers > 0 ? ' · totals are partial' : ''}`
+      : null,
   };
 }
 
@@ -2127,9 +2184,11 @@ function V2MatchupStatusCard({
   rosterCount,
 }) {
   const freshness = v2SnapshotFreshnessText(sync);
+  const projectionContext = showProjection ? v2ProjectionContext(matchup, projectionInfo) : null;
   return (
     <section style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, padding:'16px 18px', overflow:'hidden' }}>
       {matchup ? (
+        <>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
           <div style={{ minWidth:0 }}>
             <div style={{ display:'flex', alignItems:'center', flexWrap:'wrap', gap:7 }}>
@@ -2143,7 +2202,7 @@ function V2MatchupStatusCard({
             </div>
             {showProjection ? (
               <div style={{ marginTop:7, color:projectionInfo.color, fontSize:12.5, fontWeight:850, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums', whiteSpace:'nowrap' }}>
-                Projected {projectionInfo.projectedMy} - {projectionInfo.projectedOpp}
+                Projected {Math.round(projectionInfo.projectedMyValue)} - {Math.round(projectionInfo.projectedOppValue)}
               </div>
             ) : null}
             {showProjection && !projectionInfo.probabilityCalibrated ? (
@@ -2170,6 +2229,16 @@ function V2MatchupStatusCard({
             </div>
           </div>
         </div>
+        {projectionContext ? (
+          <div role="note" aria-label="Projection scale and evidence" style={{ marginTop:12, padding:'10px 11px', borderRadius:14, background:V2.surface2, border:`1px solid ${V2.hairline2}`, display:'flex', flexDirection:'column', gap:4 }}>
+            <div style={{ color:V2.ink, fontSize:11.5, fontWeight:850 }}>{projectionContext.periodLabel}</div>
+            <div style={{ color:V2.body, fontSize:11.5, fontWeight:750, lineHeight:1.35 }}>{projectionContext.paceLabel}</div>
+            {projectionContext.coverageLabel ? (
+              <div style={{ color:V2.warn, fontSize:10.5, fontWeight:800, lineHeight:1.35 }}>{projectionContext.coverageLabel}</div>
+            ) : null}
+          </div>
+        ) : null}
+        </>
       ) : (
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
           <div>
