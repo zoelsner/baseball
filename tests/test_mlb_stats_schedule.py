@@ -150,6 +150,39 @@ class MlbStatsScheduleTests(unittest.TestCase):
         self.assertTrue(games[0]["home"])
         self.assertEqual(games[0]["probable_pitcher"], {"id": 592450, "name": "Gerrit Cole"})
 
+    def test_completed_team_counts_exclude_nonfinal_and_future_and_keep_doubleheaders(self):
+        first = schedule_game(10, state="Final", game_date="2026-07-10T17:00:00Z")
+        second = schedule_game(11, state="Final", game_date="2026-07-10T23:00:00Z")
+        first["doubleHeader"] = "Y"
+        second["doubleHeader"] = "Y"
+        payload = {"dates": [{"games": [
+            first,
+            second,
+            schedule_game(12, state="Postponed", game_date="2026-07-11T17:00:00Z"),
+            schedule_game(13, state="In Progress", game_date="2026-07-11T19:00:00Z"),
+            schedule_game(14, state="Final", game_date="2026-07-13T17:00:00Z"),
+        ]}]}
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return payload
+
+        with (
+            patch.object(mlb_stats.requests, "get", return_value=Response()),
+            patch.object(mlb_stats, "_get_team_abbreviations", return_value=TEAM_ABBREVS),
+        ):
+            counts = mlb_stats.fetch_completed_team_game_counts(
+                "2026-07-01",
+                "2026-07-13",
+                season=2026,
+                now=datetime(2026, 7, 13, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(counts, {"NYY": 2, "BOS": 2})
+
 
 if __name__ == "__main__":
     unittest.main()

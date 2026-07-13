@@ -172,14 +172,15 @@ def lookup_player_by_name(
     if not matches:
         return None
 
-    if target_team and len(matches) > 1:
-        team_filtered = [
+    if target_team:
+        matches = [
             p for p in matches
-            if _normalize_team((p.get("currentTeam") or {}).get("abbreviation")) == target_team
+            if _active_player_team_abbreviation(p, season) == target_team
         ]
-        if team_filtered:
-            matches = team_filtered
-
+    # A projection identity must be unique and team-consistent. Returning the
+    # first normalized-name match can silently bind a namesake or traded player.
+    if len(matches) != 1:
+        return None
     return matches[0].get("id")
 
 
@@ -201,16 +202,28 @@ def resolve_player_identity(
     ]
     if not matches:
         return {"status": "not_found", "mlb_id": None, "source": source}
-    if len(matches) == 1:
-        return {"status": "resolved_unique_name", "mlb_id": matches[0].get("id"), "source": source}
     if target_team:
-        team_matches = [
+        matches = [
             player for player in matches
-            if _normalize_team((player.get("currentTeam") or {}).get("abbreviation")) == target_team
+            if _active_player_team_abbreviation(player, season) == target_team
         ]
-        if len(team_matches) == 1:
-            return {"status": "resolved_name_team", "mlb_id": team_matches[0].get("id"), "source": source}
+        if not matches:
+            return {"status": "team_mismatch", "mlb_id": None, "source": source}
+    if len(matches) == 1:
+        status = "resolved_name_team" if target_team else "resolved_unique_name"
+        return {"status": status, "mlb_id": matches[0].get("id"), "source": source}
     return {"status": "ambiguous", "mlb_id": None, "source": source}
+
+
+def _active_player_team_abbreviation(player: dict[str, Any], season: int) -> str | None:
+    current_team = player.get("currentTeam") if isinstance(player.get("currentTeam"), dict) else {}
+    direct = _normalize_team(current_team.get("abbreviation"))
+    if direct:
+        return direct
+    team_id = _to_int(current_team.get("id"))
+    if team_id is None:
+        return None
+    return _normalize_team(_get_team_abbreviations(season).get(team_id))
 
 
 def _get_team_abbreviations(season: int) -> dict[int, str]:
@@ -287,6 +300,64 @@ def fetch_team_schedule(
         team_abbrev=_get_team_abbreviations(year),
         now=now,
     )
+
+
+def fetch_completed_team_game_counts(
+    start_date: _date | str,
+    end_date: _date | str,
+    *,
+    season: int | None = None,
+    now: _datetime | None = None,
+) -> dict[str, int]:
+    """Return completed MLB team games in a frozen historical window.
+
+    One league-wide schedule request supplies the exposure denominator for
+    pitcher cadence. Only final games whose scheduled start is strictly before
+    ``now`` count; postponed, suspended, in-progress, and future rows do not.
+    Each game is counted once for both teams, so doubleheaders remain two games.
+    """
+    start = _date_param(start_date)
+    end = _date_param(end_date)
+    if now is None:
+        now = _datetime.now(_timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=_timezone.utc)
+    else:
+        now = now.astimezone(_timezone.utc)
+
+    resp = requests.get(
+        f"{BASE_URL}/schedule",
+        params={
+            "sportId": 1,
+            "startDate": start,
+            "endDate": end,
+            "hydrate": "probablePitcher",
+        },
+        timeout=DEFAULT_TIMEOUT,
+    )
+    resp.raise_for_status()
+    year = season or _parse_date_only(start).year
+    abbreviations = _get_team_abbreviations(year)
+    counts: dict[str, int] = {}
+    for date_entry in resp.json().get("dates") or []:
+        for game in date_entry.get("games") or []:
+            status = game.get("status") if isinstance(game.get("status"), dict) else {}
+            state = str(status.get("detailedState") or status.get("abstractGameState") or "").strip().casefold()
+            if state not in {"final", "game over", "completed early"}:
+                continue
+            game_dt = _parse_mlb_datetime(game.get("gameDate"))
+            if game_dt is None or game_dt >= now:
+                continue
+            teams = game.get("teams") if isinstance(game.get("teams"), dict) else {}
+            for side in ("away", "home"):
+                side_data = teams.get(side) if isinstance(teams.get(side), dict) else {}
+                team = side_data.get("team") if isinstance(side_data.get("team"), dict) else {}
+                team_id = _to_int(team.get("id"))
+                abbr = _team_abbrev(team_id, team, abbreviations)
+                normalized = _normalize_team(abbr)
+                if normalized:
+                    counts[normalized] = counts.get(normalized, 0) + 1
+    return counts
 
 
 def normalize_schedule_games(
@@ -451,6 +522,8 @@ def _normalize_split(
 ) -> dict[str, Any]:
     stat = split.get("stat") or {}
     opponent = split.get("opponent") or {}
+    player_team = split.get("team") if isinstance(split.get("team"), dict) else {}
+    player_team_id = _to_int(player_team.get("id"))
     date = split.get("date") or split.get("officialDate")
     is_home = bool(split.get("isHome"))
     opp_id = opponent.get("id")
@@ -460,6 +533,11 @@ def _normalize_split(
     base = {
         "date": date,
         "opponent": opp_abbrev,
+        "team": (
+            (team_abbrev or {}).get(player_team_id)
+            if player_team_id is not None
+            else player_team.get("abbreviation")
+        ) or player_team.get("abbreviation") or None,
         "home": is_home,
         "game_pk": (split.get("game") or {}).get("gamePk") or split.get("gamePk"),
     }

@@ -130,7 +130,7 @@ function baseSnapshot(overrides: Record<string, any> = {}) {
         projected_margin_before_action: 4.0,
         projected_margin_after_action: 9.8,
         win_probability_excluded_reason: 'Win probability is not calibrated; actions are ranked by projected remaining-week points.',
-        projection_caveat: 'Known-opportunity lower bound: 3 pitcher(s) have no posted probable start and contribute zero until that changes.',
+        projection_caveat: 'Pitcher opportunity estimate: 11 active pitcher(s) use fractional expected starts from recent verified GS evidence; these are not posted probables. 6 pitcher(s) remain unmodeled and contribute zero.',
       },
       actions: [{
         id: 'waiver:test:add:drop',
@@ -215,7 +215,7 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByText('Read-only', { exact: true })).toBeVisible();
     await expect(page.getByText('Complete order · 5 steps', { exact: true })).toBeVisible();
     await expect(page.getByText('Bridge Two: OF → BN', { exact: true })).toBeVisible();
-    await expect(page.getByText(/Projection note: Known-opportunity lower bound: 3 pitcher/)).toBeVisible();
+    await expect(page.getByText(/Projection note: Pitcher opportunity estimate: 11 active pitcher/)).toBeVisible();
     await expect(page.getByText('1 hot swap')).toBeVisible();
     await expect(page.getByText('Leading by 6.1 · 2d left; this swap adds +2.4 projected points to protect the edge.')).toBeVisible();
     await expect(page.getByText('1 urgent · 1 check · 1 review')).toBeVisible();
@@ -589,10 +589,13 @@ test.describe('Today — Attention Queue', () => {
     await expect(review.getByText('Start Bench Bat over Cold Corner', { exact: true })).toBeVisible();
     await expect(review.getByText('Period 17', { exact: true })).toBeVisible();
     await expect(review.getByText('Projected matchup leverage', { exact: true })).toBeVisible();
+    await expect(review.getByText('Do nothing', { exact: true })).toBeVisible();
+    await expect(review.getByText('Make move', { exact: true })).toBeVisible();
     await expect(review.getByText('4.0 ahead', { exact: true })).toBeVisible();
     await expect(review.getByText('9.8 ahead', { exact: true })).toBeVisible();
     await expect(review.getByText('Win odds withheld', { exact: true })).toBeVisible();
-    await expect(review.getByText(/3 pitcher\(s\) have no posted probable start/)).toBeVisible();
+    await expect(review.getByText(/11 active pitcher\(s\) use fractional expected starts/)).toBeVisible();
+    await expect(review.getByText(/6 pitcher\(s\) remain unmodeled and contribute zero/)).toBeVisible();
     await expect(review.getByText('BN → UT', { exact: true })).toBeVisible();
     await expect(review.getByText('UT → BN', { exact: true })).toBeVisible();
     await expect(review.getByText(/Local owner bridge connected/)).toBeVisible();

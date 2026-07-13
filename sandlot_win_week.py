@@ -1226,7 +1226,11 @@ def _matchup_context(matchup: dict[str, Any], projection: dict[str, Any] | None)
         "win_probability": (projection or {}).get("win_probability") if (projection or {}).get("probability_calibrated") is True else None,
         "probability_calibrated": (projection or {}).get("probability_calibrated") is True,
         "opportunity_completeness": (projection or {}).get("opportunity_completeness"),
+        "active_pitchers": (projection or {}).get("active_pitchers") or 0,
+        "pitchers_using_posted_probable_only": (projection or {}).get("pitchers_using_posted_probable_only") or 0,
         "pitchers_without_probable_start": (projection or {}).get("pitchers_without_probable_start") or 0,
+        "pitchers_with_cadence_estimate": (projection or {}).get("pitchers_with_cadence_estimate") or 0,
+        "pitchers_without_opportunity_model": (projection or {}).get("pitchers_without_opportunity_model") or 0,
         "period_end": matchup.get("end"),
         "complete": bool(matchup.get("complete")),
     }
@@ -1276,11 +1280,7 @@ def _summary(
         "win_probability_excluded_reason": None
         if (projection or {}).get("probability_calibrated") is True
         else "Win probability is not calibrated; actions are ranked by projected remaining-week points.",
-        "projection_caveat": (
-            f"Known-opportunity lower bound: {(projection or {}).get('pitchers_without_probable_start')} pitcher(s) have no posted probable start and contribute zero until that changes."
-            if (projection or {}).get("opportunity_completeness") == "known_opportunities_lower_bound"
-            else None
-        ),
+        "projection_caveat": _projection_caveat(projection),
     }
     if (planning_horizon or {}).get("mode") == "editable_period":
         period = planning_horizon.get("period_number")
@@ -1293,6 +1293,27 @@ def _summary(
         if summary.get("outlook"):
             summary["outlook"] = str(summary["outlook"]).replace("remaining-week estimate", f"Period {period} estimate")
     return summary
+
+
+def _projection_caveat(projection: dict[str, Any] | None) -> str | None:
+    if not isinstance(projection, dict) or projection.get("opportunity_completeness") == "complete":
+        return None
+    estimated = int(projection.get("pitchers_with_cadence_estimate") or 0)
+    unmodeled = int(projection.get("pitchers_without_opportunity_model") or 0)
+    if estimated:
+        tail = (
+            f" {unmodeled} pitcher(s) remain unmodeled and contribute zero."
+            if unmodeled
+            else " Posted probable schedules are still incomplete."
+        )
+        return (
+            f"Pitcher opportunity estimate: {estimated} active pitcher(s) use fractional expected starts "
+            f"from recent verified GS evidence; these are not posted probables.{tail}"
+        )
+    return (
+        f"Known-opportunity lower bound: {unmodeled} pitcher(s) have no posted probable start or "
+        "verified cadence estimate and contribute zero until that changes."
+    )
 
 
 def _projected_margin(projection: dict[str, Any] | None) -> float | None:

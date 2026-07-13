@@ -50,12 +50,20 @@ It does not translate that arithmetic into a win-probability claim until the
 probability model is calibrated. The production monitor recomputes this margin
 identity and fails if the API or UI-facing summary drifts.
 
-When MLB schedule acquisition succeeds but one or more pitchers have no posted
-probable start, Sandlot returns a labeled `known_opportunities_lower_bound`
-instead of suppressing every hitter and lineup recommendation. Those pitchers
-contribute zero until MLB publishes a player-specific opportunity; the payload
-reports their count and win probability remains uncalibrated. A failed schedule
-read still blocks projection.
+When posted MLB probables are incomplete, Sandlot separates three mutually
+exclusive projection buckets: posted-probable-only, verified-GS cadence
+estimated, and unmodeled. Qualified active starters can use a frozen,
+fractional expected-start estimate from exact MLB identity, completed game-log
+`GS` rows, recent completed team games, and future team games. The UI reports
+how many pitchers use estimates and how many still contribute zero. These
+forecasts remain a non-complete opportunity cohort; probability and action
+probability deltas stay withheld. A failed base schedule read still blocks the
+projection, while an optional cadence-source failure preserves exact posted
+probables and records an explicit partial-evidence reason.
+
+Cadence is never executable evidence. Pitcher lineup proposals, exact-action
+contracts, live safety checks, and execution continue to require posted
+player-specific probable starts.
 
 ### No-action explanations
 

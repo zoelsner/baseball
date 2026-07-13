@@ -585,6 +585,42 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertEqual(plan["matchup"]["pitchers_without_probable_start"], 1)
         self.assertIn("1 pitcher(s)", plan["summary"]["projection_caveat"])
 
+    def test_plan_separates_verified_cadence_from_unmodeled_pitchers(self):
+        row = snapshot_row(free_agents=[])
+        row["data"]["roster"]["rows"].extend([
+            {
+                "id": "cadence", "name": "Cadence Starter", "team": "NYY", "slot": "SP",
+                "slot_source": "raw.lineupSlot", "positions": "SP", "all_positions": ["SP"],
+                "fppg": 10.0, "future_games": [], "team_future_games": [game(14)],
+                "future_games_source": "mlb_schedule",
+                "future_games_status": "pitcher_probables_unavailable",
+                "future_games_scope": "pitcher_probable_starts",
+                "pitcher_opportunity_estimate": {
+                    "version": "verified_gs_cadence_v1",
+                    "state": "estimated", "expected_starts": 1.4,
+                    "period_window": {"start": "2026-05-14", "end": "2026-05-17"},
+                    "action_eligible": False, "probability_release_eligible": False,
+                },
+            },
+            {
+                "id": "unknown", "name": "Unknown RP", "team": "NYY", "slot": "RP",
+                "slot_source": "raw.lineupSlot", "positions": "RP", "all_positions": ["RP"],
+                "fppg": 4.0, "future_games": [], "team_future_games": [game(14)],
+                "future_games_source": "mlb_schedule",
+                "future_games_status": "pitcher_probables_unavailable",
+                "future_games_scope": "pitcher_probable_starts",
+            },
+        ])
+
+        plan = sandlot_win_week.build_plan(row, now=NOW)
+
+        self.assertEqual(plan["matchup"]["opportunity_completeness"], "partial_estimated_pitcher_opportunities")
+        self.assertEqual(plan["matchup"]["pitchers_with_cadence_estimate"], 1)
+        self.assertEqual(plan["matchup"]["pitchers_without_opportunity_model"], 1)
+        caveat = plan["summary"]["projection_caveat"]
+        self.assertIn("fractional expected starts", caveat)
+        self.assertIn("1 pitcher(s) remain unmodeled", caveat)
+
     def test_aaron_judge_never_appears_as_a_waiver_move_out(self):
         roster = [
             roster_player("judge", "Aaron Judge", slot="OF", positions="OF", fppg=0.5, age=34),

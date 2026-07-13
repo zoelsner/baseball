@@ -302,6 +302,8 @@ def matchup_probability_readiness() -> dict[str, Any]:
     readiness = report.get("release_readiness") or {}
     current = plan.get("matchup") if isinstance(plan.get("matchup"), dict) else {}
     unknown_pitchers = max(0, int(current.get("pitchers_without_probable_start") or 0))
+    estimated_pitchers = max(0, int(current.get("pitchers_with_cadence_estimate") or 0))
+    unmodeled_pitchers = max(0, int(current.get("pitchers_without_opportunity_model") or 0))
     opportunity_complete = (
         current.get("opportunity_completeness") == "complete" and unknown_pitchers == 0
     )
@@ -333,7 +335,11 @@ def matchup_probability_readiness() -> dict[str, Any]:
         "current_forecast": {
             "planning_horizon": plan.get("planning_horizon") or {},
             "opportunity_completeness": current.get("opportunity_completeness"),
+            "active_pitchers": int(current.get("active_pitchers") or 0),
+            "pitchers_using_posted_probable_only": int(current.get("pitchers_using_posted_probable_only") or 0),
             "pitchers_without_probable_start": unknown_pitchers,
+            "pitchers_with_cadence_estimate": estimated_pitchers,
+            "pitchers_without_opportunity_model": unmodeled_pitchers,
         },
         "current_applicability": {
             "state": applicability_state,

@@ -1513,12 +1513,12 @@ function V2ActionReviewSheet({ action, handoff, plan, onAskSkipper, onClose }) {
             {marginBefore && marginAfter ? (
               <div style={{ marginTop:10, display:'grid', gridTemplateColumns:'1fr auto 1fr', alignItems:'center', gap:10 }}>
                 <div style={{ minWidth:0 }}>
-                  <div style={{ color:V2.muted, fontSize:10.5, lineHeight:1, fontWeight:800 }}>Before</div>
+                  <div style={{ color:V2.muted, fontSize:10.5, lineHeight:1, fontWeight:800 }}>Do nothing</div>
                   <div style={{ marginTop:5, color:V2.body, fontFamily:V2.fontMono, fontSize:14, lineHeight:1.15, fontWeight:900, fontVariantNumeric:'tabular-nums' }}>{marginBefore}</div>
                 </div>
                 <span aria-hidden="true" style={{ color:V2.accent, fontSize:18, lineHeight:1, fontWeight:900 }}>→</span>
                 <div style={{ minWidth:0, textAlign:'right' }}>
-                  <div style={{ color:V2.muted, fontSize:10.5, lineHeight:1, fontWeight:800 }}>After</div>
+                  <div style={{ color:V2.muted, fontSize:10.5, lineHeight:1, fontWeight:800 }}>Make move</div>
                   <div style={{ marginTop:5, color:V2.accent, fontFamily:V2.fontMono, fontSize:14, lineHeight:1.15, fontWeight:900, fontVariantNumeric:'tabular-nums' }}>{marginAfter}</div>
                 </div>
               </div>

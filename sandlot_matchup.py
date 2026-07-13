@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 import sandlot_future_games
+import sandlot_pitcher_opportunities
 
 
 INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH", "MIN", "MINORS"}
@@ -24,7 +25,7 @@ PROTECTED_PLAYER_FLAGS = {
     "is_minor_leaguer",
 }
 UNAVAILABLE_INJURIES = {"OUT", "SUSP", "SUSPENDED", "IL", "IL10", "IL60", "IR"}
-MODEL_VERSION = "matchup_projection_v4"
+MODEL_VERSION = "matchup_projection_v5"
 MAX_ABS_FPPG = 100.0
 MIN_MEANINGFUL_POINTS_DELTA = 1.0
 MIN_MEANINGFUL_WIN_PROBABILITY_DELTA = 0.01
@@ -107,7 +108,7 @@ def compute_projection(
         win_probability = _deterministic_prob(my_score - opp_score)
         return {
             "model_version": MODEL_VERSION,
-            "scoring_basis": "current_snapshot_fppg_x_remaining_games",
+            "scoring_basis": "current_snapshot_fppg_x_remaining_opportunities",
             "probability_calibrated": False,
             "projected_my": projected_my,
             "projected_opp": projected_opp,
@@ -123,6 +124,7 @@ def compute_projection(
                 opp_games=0,
                 win_probability=win_probability,
                 data_quality=data_quality,
+                opportunity_completeness="complete",
             ),
             "complete": True,
         }
@@ -142,8 +144,18 @@ def compute_projection(
 
     mu_my, var_my, my_games = _team_projection(my_rows, my_score, period_end, period_start)
     mu_opp, var_opp, opp_games = _team_projection(opp_rows, opp_score, period_end, period_start)
-    unmodeled_pitchers = _unmodeled_pitcher_count(my_rows) + _unmodeled_pitcher_count(opp_rows)
-    opportunity_completeness = "known_opportunities_lower_bound" if unmodeled_pitchers else "complete"
+    pitcher_coverage = _pitcher_opportunity_summary(my_rows + opp_rows, period_end, period_start)
+    unmodeled_pitchers = pitcher_coverage["pitchers_without_opportunity_model"]
+    estimated_pitchers = pitcher_coverage["pitchers_with_cadence_estimate"]
+    missing_probables = pitcher_coverage["pitchers_without_probable_start"]
+    if estimated_pitchers and unmodeled_pitchers:
+        opportunity_completeness = "partial_estimated_pitcher_opportunities"
+    elif estimated_pitchers:
+        opportunity_completeness = "estimated_pitcher_opportunities"
+    elif unmodeled_pitchers:
+        opportunity_completeness = "known_opportunities_lower_bound"
+    else:
+        opportunity_completeness = "complete"
     known_zero_schedule = bool(
         isinstance(data_quality, dict)
         and isinstance(data_quality.get("projection_future_games"), dict)
@@ -157,14 +169,19 @@ def compute_projection(
     win_probability = round(_win_prob(mu_my, var_my, mu_opp, var_opp), 4)
     return {
         "model_version": MODEL_VERSION,
-        "scoring_basis": "current_snapshot_fppg_x_remaining_games",
+        "scoring_basis": "current_snapshot_fppg_x_remaining_opportunities",
         "probability_calibrated": False,
         "projected_my": projected_my,
         "projected_opp": projected_opp,
         "my_remaining_games": my_games,
         "opp_remaining_games": opp_games,
         "opportunity_completeness": opportunity_completeness,
-        "pitchers_without_probable_start": unmodeled_pitchers,
+        "active_pitchers": pitcher_coverage["active_pitchers"],
+        "pitchers_with_posted_probable": pitcher_coverage["pitchers_with_posted_probable"],
+        "pitchers_using_posted_probable_only": pitcher_coverage["pitchers_using_posted_probable_only"],
+        "pitchers_without_probable_start": missing_probables,
+        "pitchers_with_cadence_estimate": estimated_pitchers,
+        "pitchers_without_opportunity_model": unmodeled_pitchers,
         "win_probability": win_probability,
         "drivers": _drivers(
             my_score=my_score,
@@ -175,6 +192,12 @@ def compute_projection(
             opp_games=opp_games,
             win_probability=win_probability,
             data_quality=data_quality,
+            opportunity_completeness=opportunity_completeness,
+            active_pitchers=pitcher_coverage["active_pitchers"],
+            pitchers_using_posted_probable_only=pitcher_coverage["pitchers_using_posted_probable_only"],
+            pitchers_without_probable_start=missing_probables,
+            pitchers_with_cadence_estimate=estimated_pitchers,
+            pitchers_without_opportunity_model=unmodeled_pitchers,
         ),
         "complete": False,
     }
@@ -2256,12 +2279,12 @@ def _team_projection(
     current_score: float,
     period_end: date,
     period_start: date | None = None,
-) -> tuple[float, float, int]:
+) -> tuple[float, float, float]:
     mean_delta = 0.0
     variance = 0.0
     games_remaining = 0
     for row in _active_rows(rows):
-        games = _games_remaining(row, period_end, period_start)
+        games = _projection_opportunities(row, period_end, period_start)
         fppg = _row_fppg(row)
         delta = fppg * games
         mean_delta += delta
@@ -2270,7 +2293,7 @@ def _team_projection(
         # sides had zero/negative rates despite scheduled games still ahead.
         variance += max(1.0, abs(fppg)) * games
         games_remaining += games
-    return current_score + mean_delta, variance, games_remaining
+    return current_score + mean_delta, variance, round(games_remaining, 4)
 
 
 def _win_prob(mu_my: float, var_my: float, mu_opp: float, var_opp: float) -> float:
@@ -2288,10 +2311,16 @@ def _drivers(
     opp_score: float,
     projected_my: float,
     projected_opp: float,
-    my_games: int,
-    opp_games: int,
+    my_games: float,
+    opp_games: float,
     win_probability: float,
     data_quality: dict[str, Any] | None,
+    opportunity_completeness: str = "complete",
+    active_pitchers: int = 0,
+    pitchers_using_posted_probable_only: int = 0,
+    pitchers_without_probable_start: int = 0,
+    pitchers_with_cadence_estimate: int = 0,
+    pitchers_without_opportunity_model: int = 0,
 ) -> dict[str, Any]:
     current_margin = round(my_score - opp_score, 1)
     projected_margin = round(projected_my - projected_opp, 1)
@@ -2309,15 +2338,13 @@ def _drivers(
         "rest_of_period_delta": rest_of_period_delta,
         "game_volume_edge": game_volume_edge,
         "risk_level": risk_level,
-        "opportunity_scope": "hitters plus pitcher-specific starts/appearances",
-        "opportunity_completeness": (
-            "known_opportunities_lower_bound"
-            if ((data_quality or {}).get("projection_future_games") or {}).get("pitchers_without_probable_start")
-            else "complete"
-        ),
-        "pitchers_without_probable_start": (
-            ((data_quality or {}).get("projection_future_games") or {}).get("pitchers_without_probable_start") or 0
-        ),
+        "opportunity_scope": "hitter team games plus posted starts and frozen verified-GS starter cadence",
+        "opportunity_completeness": opportunity_completeness,
+        "active_pitchers": active_pitchers,
+        "pitchers_using_posted_probable_only": pitchers_using_posted_probable_only,
+        "pitchers_without_probable_start": pitchers_without_probable_start,
+        "pitchers_with_cadence_estimate": pitchers_with_cadence_estimate,
+        "pitchers_without_opportunity_model": pitchers_without_opportunity_model,
         "summary": _driver_summary(current_margin, projected_margin, rest_of_period_delta, game_volume_edge),
     }
 
@@ -2368,11 +2395,11 @@ def _driver_summary(
     projected = _margin_phrase(projected_margin, "projected")
     swing = _signed(rest_of_period_delta)
     if game_volume_edge > 0:
-        volume = f"You have {game_volume_edge:g} more remaining game{'s' if game_volume_edge != 1 else ''}."
+        volume = f"You have {game_volume_edge:g} more remaining scoring opportunit{'ies' if game_volume_edge != 1 else 'y'}."
     elif game_volume_edge < 0:
-        volume = f"The opponent has {abs(game_volume_edge):g} more remaining game{'s' if game_volume_edge != -1 else ''}."
+        volume = f"The opponent has {abs(game_volume_edge):g} more remaining scoring opportunit{'ies' if game_volume_edge != -1 else 'y'}."
     else:
-        volume = "Remaining game volume is even."
+        volume = "Remaining scoring-opportunity volume is even."
     return f"{current}; {projected}. Rest-of-period swing is {swing} points. {volume}"
 
 
@@ -2452,13 +2479,52 @@ def _active_rows_have_valid_fppg(rows: list[dict[str, Any]]) -> bool:
     return all(_row_fppg_value(row) is not None for row in _active_rows(rows))
 
 
-def _unmodeled_pitcher_count(rows: list[dict[str, Any]]) -> int:
-    return sum(
-        1
-        for row in _active_rows(rows)
-        if _is_pitcher_row(row)
-        and str(row.get("future_games_status") or "") == "pitcher_probables_unavailable"
-    )
+def _projection_opportunities(
+    row: dict[str, Any],
+    period_end: date,
+    period_start: date | None = None,
+) -> float:
+    """Return exact games plus any frozen, projection-only GS expectation."""
+    exact = float(_games_remaining(row, period_end, period_start))
+    if not _is_pitcher_row(row):
+        return exact
+    evidence = row.get("pitcher_opportunity_estimate")
+    expected = sandlot_pitcher_opportunities.valid_projection_estimate(evidence, period_end)
+    if expected is None:
+        return exact
+    return max(exact, expected)
+
+
+def _pitcher_opportunity_summary(
+    rows: list[dict[str, Any]],
+    period_end: date,
+    period_start: date | None = None,
+) -> dict[str, int]:
+    summary = {
+        "active_pitchers": 0,
+        "pitchers_with_posted_probable": 0,
+        "pitchers_using_posted_probable_only": 0,
+        "pitchers_without_probable_start": 0,
+        "pitchers_with_cadence_estimate": 0,
+        "pitchers_without_opportunity_model": 0,
+    }
+    for row in _active_rows(rows):
+        if not _is_pitcher_row(row):
+            continue
+        summary["active_pitchers"] += 1
+        exact = _games_remaining(row, period_end, period_start)
+        projected = _projection_opportunities(row, period_end, period_start)
+        if exact > 0:
+            summary["pitchers_with_posted_probable"] += 1
+        else:
+            summary["pitchers_without_probable_start"] += 1
+        if projected > exact:
+            summary["pitchers_with_cadence_estimate"] += 1
+        elif exact > 0:
+            summary["pitchers_using_posted_probable_only"] += 1
+        elif exact <= 0:
+            summary["pitchers_without_opportunity_model"] += 1
+    return summary
 
 
 def _is_unavailable(row: dict[str, Any]) -> bool:

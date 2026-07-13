@@ -5,6 +5,18 @@
 
 ## Where things stand
 
+- **Verified starter cadence in progress:** `matchup_projection_v5` can now
+  supplement missing posted probables with a frozen `verified_gs_cadence_v1`
+  fractional expectation for active SP rows. The enrichment binds exact MLB
+  player/current-team identity, refreshes cached pitching logs, requires recent
+  verified `GS`, and scales starts by completed/future team games. Estimated
+  forecasts remain in a non-complete cohort, precise/action win probability is
+  withheld, and proposal/execution preflight remains posted-probable-only.
+  Reliever appearances remain explicitly unmodeled. A frozen production #285
+  dry run recovered 11 cadence estimates, left 6 pitchers unmodeled, and moved
+  the informational projection from 268.9–274.8 to 409.2–393.4 without any
+  Fantrax or production-table write.
+
 - **Recommendation learning report in progress (#133):** a sanitized public
   report now aggregates the append-only `counterfactual_lineup_v1` ledger into
   scored/unavailable counts, accepted-and-observed decisions, actual lineup
