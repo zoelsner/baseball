@@ -1746,6 +1746,9 @@ function V2RecommendationReceipt({ sync, onAskSkipper }) {
   const moves = v2ReceiptMoves(receipt);
   const pending = receipt?.decision_state === 'pending';
   const canDecide = pending && bridge.state === 'ready' && bridge.decisionsEnabled;
+  const localReviewHref = receipt?.receipt_id && receipt?.input_hash
+    ? `${V2_OWNER_BRIDGE_URL}/recommendation-receipts/${encodeURIComponent(receipt.receipt_id)}/review?input_hash=${encodeURIComponent(receipt.input_hash)}`
+    : null;
   const decisionLabel = receipt?.decision_state === 'accepted' ? 'Using this plan' : receipt?.decision_state === 'rejected' ? 'Passed' : 'Awaiting your call';
   const prompt = `Pressure-test this weekly lineup receipt. It projects ${gain === null ? 'an unscored change' : `${v2Signed(gain, 1)} points`} for ${receipt?.period?.start || 'the coming week'}. Explain the assumptions, downside, and whether I should use it. Receipt ${receipt?.receipt_id}.`;
   return (
@@ -1805,12 +1808,14 @@ function V2RecommendationReceipt({ sync, onAskSkipper }) {
       ) : null}
       {pending && !canDecide ? (
         <div style={{ marginTop:12, color:V2.muted, fontSize:11.5, lineHeight:1.45, fontWeight:700, textWrap:'pretty' }}>
-          {bridge.state === 'connecting' ? 'Checking for owner controls on this Mac…' : 'Open Sandlot on your Mac with the local owner bridge running to record this decision.'}
+          {bridge.state === 'connecting'
+            ? 'Checking for owner controls on this Mac…'
+            : 'Owner controls could not connect inside this page. First start the local owner bridge on this Mac. Then use the local review below; if the bridge is already running, the link bypasses the blocked in-page check.'}
         </div>
       ) : null}
       {decisionState.error ? <div role="alert" style={{ marginTop:10, color:V2.bad, fontSize:11.5, lineHeight:1.4, fontWeight:750 }}>{decisionState.error}</div> : null}
 
-      <div style={{ marginTop:13, display:'grid', gridTemplateColumns:canDecide ? '1fr 1fr' : '1fr', gap:8 }}>
+      <div style={{ marginTop:13, display:'grid', gridTemplateColumns:canDecide || (pending && bridge.state === 'offline' && localReviewHref) ? '1fr 1fr' : '1fr', gap:8 }}>
         {canDecide ? (
           <>
             <button onClick={()=>decide('accepted')} disabled={decisionState.state === 'saving'} style={{ minHeight:44, border:'none', borderRadius:999, background:V2.ink, color:'#fff', fontFamily:'inherit', fontSize:12, fontWeight:850, cursor:decisionState.state === 'saving' ? 'wait' : 'pointer', padding:'10px 12px', opacity:decisionState.state === 'saving' ? 0.65 : 1 }}>
@@ -1821,9 +1826,16 @@ function V2RecommendationReceipt({ sync, onAskSkipper }) {
             </button>
           </>
         ) : (
-          <button onClick={()=>onAskSkipper(prompt)} style={{ minHeight:44, border:`1px solid ${V2.hairline}`, borderRadius:999, background:V2.surface, color:V2.body, fontFamily:'inherit', fontSize:12, fontWeight:850, cursor:'pointer', padding:'10px 12px' }}>
-            Ask Skipper about this plan
-          </button>
+          <>
+            {pending && bridge.state === 'offline' && localReviewHref ? (
+              <a href={localReviewHref} target="_blank" rel="noopener noreferrer" style={{ minHeight:44, border:'none', borderRadius:999, background:V2.ink, color:'#fff', fontFamily:'inherit', fontSize:12, fontWeight:850, cursor:'pointer', padding:'10px 12px', display:'flex', alignItems:'center', justifyContent:'center', textAlign:'center', textDecoration:'none' }}>
+                Review on this Mac · bridge required
+              </a>
+            ) : null}
+            <button onClick={()=>onAskSkipper(prompt)} style={{ minHeight:44, border:`1px solid ${V2.hairline}`, borderRadius:999, background:V2.surface, color:V2.body, fontFamily:'inherit', fontSize:12, fontWeight:850, cursor:'pointer', padding:'10px 12px' }}>
+              Ask Skipper about this plan
+            </button>
+          </>
         )}
       </div>
     </section>

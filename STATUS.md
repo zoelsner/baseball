@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-13** (on-demand trade research in progress).
+> Last updated: **2026-07-13** (local recommendation review handoff in progress).
 
 ## Where things stand
 
@@ -84,9 +84,13 @@
   latest-receipt read API, owner-authenticated accept/reject recording with
   exact hash/expiry/CAS guards, a loopback owner-bridge proxy that keeps the
   bearer local, and a Today card with measurable gain plus exact start/bench
-  deltas. Accept/reject records intent only and explicitly does not change
-  Fantrax. Mobile and bridge-offline use remains read-only. Outcome scoring is
-  the next receipt loop before any lineup action can earn autopilot.
+  deltas. A focused follow-up replaces the dead bridge-offline state with a
+  top-level local review link: the bridge refetches the exact active receipt,
+  shows its period/impact/assignment changes, and records only an explicit
+  nonce-bound same-origin “use” or “pass” click. This avoids Chromium's blocked
+  HTTPS-to-loopback fetch without exposing the owner token or adding a Fantrax
+  write. Bridge-absent use remains read-only. Outcome scoring is the next
+  receipt loop before any lineup action can earn autopilot.
 
 - **One-click proposal safety check in progress:** the exact-action review
   sheet can connect to a loopback-only owner bridge and submit the immutable

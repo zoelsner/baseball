@@ -83,8 +83,12 @@ test.describe('Today recommendation receipt', () => {
     await expect(card.getByText(/^\+21\.8/)).toBeVisible();
     await expect(card.getByText('Bench Bat (OF)', { exact:true })).toBeVisible();
     await expect(card.getByText('Current Starter', { exact:true })).toBeVisible();
-    await expect(card.getByText(/Open Sandlot on your Mac with the local owner bridge/)).toBeVisible();
+    await expect(card.getByText(/First start the local owner bridge on this Mac/)).toBeVisible();
     await expect(card.getByRole('button', { name:'I’ll use this lineup' })).toHaveCount(0);
+    await expect(card.getByRole('link', { name:'Review on this Mac · bridge required' })).toHaveAttribute(
+      'href',
+      `http://127.0.0.1:8765/recommendation-receipts/${encodeURIComponent(RECEIPT_ID)}/review?input_hash=${HASH}`,
+    );
     await expect(card.getByRole('button', { name:'Ask Skipper about this plan' })).toBeVisible();
   });
 

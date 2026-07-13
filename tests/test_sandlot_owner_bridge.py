@@ -268,6 +268,153 @@ class OwnerBridgeTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def test_local_review_page_records_exact_intent_without_exposing_owner_token(self):
+        receipt_id = f"monday-lineup:{'a' * 64}"
+        receipt = {
+            "receipt_id": receipt_id,
+            "input_hash": "a" * 64,
+            "source": "monday_lineup",
+            "lifecycle_state": "active",
+            "decision_state": "pending",
+            "period": {"start": "2026-07-13", "end": "2026-07-19"},
+            "evaluation": {"projected_gain": 18.9},
+            "baseline_assignment": [
+                {"player_id": "p1", "player_name": "Daylen Lile", "slot": "RES"},
+                {"player_id": "p2", "player_name": "Current Starter", "slot": "OF"},
+            ],
+            "proposed_assignment": [
+                {"player_id": "p1", "player_name": "Daylen Lile", "slot": "OF"},
+                {"player_id": "p2", "player_name": "Current Starter", "slot": "RES"},
+            ],
+            "unfilled_slots": ["SP"],
+            "read_only": True,
+            "fantrax_changed": False,
+            "writes_enabled": False,
+        }
+        accepted = {
+            **receipt,
+            "decision_state": "accepted",
+            "changed": True,
+        }
+        http = FakeHttp([FakeResponse(200, receipt), FakeResponse(200, accepted)])
+        bridge = self.make_bridge(http)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), sandlot_owner_bridge.make_handler(bridge))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        browser_path = receipt_id.replace(":", "%3A")
+        review_url = f"{base}/recommendation-receipts/{browser_path}/review?input_hash={'a' * 64}"
+        form_url = f"{base}/recommendation-receipts/{browser_path}/review"
+        try:
+            review = requests.get(review_url, timeout=2)
+            self.assertEqual(review.status_code, 200)
+            self.assertIn("Review this lineup plan", review.text)
+            self.assertIn("Start Daylen Lile in OF", review.text)
+            self.assertIn("Bench Current Starter from OF", review.text)
+            self.assertIn("Leave SP unfilled (lineup hole)", review.text)
+            self.assertIn("+18.9 projected points", review.text)
+            self.assertIn("This page cannot change Fantrax", review.text)
+            self.assertNotIn("owner-secret-long-enough", review.text)
+            self.assertIn("frame-ancestors 'none'", review.headers["Content-Security-Policy"])
+
+            decided = requests.post(
+                form_url,
+                headers={"Origin": base},
+                data={"nonce": bridge.nonce, "decision": "accepted", "input_hash": "a" * 64},
+                timeout=2,
+            )
+            self.assertEqual(decided.status_code, 200)
+            self.assertIn("Decision recorded. Fantrax was not changed.", decided.text)
+            self.assertIn("Using this plan", decided.text)
+            self.assertEqual(http.calls[0][0:2], ("GET", "https://sandlot.example.test/api/recommendation-receipts/latest"))
+            self.assertEqual(http.calls[1][0], "POST")
+            self.assertEqual(http.calls[1][2]["json"], {"decision": "accepted", "input_hash": "a" * 64})
+            for _method, _url, kwargs in http.calls:
+                self.assertEqual(kwargs["headers"]["authorization"], "Bearer owner-secret-long-enough")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_local_review_form_rejects_cross_origin_and_stale_receipt(self):
+        receipt_id = f"monday-lineup:{'a' * 64}"
+        receipt = {
+            "receipt_id": receipt_id,
+            "input_hash": "b" * 64,
+            "source": "monday_lineup",
+            "lifecycle_state": "active",
+            "decision_state": "pending",
+            "period": {"start": "2026-07-13", "end": "2026-07-19"},
+            "evaluation": {"projected_gain": 1.0},
+            "baseline_assignment": [],
+            "proposed_assignment": [],
+            "unfilled_slots": [],
+            "read_only": True,
+            "fantrax_changed": False,
+            "writes_enabled": False,
+        }
+        http = FakeHttp([FakeResponse(200, receipt)])
+        bridge = self.make_bridge(http)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), sandlot_owner_bridge.make_handler(bridge))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        browser_path = receipt_id.replace(":", "%3A")
+        try:
+            stale = requests.get(
+                f"{base}/recommendation-receipts/{browser_path}/review?input_hash={'a' * 64}",
+                timeout=2,
+            )
+            self.assertEqual(stale.status_code, 409)
+            self.assertIn("recommendation changed", stale.text)
+
+            blocked = requests.post(
+                f"{base}/recommendation-receipts/{browser_path}/review",
+                headers={"Origin": "https://attacker.example"},
+                data={"nonce": bridge.nonce, "decision": "accepted", "input_hash": "a" * 64},
+                timeout=2,
+            )
+            self.assertEqual(blocked.status_code, 403)
+            self.assertEqual(len(http.calls), 1)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_local_review_rejects_assignments_that_cannot_be_rendered_losslessly(self):
+        receipt_id = f"monday-lineup:{'a' * 64}"
+        base = {
+            "receipt_id": receipt_id,
+            "input_hash": "a" * 64,
+            "source": "monday_lineup",
+            "lifecycle_state": "active",
+            "decision_state": "pending",
+            "period": {"start": "2026-07-13", "end": "2026-07-19"},
+            "evaluation": {"projected_gain": 1.0},
+            "baseline_assignment": [
+                {"player_id": "p1", "player_name": "Current Starter", "slot": "OF"},
+            ],
+            "proposed_assignment": [
+                {"player_id": "p2", "player_name": "Bench Bat", "slot": "OF"},
+            ],
+            "unfilled_slots": [],
+            "read_only": True,
+            "fantrax_changed": False,
+            "writes_enabled": False,
+        }
+        cases = [
+            ({**base, "proposed_assignment": [{"player_id": "p2", "slot": "OF"}]}, "incomplete proposed assignment"),
+            ({**base, "proposed_assignment": [base["proposed_assignment"][0], base["proposed_assignment"][0]]}, "duplicate player"),
+            ({key: value for key, value in base.items() if key != "unfilled_slots"}, "unfilled slots"),
+            ({**base, "proposed_assignment": base["baseline_assignment"]}, "reviewable assignment change"),
+        ]
+        for receipt, expected in cases:
+            with self.subTest(expected=expected):
+                bridge = self.make_bridge(FakeHttp([FakeResponse(200, receipt)]))
+                status, payload = bridge.recommendation(receipt_id, "a" * 64)
+                self.assertEqual(status, 409)
+                self.assertIn(expected, payload["detail"])
+
     def test_status_rejects_path_traversal_and_unknown_request_ids_without_upstream_call(self):
         http = FakeHttp()
         bridge = self.make_bridge(http)

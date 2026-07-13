@@ -102,6 +102,16 @@ one-time local-network permission prompt instead of silently blocking the
 health check. Denying that permission leaves the bridge offline and the
 confirmation button disabled.
 
+Recommendation receipts also have a transport fallback that does not weaken
+this boundary. When the in-page health probe is blocked, Today links to an
+exact top-level `http://127.0.0.1:8765/recommendation-receipts/.../review`
+page. The bridge refetches the latest active receipt with its local bearer,
+requires the URL's receipt ID and input hash to match, displays the exact
+assignment changes, and accepts only a nonce-bound same-origin form click.
+The page records owner intent only; it cannot create an execution request or
+change Fantrax. Exact-action dry-run requests still use the live in-page bridge
+handshake and separate visible runner described above.
+
 The bridge binds only to loopback, requires the exact configured production
 origin, validates the loopback Host header, requires a per-process nonce on
 state-changing/status requests, answers Private Network Access preflight, caps
