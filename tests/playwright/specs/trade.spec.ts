@@ -158,10 +158,13 @@ test.describe('Trade page', () => {
     await mockTradeAdvisor(page);
     let skipperSubmitted: any = null;
     let skipperPostCount = 0;
+    let releaseSkipper!: () => void;
+    const skipperGate = new Promise<void>(resolve => { releaseSkipper = resolve; });
     await page.route('**/api/skipper/messages', async route => {
       if (route.request().method() !== 'POST') return route.fallback();
       skipperSubmitted = route.request().postDataJSON();
       skipperPostCount += 1;
+      await skipperGate;
       await route.fulfill({
         status:200,
         contentType:'text/event-stream',
@@ -224,6 +227,8 @@ test.describe('Trade page', () => {
     await expect(review.getByText(/no trade is answered or sent/i)).toBeVisible();
     await expect(incoming.getByText(/incomplete, stale, or includes terms/i)).toHaveCount(0);
     await review.getByRole('button', { name:'Research this trade in Skipper' }).click();
+    await expect(page.getByText(/Researching cited evidence and applying Sandlot guardrails/i)).toBeVisible();
+    releaseSkipper();
     await expect(page.getByText(/Verdict: HOLD/)).toBeVisible();
     await expect(page.getByRole('button', { name:'Reasoning on' })).toBeVisible();
     await expect(page.getByRole('button', { name:'Web fallback on' })).toBeVisible();

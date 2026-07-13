@@ -22,8 +22,19 @@
   fallbacks retain the search tool, and leaving Skipper cancels queued research.
   Search execution, citation availability, and cumulative fallback request
   counts remain separate so verification and spend are not overstated. Current
-  verification: 562 Python tests pass (2 disposable-Postgres tests skipped),
+  verification: 573 Python tests pass (2 disposable-Postgres tests skipped),
   plus all 11 trade and 4 Skipper web mobile browser journeys.
+  Production proof on the live Alonso-for-Ragans/Jones/Frias offer returned a
+  sourced eight-section verdict, but the model improperly converted current
+  FP/G into weekly/ROS point totals and took about 95 seconds. The follow-up
+  now buffers the model draft, then constructs the visible eight-section answer
+  from deterministic weekly/ROS/replacement/do-nothing/safest-action evidence
+  plus bounded dynasty and roster-fit context. Unsupported draft math is never
+  streamed or persisted. Safe progress frames start immediately and repeat
+  every 12 seconds so the measured ~95-second research call stays alive without
+  exposing draft text. The worker handoff is bounded and client disconnects
+  directly close the per-request provider stream and transport, including the
+  pre-token wait; end-user latency remains a measured follow-up.
 
 - **Verified starter cadence in progress:** `matchup_projection_v5` can now
   supplement missing posted probables with a frozen `verified_gs_cadence_v1`

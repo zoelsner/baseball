@@ -1,10 +1,11 @@
 import os
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import sandlot_skipper
-from sandlot_api import sandlot_index, skipper_options
+from sandlot_api import _web_search_evidence, sandlot_index, skipper_options
 
 
 class SkipperModelConfigTests(unittest.TestCase):
@@ -79,6 +80,128 @@ class SkipperModelConfigTests(unittest.TestCase):
         self.assertIn('never invent weekly/ROS/dynasty numbers', sandlot_skipper.SYSTEM_PROMPT)
         self.assertIn('never tell the user to accept automatically', sandlot_skipper.SYSTEM_PROMPT)
 
+    def test_web_search_evidence_infers_execution_from_citations_without_overstating_verification(self):
+        self.assertEqual(_web_search_evidence([], 0), (0, False, False))
+        self.assertEqual(
+            _web_search_evidence([{"url": "https://www.mlb.com/example"}], 0),
+            (1, True, True),
+        )
+        self.assertEqual(_web_search_evidence([], 2), (2, True, False))
+
+    def test_trade_reply_enforces_withheld_horizons_after_model_generation(self):
+        prompt = (
+            "Sandlot trade-analysis evidence: exact offer. "
+            "The blocked evidence is: Cole Ragans: Currently on IR; return timing is not modeled.. "
+            "The do-nothing alternative is to keep Pete Alonso at a verified current snapshot package rate of 3.08 FP/G. "
+            "Roster consequence: moves out 1B. Internal replacement evidence: "
+            "Best reserve cover: Andrew Vaughn (-0.78 FP/G vs outgoing). "
+            "Current counter direction: ask for healthy value."
+        )
+        raw = """## Verdict: REJECT
+
+### Weekly Impact — Uncertainty: Low
+You lose 3.08 FP/G and gain zero this week.
+
+### Rest-of-Season — Uncertainty: Medium
+Net ROS impact: lose 150+ remaining FPts.
+
+### Dynasty — Uncertainty: High
+The long-term case depends on health and prospect risk.
+
+### Replacement Value — Uncertainty: Low
+Over nine games, the downgrade is 5.8–7.4 points.
+
+### Do Nothing — Uncertainty: Low
+Alonso gives you 3.08 FP/G for the rest of 2026.
+"""
+
+        repaired = sandlot_skipper.repair_reply(raw, prompt, {})
+
+        self.assertIn("Sandlot evidence guardrail applied", repaired)
+        self.assertIn("withholds a weekly Fantrax point delta", repaired)
+        self.assertIn("No rest-of-season point total is claimed", repaired)
+        self.assertIn("Best reserve cover: Andrew Vaughn (-0.78 FP/G vs outgoing)", repaired)
+        self.assertIn("keep Pete Alonso at a verified current snapshot package rate of 3.08 FP/G", repaired)
+        self.assertIn("The long-term case depends on health and prospect risk", repaired)
+        self.assertNotIn("lose 150+", repaired)
+        self.assertNotIn("5.8–7.4", repaired)
+        self.assertNotIn("for the rest of 2026", repaired)
+
+    def test_trade_reply_accepts_common_exact_headings_and_drops_combined_sections(self):
+        prompt = (
+            "Sandlot trade-analysis evidence: exact offer. "
+            "The blocked evidence is: health evidence is incomplete.. "
+            "The do-nothing alternative is to keep the outgoing player at 2.0 FP/G. "
+            "Roster consequence: moves out 2B and brings in OF. "
+            "Internal replacement evidence: Reserve cover is -0.5 FP/G. "
+            "Current counter direction: ask for healthy value. Run a deep, on-demand trade analysis"
+        )
+        raw = """**Verdict: COUNTER**
+
+**Weekly Impact**
+Invented 20-point swing.
+
+2. Rest of Season
+Invented 100 FPts.
+
+Dynasty:
+The young asset has upside, but surgery creates long-term risk.
+**Health risk:** Two prior surgeries add uncertainty.
+1. Jones still has starter upside if his recovery holds.
+
+### Weekly Impact / Roster Fit
+This combined section must not be treated as roster fit.
+
+4. Roster Fit — Uncertainty: Medium
+The package adds pitching depth without filling the open infield role.
+
+### Replacement Value and Dynasty
+This combined section must not replace either exact section.
+
+Dynasty:
+This exact section is allowed.
+Weekly Impact / Roster Fit:
+This plain combined section must fail closed too.
+"""
+
+        repaired = sandlot_skipper.repair_reply(raw, prompt, {})
+
+        self.assertIn("## Verdict: **COUNTER**", repaired)
+        self.assertIn("The young asset has upside, but surgery creates long-term risk", repaired)
+        self.assertIn("**Health risk:** Two prior surgeries add uncertainty", repaired)
+        self.assertIn("1. Jones still has starter upside if his recovery holds", repaired)
+        self.assertIn("adds pitching depth without filling the open infield role", repaired)
+        self.assertNotIn("Invented 20-point swing", repaired)
+        self.assertNotIn("Invented 100 FPts", repaired)
+        self.assertNotIn("combined section must not", repaired)
+        self.assertNotIn("plain combined section must fail closed", repaired)
+
+    def test_trade_reply_no_source_copy_is_explicitly_conditional(self):
+        prompt = (
+            "Sandlot trade-analysis evidence: exact offer. "
+            "The blocked evidence is: health evidence is incomplete.. "
+            "The do-nothing alternative is to keep the outgoing player. "
+            "Roster consequence: roster stays balanced. "
+            "Internal replacement evidence: No replacement is modeled. "
+            "Current counter direction: ask for healthy value. Run a deep, on-demand trade analysis"
+        )
+
+        repaired = sandlot_skipper.repair_reply("Verdict: HOLD", prompt, {})
+
+        self.assertIn("if none appear, keep HOLD", repaired)
+        self.assertIn("if none appear, treat the research as unverified", repaired)
+        self.assertNotIn("review the cited sources", repaired)
+
+    def test_safe_trade_context_truncates_only_between_lines(self):
+        line = "[Complete source label](https://example.com/complete-source)"
+        value = "\n".join([line] * 80)
+
+        cleaned = sandlot_skipper._safe_trade_context(value, "fallback")
+
+        self.assertTrue(cleaned.endswith("\n…"))
+        self.assertNotIn("https://example.com/complete-sour\n", cleaned)
+        self.assertEqual(cleaned.removesuffix("\n…").splitlines()[-1], line)
+
     def test_stream_adds_capped_openrouter_web_search_tool_when_enabled(self):
         class CapturingCompletions:
             def __init__(self):
@@ -108,6 +231,36 @@ class SkipperModelConfigTests(unittest.TestCase):
         self.assertEqual(completions.kwargs["tools"][0]["type"], "openrouter:web_search")
         self.assertEqual(completions.kwargs["tools"][0]["parameters"]["max_results"], 4)
         self.assertEqual(completions.kwargs["tools"][0]["parameters"]["max_total_results"], 8)
+
+    def test_closing_stream_closes_the_provider_response(self):
+        class ClosableStream:
+            def __init__(self):
+                self.closed = False
+
+            def __iter__(self):
+                yield SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="first token"))],
+                )
+                yield SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="second token"))],
+                )
+
+            def close(self):
+                self.closed = True
+
+        provider_stream = ClosableStream()
+        completions = SimpleNamespace(create=lambda **kwargs: provider_stream)
+        client = sandlot_skipper.SkipperClient(api_key="test-key")
+        client.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+        stream = client.stream(
+            [{"role": "user", "content": "research this trade"}],
+            model_order=("test/model",),
+        )
+        self.assertEqual(next(stream), ("token", "first token"))
+        stream.close()
+
+        self.assertTrue(provider_stream.closed)
 
     def test_stream_extracts_url_citation_sources_and_usage(self):
         class CapturingCompletions:
@@ -284,6 +437,57 @@ class SkipperModelConfigTests(unittest.TestCase):
         )
 
         self.assertNotIn("tools", completions.kwargs)
+
+    def test_cancel_active_stream_interrupts_a_blocked_provider_iterator(self):
+        started = threading.Event()
+        released = threading.Event()
+        stream_closed = threading.Event()
+        client_closed = threading.Event()
+
+        class BlockingStream:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                started.set()
+                released.wait(timeout=2.0)
+                raise StopIteration
+
+            def close(self):
+                stream_closed.set()
+                released.set()
+
+        class Provider:
+            def __init__(self):
+                self.chat = SimpleNamespace(
+                    completions=SimpleNamespace(create=lambda **kwargs: BlockingStream()),
+                )
+
+            def close(self):
+                client_closed.set()
+                released.set()
+
+        client = sandlot_skipper.SkipperClient(api_key="test-key")
+        client.client = Provider()
+        finished = threading.Event()
+
+        def consume():
+            try:
+                list(client.stream([{"role": "user", "content": "research"}], model_order=("test/model",)))
+            except RuntimeError:
+                pass
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=consume, daemon=True)
+        worker.start()
+        self.assertTrue(started.wait(timeout=1.0))
+
+        client.cancel_active_stream()
+
+        self.assertTrue(stream_closed.wait(timeout=1.0))
+        self.assertTrue(client_closed.wait(timeout=1.0))
+        self.assertTrue(finished.wait(timeout=1.0))
 
     def test_index_serves_content_hashed_app_bundle(self):
         response = sandlot_index()

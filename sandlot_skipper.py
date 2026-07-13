@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import threading
 from typing import Any, Iterator
 
 from openai import OpenAI
@@ -426,7 +428,199 @@ def repair_reply(reply: str, user_msg: str, snapshot: dict[str, Any]) -> str:
     normalized = " ".join(cleaned.lower().replace(".", " ").split())
     if normalized in {"data", "data unavailable", "unavailable", "no data"}:
         return deterministic_reply(user_msg, snapshot) or _generic_missing_reply(snapshot)
+    if str(user_msg or "").startswith("Sandlot trade-analysis evidence:"):
+        return _enforce_trade_evidence_boundaries(cleaned, user_msg)
     return cleaned
+
+
+def _trade_prompt_field(prompt: str, start: str, end: str) -> str | None:
+    _, marker, tail = str(prompt or "").partition(start)
+    if not marker:
+        return None
+    value, marker, _ = tail.partition(end)
+    value = value.strip().rstrip(".")
+    return value if marker and value else None
+
+
+_TRADE_SECTION_KEYS = {
+    "weekly impact": "weekly",
+    "rest of season": "ros",
+    "dynasty": "dynasty",
+    "roster fit": "roster_fit",
+    "replacement value": "replacement",
+    "counteroffer": "counteroffer",
+    "counteroffer direction": "counteroffer",
+    "do nothing": "do_nothing",
+    "safest next action": "safest_action",
+}
+
+
+def _trade_heading_key(line: str) -> str | None:
+    value = str(line or "").strip()
+    value = re.sub(r"^#{1,6}\s*", "", value)
+    value = re.sub(r"^\d+[.)]\s*", "", value)
+    value = value.replace("**", "").strip().rstrip(":")
+    value = re.sub(
+        r"\s*[—-]\s*uncertainty\s*:\s*(?:low|medium|high)\s*$",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+    normalized = " ".join(value.lower().replace("-", " ").split())
+    return _TRADE_SECTION_KEYS.get(normalized)
+
+
+def _looks_like_trade_heading(line: str) -> bool:
+    value = str(line or "").strip()
+    if re.match(r"^#{1,6}\s+", value):
+        return True
+
+    # A numbered item or bold label is often evidence nested inside an allowed
+    # section (for example, "1. Jones..." or "**Health risk:** ..."). Treat it
+    # as a boundary only when it names multiple known top-level sections. Exact
+    # single-section headings were already handled by _trade_heading_key.
+    normalized = value.lower().replace("-", " ")
+    mentioned = {
+        heading
+        for heading in _TRADE_SECTION_KEYS
+        if re.search(rf"\b{re.escape(heading)}\b", normalized)
+    }
+    candidate_heading = bool(
+        re.match(r"^\d+[.)]\s+", value)
+        or value.startswith("**")
+        or value.endswith(":")
+    )
+    return candidate_heading and len(mentioned) > 1
+
+
+def _trade_sections(reply: str) -> dict[str, str]:
+    buckets: dict[str, list[str]] = {}
+    current: str | None = None
+    for line in str(reply or "").splitlines():
+        key = _trade_heading_key(line)
+        if key:
+            current = key
+            buckets.setdefault(key, [])
+            continue
+        if _looks_like_trade_heading(line):
+            current = None
+            continue
+        if current:
+            buckets[current].append(line)
+    return {key: "\n".join(lines).strip() for key, lines in buckets.items()}
+
+
+def _safe_trade_context(value: str | None, fallback: str) -> str:
+    forbidden = re.compile(
+        r"(?:\bFP/G\b|\bFPts?\b|fantasy points?|weekly|rest[- ]of[- ]season|\bROS\b|"
+        r"scoring period|remaining games?|remaining points?|\bpoints?\b|net impact|"
+        r"\bproject(?:ed|ion|ions)?\b|\b(?:accept|reject|counter)\b|\b(?:should|must|recommend)\b)",
+        flags=re.IGNORECASE,
+    )
+    kept: list[str] = []
+    for line in str(value or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped in {"---", "***"} or forbidden.search(stripped):
+            continue
+        kept.append(line.rstrip())
+    cleaned = "\n".join(kept).strip()
+    if not cleaned:
+        return fallback
+    if len(cleaned) <= 2200:
+        return cleaned
+
+    truncated: list[str] = []
+    size = 0
+    for line in cleaned.splitlines():
+        added = len(line) + (1 if truncated else 0)
+        if size + added > 2198:
+            break
+        truncated.append(line)
+        size += added
+    if not truncated:
+        return fallback
+    return "\n".join(truncated).rstrip() + "\n…"
+
+
+def _enforce_trade_evidence_boundaries(reply: str, prompt: str) -> str:
+    """Build the allowed trade answer from deterministic and bounded sections."""
+    blocker = _trade_prompt_field(
+        prompt,
+        "The blocked evidence is: ",
+        ". The do-nothing alternative is to ",
+    ) or "health, role, or long-term value remains unresolved"
+    do_nothing = _trade_prompt_field(
+        prompt,
+        "The do-nothing alternative is to ",
+        ". Roster consequence: ",
+    ) or "keep the outgoing package at its current snapshot value"
+    replacement = _trade_prompt_field(
+        prompt,
+        "Internal replacement evidence: ",
+        ". Current counter direction: ",
+    ) or "Exact post-trade replacement value is not modeled"
+    roster = _trade_prompt_field(
+        prompt,
+        "Roster consequence: ",
+        ". Internal replacement evidence: ",
+    ) or "Exact post-trade lineup fit is not simulated"
+    counter = _trade_prompt_field(
+        prompt,
+        "Current counter direction: ",
+        ". Run a deep, on-demand trade analysis",
+    ) or "ask for healthy, gradeable value before naming an exact package"
+    sections = _trade_sections(reply)
+    dynasty = _safe_trade_context(
+        sections.get("dynasty"),
+        "Web research did not return a safely separable dynasty section. Long-term value remains unresolved. Review any source cards shown; if none appear, keep HOLD.",
+    )
+    roster_context = _safe_trade_context(
+        sections.get("roster_fit"),
+        "No additional model-assisted roster-fit context passed the evidence guard.",
+    )
+    verdict_match = re.search(r"\b(ACCEPT|REJECT|COUNTER|HOLD)\b", reply[:600], flags=re.IGNORECASE)
+    verdict = verdict_match.group(1).upper() if verdict_match else "HOLD"
+    if verdict == "ACCEPT":
+        verdict = "HOLD"
+
+    return f"""**Sandlot evidence guardrail applied:** model research is shown only where it stays inside the deterministic evidence boundary.
+
+## Verdict: **{verdict}**
+
+The deterministic recommendation remains HOLD until the blocked health, role, and long-term evidence is resolved. No Fantrax action has been taken.
+
+### Weekly Impact — Uncertainty: High
+
+Sandlot withholds a weekly Fantrax point delta because {blocker}. Web sources may verify public availability or role facts, but they do not establish this league's lineup usage or scoring-period value. Current FP/G is not converted into weekly points.
+
+### Rest-of-Season — Uncertainty: High
+
+Sandlot withholds a rest-of-season Fantrax point delta. Public injury, role, and prospect facts can describe risk, but Sandlot has no verified rest-of-season playing-time and scoring model for this package. No rest-of-season point total is claimed.
+
+### Dynasty — Uncertainty: High
+
+{dynasty}
+
+### Roster Fit — Uncertainty: Medium
+
+Deterministic roster shape: {roster}. {roster_context}
+
+### Replacement Value — Uncertainty: Medium
+
+{replacement}. This is a current-snapshot, reserve-only comparison—not a weekly or rest-of-season projection, and not an optimized post-trade lineup.
+
+### Counteroffer — Uncertainty: High
+
+Deterministic direction: {counter}. Sandlot does not name or send an exact counter package while participant evidence is unresolved.
+
+### Do Nothing — Uncertainty: Low
+
+The deterministic alternative is to {do_nothing}. The roster stays unchanged and the Fantrax offer remains unanswered. This preserves current snapshot value only; no weekly or rest-of-season total is modeled.
+
+### Safest Next Action
+
+Keep the offer unanswered while you review the health and dynasty evidence. Use any source cards shown; if none appear, treat the research as unverified. If you negotiate, use the counter direction above; execute nothing automatically.
+""".strip()
 
 
 def is_broken_reply(reply: str | None) -> bool:
@@ -864,6 +1058,28 @@ class SkipperClient:
                 "X-Title": "Sandlot Skipper",
             },
         )
+        self._active_stream_lock = threading.Lock()
+        self._active_stream = None
+
+    def cancel_active_stream(self) -> None:
+        """Cancel this request's active provider read from another thread."""
+        with self._active_stream_lock:
+            active_stream = self._active_stream
+        close_stream = getattr(active_stream, "close", None)
+        if callable(close_stream):
+            try:
+                close_stream()
+            except Exception:
+                log.debug("Skipper active provider stream cancellation failed", exc_info=True)
+        # The client is scoped to one Skipper request. Closing it also gives a
+        # request still blocked before the Stream object is returned a direct
+        # transport-level cancellation path.
+        close_client = getattr(self.client, "close", None)
+        if callable(close_client):
+            try:
+                close_client()
+            except Exception:
+                log.debug("Skipper provider client cancellation failed", exc_info=True)
 
     def stream(
         self,
@@ -904,22 +1120,35 @@ class SkipperClient:
                 if extra_body:
                     kwargs["extra_body"] = extra_body
                 stream = self.client.chat.completions.create(**kwargs)
-                for chunk in stream:
-                    for source in _extract_url_citations(chunk):
-                        url = str(source.get("url") or "")
-                        if url and url not in attempt_sources:
-                            attempt_sources[url] = source
-                    requests = _extract_web_search_requests(chunk)
-                    if requests:
-                        attempt_web_search_requests = max(attempt_web_search_requests, requests)
-                    try:
-                        delta = chunk.choices[0].delta
-                    except (AttributeError, IndexError):
-                        continue
-                    text = getattr(delta, "content", None)
-                    if text:
-                        yielded_any = True
-                        yield ("token", text)
+                with self._active_stream_lock:
+                    self._active_stream = stream
+                try:
+                    for chunk in stream:
+                        for source in _extract_url_citations(chunk):
+                            url = str(source.get("url") or "")
+                            if url and url not in attempt_sources:
+                                attempt_sources[url] = source
+                        requests = _extract_web_search_requests(chunk)
+                        if requests:
+                            attempt_web_search_requests = max(attempt_web_search_requests, requests)
+                        try:
+                            delta = chunk.choices[0].delta
+                        except (AttributeError, IndexError):
+                            continue
+                        text = getattr(delta, "content", None)
+                        if text:
+                            yielded_any = True
+                            yield ("token", text)
+                finally:
+                    with self._active_stream_lock:
+                        if self._active_stream is stream:
+                            self._active_stream = None
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            log.debug("Skipper provider stream close failed", exc_info=True)
                 if attempt_web_search_requests:
                     total_web_search_requests += attempt_web_search_requests
                     yield ("web_search_requests", total_web_search_requests)

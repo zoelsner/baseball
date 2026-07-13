@@ -5119,6 +5119,7 @@ function V2Skipper({ model, sync, onOpenPlayer, draft, onDraftConsumed }) {
   const [optionsReady, setOptionsReady] = React.useState(false);
   const [historyReady, setHistoryReady] = React.useState(false);
   const [pendingAutoDraft, setPendingAutoDraft] = React.useState(null);
+  const [researchingTrade, setResearchingTrade] = React.useState(false);
   const scrollRef = React.useRef(null);
 
   const playerNameIndex = React.useMemo(
@@ -5226,11 +5227,13 @@ function V2Skipper({ model, sync, onOpenPlayer, draft, onDraftConsumed }) {
   const send = async (text, overrides={}) => {
     const t = (text ?? input).trim();
     if (!t || streaming) return;
+    const isTradeResearch = t.startsWith('Sandlot trade-analysis evidence:');
     const useReasoning = overrides.reasoning === undefined ? reasoning : overrides.reasoning === true;
     const reasoningEffort = useReasoning ? (overrides.reasoningEffort || 'medium') : null;
     const useWebSearch = overrides.webSearch === undefined ? webSearchEnabled : overrides.webSearch === true;
     setError(null);
     setInput('');
+    setResearchingTrade(isTradeResearch);
     // Tag the upcoming AI bubble with chart:'matchup' when the prompt asks for
     // a deep matchup read so V2Bubble can render the projection card with it.
     const aiSeed = v2IsDeepMatchupPrompt(t) ? { role:'ai', text:'', chart:'matchup' } : { role:'ai', text:'' };
@@ -5332,6 +5335,7 @@ function V2Skipper({ model, sync, onOpenPlayer, draft, onDraftConsumed }) {
       });
     } finally {
       setStreaming(false);
+      setResearchingTrade(false);
     }
   };
 
@@ -5425,7 +5429,9 @@ function V2Skipper({ model, sync, onOpenPlayer, draft, onDraftConsumed }) {
         )}
         {msgs.map((m,i)=> <V2Bubble key={i} m={m} renderText={renderText} matchup={model?.matchup} dataQuality={model?.dataQuality}/>)}
         {streaming && msgs.length > 0 && msgs[msgs.length-1].role === 'ai' && !msgs[msgs.length-1].text && (
-          <div style={{ color:V2.muted, fontSize:12, padding:'2px 4px 8px' }}>Thinking…</div>
+          <div style={{ color:V2.muted, fontSize:12, padding:'2px 4px 8px' }}>
+            {researchingTrade ? 'Researching cited evidence and applying Sandlot guardrails…' : 'Thinking…'}
+          </div>
         )}
         {error && (
           <div style={{ color:V2.bad || '#c33', fontSize:12.5, padding:'8px 4px' }}>{error}</div>

@@ -7,6 +7,9 @@ import logging
 import math
 import os
 import hashlib
+import queue
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -38,6 +41,7 @@ load_dotenv()
 WEB_DIR = Path(__file__).parent / "web" / "sandlot"
 FRESH_SNAPSHOT_MINUTES = 18 * 60
 OLD_SNAPSHOT_MINUTES = 36 * 60
+TRADE_RESEARCH_HEARTBEAT_SECONDS = 12.0
 
 app = FastAPI(title="Sandlot", version="0.1.0")
 
@@ -922,6 +926,7 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
     history = sandlot_db.list_chat_messages(session_id)
     messages = sandlot_skipper.build_messages(history, user_text, context_block, web_search=use_web_search)
     deterministic_reply = sandlot_skipper.deterministic_reply(user_text, snapshot)
+    is_trade_research = user_text.startswith("Sandlot trade-analysis evidence:")
     selected_model = payload.model
     model_order = sandlot_skipper.model_order(selected_model)
     reasoning_effort = sandlot_skipper.normalize_reasoning_effort(
@@ -962,15 +967,30 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
         web_search_requests = 0
         used_model: str | None = None
         try:
-            for kind, payload_text in client.stream(
+            model_events = client.stream(
                 messages,
                 model_order=model_order,
                 reasoning_effort=reasoning_effort,
                 web_search=use_web_search,
-            ):
+            )
+            if is_trade_research:
+                yield _sse({"type": "research_started", "stage": "researching"})
+                event_iterator = _trade_research_events(
+                    model_events,
+                    on_cancel=getattr(client, "cancel_active_stream", None),
+                )
+            else:
+                event_iterator = (("model_event", event) for event in model_events)
+
+            for stream_kind, stream_payload in event_iterator:
+                if stream_kind == "progress":
+                    yield _sse(stream_payload)
+                    continue
+                kind, payload_text = stream_payload
                 if kind == "token":
                     assistant_buf.append(payload_text)
-                    yield _sse({"type": "token", "text": payload_text})
+                    if not is_trade_research:
+                        yield _sse({"type": "token", "text": payload_text})
                 elif kind == "model":
                     used_model = payload_text
                 elif kind == "source" and isinstance(payload_text, dict):
@@ -990,11 +1010,17 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
         raw = "".join(assistant_buf)
         full = sandlot_skipper.repair_reply(raw, user_text, snapshot)
         sources = list(sources_by_url.values())
-        web_search_executed = bool(web_search_requests)
-        sources_available = bool(sources)
-        if sandlot_skipper.is_broken_reply(raw) and full:
-            # The streamed text was a broken refusal; tell the frontend to swap
-            # in the deterministic explanation that replaces it.
+        web_search_requests, web_search_executed, sources_available = _web_search_evidence(
+            sources,
+            web_search_requests,
+        )
+        if is_trade_research and full:
+            # Trade research is buffered until the deterministic evidence guard
+            # has built the only answer the user is allowed to see.
+            yield _sse({"type": "token", "text": full})
+        elif full and full != raw.strip():
+            # The backend repaired a broken refusal or enforced a deterministic
+            # evidence boundary. Replace the streamed draft with the safe result.
             yield _sse({"type": "replace", "text": full})
         if full:
             try:
@@ -1038,6 +1064,73 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
     )
 
 
+def _trade_research_events(model_events, *, on_cancel=None):
+    """Keep a buffered trade stream alive without exposing unguarded model text."""
+    # Bound the handoff so a disconnected/slow client cannot leave a model
+    # producer filling memory in the background.
+    events: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=32)
+    complete = object()
+    stop = threading.Event()
+
+    def enqueue(item: tuple[str, Any]) -> bool:
+        while not stop.is_set():
+            try:
+                events.put(item, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def collect() -> None:
+        try:
+            for event in model_events:
+                if stop.is_set() or not enqueue(("model_event", event)):
+                    break
+        except BaseException as exc:  # re-raised on the response generator thread
+            enqueue(("error", exc))
+        finally:
+            close = getattr(model_events, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    log.debug("Trade research model stream close failed", exc_info=True)
+            enqueue(("complete", complete))
+
+    worker = threading.Thread(target=collect, name="trade-research-stream", daemon=True)
+    worker.start()
+    last_progress = time.monotonic()
+    try:
+        while True:
+            timeout = max(0.001, TRADE_RESEARCH_HEARTBEAT_SECONDS - (time.monotonic() - last_progress))
+            try:
+                kind, payload = events.get(timeout=timeout)
+            except queue.Empty:
+                yield "progress", {"type": "research_progress", "stage": "applying_guardrails"}
+                last_progress = time.monotonic()
+                continue
+            if time.monotonic() - last_progress >= TRADE_RESEARCH_HEARTBEAT_SECONDS:
+                yield "progress", {"type": "research_progress", "stage": "applying_guardrails"}
+                last_progress = time.monotonic()
+            if kind == "complete":
+                return
+            if kind == "error":
+                raise payload
+            yield kind, payload
+    finally:
+        # StreamingResponse closes this generator when the browser disconnects.
+        # Signal the producer and close the active provider HTTP stream before
+        # joining, so a long pre-token read does not have to reach another
+        # model event before cancellation can take effect.
+        stop.set()
+        if callable(on_cancel):
+            try:
+                on_cancel()
+            except Exception:
+                log.debug("Trade research provider cancellation failed", exc_info=True)
+        worker.join(timeout=0.25)
+
+
 def _log_skipper_projection_surfaces(
     snapshot_row: dict[str, Any],
     user_text: str,
@@ -1073,6 +1166,23 @@ def _log_skipper_projection_surfaces(
 
 def _sse(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, default=str)}\n\n"
+
+
+def _web_search_evidence(
+    sources: list[dict[str, Any]],
+    reported_requests: int,
+) -> tuple[int, bool, bool]:
+    """Separate provider usage, actual search execution, and cited evidence."""
+    try:
+        requests = max(0, int(reported_requests))
+    except (TypeError, ValueError):
+        requests = 0
+    sources_available = bool(sources)
+    if sources_available and requests < 1:
+        # Some OpenRouter responses include citations but omit usage. A
+        # citation proves at least one search-backed attempt occurred.
+        requests = 1
+    return requests, bool(requests), sources_available
 
 
 def _persisted_snapshot_data(row: dict[str, Any]) -> dict[str, Any]:
