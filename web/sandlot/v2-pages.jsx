@@ -3379,6 +3379,115 @@ function v2TradeManualReviewCopy(reason) {
   return text || 'Sandlot cannot grade this offer reliably yet. Review it manually in Fantrax.';
 }
 
+function V2ManualTradeReview({ offer, onAskSkipper }) {
+  const review = offer && offer.manual_review;
+  if (!review) return null;
+  const recommendation = review.recommendation || {};
+  const deadline = review.deadline || {};
+  const uncertainty = review.uncertainty || {};
+  const doNothing = review.do_nothing || {};
+  const roster = review.roster_consequences || {};
+  const replacement = review.replacement_value || {};
+  const counter = review.counteroffer || {};
+  const blockers = Array.isArray(review.blockers) ? review.blockers : [];
+  const horizons = Array.isArray(review.horizons) ? review.horizons : [];
+  const rawPreserved = doNothing.current_rate_preserved;
+  const preserved = rawPreserved === null || rawPreserved === undefined || rawPreserved === '' ? NaN : Number(rawPreserved);
+  const askSkipper = () => onAskSkipper && onAskSkipper(review.skipper_prompt);
+
+  return (
+    <section aria-label="Manual trade review" style={{
+      marginTop:10, background:V2.surface, border:`1px solid ${V2.hairline}`,
+      borderRadius:16, padding:12, display:'flex', flexDirection:'column', gap:10,
+    }}>
+      <div>
+        <V2Eyebrow color={V2.warn}>Decision brief · evidence incomplete</V2Eyebrow>
+        <h3 style={{
+          margin:'6px 0 0', color:V2.ink, fontFamily:V2.fontDisplay,
+          fontSize:20, lineHeight:1.06, letterSpacing:'-0.02em', textWrap:'balance',
+        }}>{recommendation.title || 'Hold this offer for now'}</h3>
+        <div style={{ marginTop:6, color:V2.body, fontSize:11.5, lineHeight:1.45, fontWeight:650, textWrap:'pretty' }}>
+          {recommendation.detail || 'The full package does not have enough verified evidence for a safe grade.'}
+        </div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(2, minmax(0, 1fr))', gap:8 }}>
+        <div style={{ minWidth:0, background:V2.warnSoft, borderRadius:12, padding:'9px 10px' }}>
+          <div style={{ color:V2.warn, fontSize:9, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>Uncertainty</div>
+          <div style={{ marginTop:4, color:V2.ink, fontSize:12, lineHeight:1.25, fontWeight:850 }}>{uncertainty.label || 'Value withheld'}</div>
+        </div>
+        <div style={{ minWidth:0, background:V2.surface2, borderRadius:12, padding:'9px 10px' }}>
+          <div style={{ color:V2.muted, fontSize:9, fontWeight:900, letterSpacing:'0.07em', textTransform:'uppercase' }}>Deadline</div>
+          <div style={{ marginTop:4, color:V2.ink, fontSize:12, lineHeight:1.25, fontWeight:850 }}>{deadline.label || 'Not provided'}</div>
+          <div style={{ marginTop:2, color:V2.muted, fontSize:8.5, lineHeight:1.25 }}>Fantrax: {deadline.fantrax_schedule_label || 'Pending'}</div>
+        </div>
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+        {horizons.map(item => (
+          <div key={item.key} style={{ minWidth:0, background:V2.surface2, borderRadius:11, padding:'9px 10px' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', gap:8 }}>
+              <div style={{ color:V2.muted, fontSize:8.5, lineHeight:1.2, fontWeight:900, letterSpacing:'0.055em', textTransform:'uppercase' }}>{item.label}</div>
+              <div style={{ flexShrink:0, color:item.status === 'manual_review' ? V2.warn : V2.muted, fontSize:9.5, lineHeight:1.2, fontWeight:850 }}>
+                {item.status === 'manual_review' ? 'Manual review' : 'Withheld'}
+              </div>
+            </div>
+            <div style={{ marginTop:4, color:V2.body, fontSize:10.5, lineHeight:1.4, textWrap:'pretty' }}>{item.detail}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ background:V2.okSoft, borderRadius:12, padding:'10px 11px' }}>
+        <V2Eyebrow color={V2.ok}>Do nothing</V2Eyebrow>
+        <div style={{ marginTop:5, color:V2.ink, fontSize:13, lineHeight:1.3, fontWeight:850 }}>{doNothing.title || 'Keep your current roster'}</div>
+        <div style={{ marginTop:3, color:V2.body, fontSize:10.5, lineHeight:1.4 }}>
+          {doNothing.detail || 'The roster stays unchanged and the offer remains unanswered.'}{Number.isFinite(preserved) ? <> Current package rate: <span style={{ fontFamily:V2.fontMono, fontWeight:850 }}>{preserved.toFixed(2)} {doNothing.unit || 'FP/G'}</span>.</> : ''}
+        </div>
+      </div>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
+        <div style={{ padding:'0 2px' }}>
+          <div style={{ color:V2.ink, fontSize:11.5, lineHeight:1.35, fontWeight:850 }}>{roster.label || 'Roster shape requires review'}</div>
+          <div style={{ marginTop:2, color:V2.muted, fontSize:10.5, lineHeight:1.4 }}>{roster.detail}</div>
+        </div>
+        <div style={{ padding:'0 2px' }}>
+          <div style={{ color:V2.ink, fontSize:11.5, lineHeight:1.35, fontWeight:850 }}>{replacement.label || 'Replacement value unavailable'}</div>
+          <div style={{ marginTop:2, color:V2.muted, fontSize:10.5, lineHeight:1.4 }}>{replacement.detail}</div>
+        </div>
+        <div style={{ padding:'0 2px' }}>
+          <div style={{ color:V2.ink, fontSize:11.5, lineHeight:1.35, fontWeight:850 }}>{counter.title || 'Counter direction needs review'}</div>
+          <div style={{ marginTop:2, color:V2.muted, fontSize:10.5, lineHeight:1.4 }}>{counter.detail}</div>
+        </div>
+      </div>
+
+      {blockers.length ? (
+        <details style={{ borderTop:`1px solid ${V2.hairline2}`, paddingTop:8 }}>
+          <summary style={{ color:V2.body, fontSize:10.5, lineHeight:1.4, fontWeight:850, cursor:'pointer' }}>
+            Why Sandlot withheld the grade ({blockers.length})
+          </summary>
+          <div style={{ marginTop:7, display:'flex', flexDirection:'column', gap:6 }}>
+            {blockers.map((item, index) => (
+              <div key={`${item.player_id || 'player'}-${item.kind || 'reason'}-${index}`} style={{ color:V2.muted, fontSize:10.5, lineHeight:1.4, textWrap:'pretty' }}>
+                <strong style={{ color:V2.body }}>{item.player_name || 'Player'}:</strong> {item.reason}
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+
+      <button onClick={askSkipper} disabled={!onAskSkipper || !review.skipper_prompt} style={{
+        minHeight:44, width:'100%', border:'none', borderRadius:999,
+        background:V2.ink, color:'#fff', fontFamily:'inherit', fontSize:11.5, fontWeight:850,
+        cursor:onAskSkipper && review.skipper_prompt ? 'pointer' : 'not-allowed',
+        opacity:onAskSkipper && review.skipper_prompt ? 1 : 0.6,
+      }}>Ask Skipper to pressure-test it</button>
+      <div style={{ color:V2.muted, fontSize:9.5, lineHeight:1.35, textAlign:'center' }}>
+        Read-only · no trade was accepted, rejected, or sent to Fantrax
+      </div>
+    </section>
+  );
+}
+
 function V2PlayerPicker({ label, source, model, value, onChange }) {
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState('');
@@ -3896,10 +4005,14 @@ function V2TradeGrader({ model, onAskSkipper }) {
                 <div style={{ marginTop:6, color:V2.ink, fontSize:12.5, lineHeight:1.4, fontWeight:750 }}>You get {(offer.get || []).map(item=>item.player_name).filter(Boolean).join(', ') || '—'}</div>
                 <div style={{ marginTop:2, color:V2.muted, fontSize:11.5, lineHeight:1.4, fontWeight:650 }}>You give {(offer.give || []).map(item=>item.player_name).filter(Boolean).join(', ') || '—'}</div>
                 {offer.includes_draft_pick ? <div style={{ marginTop:5, color:V2.warn, fontSize:10.5, lineHeight:1.35, fontWeight:750 }}>Includes a draft pick · picks are not modeled yet</div> : null}
-                {offer.manual_review_reason ? <div style={{ marginTop:5, color:V2.warn, fontSize:10.5, lineHeight:1.35, fontWeight:750 }}>{v2TradeManualReviewCopy(offer.manual_review_reason)}</div> : null}
-                <button onClick={()=>reviewIncoming(offer)} disabled={!offer.gradeable || loading} style={{ marginTop:9, minHeight:44, width:'100%', border:'none', borderRadius:999, background:offer.gradeable ? V2.ink : V2.hairline, color:offer.gradeable ? '#fff' : V2.muted, fontFamily:'inherit', fontSize:11.5, fontWeight:850, cursor:offer.gradeable && !loading ? 'pointer' : 'not-allowed' }}>
-                  {offer.gradeable ? (reviewingTradeId === offer.trade_id ? 'Reviewing…' : 'Review exact offer') : offer.status === 'awaiting_execution' ? 'Already accepted in Fantrax' : 'Manual review required'}
-                </button>
+                {offer.manual_review_reason && !offer.manual_review ? <div style={{ marginTop:5, color:V2.warn, fontSize:10.5, lineHeight:1.35, fontWeight:750 }}>{v2TradeManualReviewCopy(offer.manual_review_reason)}</div> : null}
+                {offer.manual_review ? (
+                  <V2ManualTradeReview offer={offer} onAskSkipper={onAskSkipper}/>
+                ) : (
+                  <button onClick={()=>reviewIncoming(offer)} disabled={!offer.gradeable || loading} style={{ marginTop:9, minHeight:44, width:'100%', border:'none', borderRadius:999, background:offer.gradeable ? V2.ink : V2.hairline, color:offer.gradeable ? '#fff' : V2.muted, fontFamily:'inherit', fontSize:11.5, fontWeight:850, cursor:offer.gradeable && !loading ? 'pointer' : 'not-allowed' }}>
+                    {offer.gradeable ? (reviewingTradeId === offer.trade_id ? 'Reviewing…' : 'Review exact offer') : offer.status === 'awaiting_execution' ? 'Already accepted in Fantrax' : 'Manual review required'}
+                  </button>
+                )}
                 {!offer.gradeable && !offer.includes_draft_pick && !offer.manual_review_reason && offer.status !== 'awaiting_execution' ? <div style={{ marginTop:6, color:V2.muted, fontSize:10.5, lineHeight:1.35 }}>This offer is incomplete, stale, or includes terms Sandlot cannot model exactly. Open Fantrax to inspect it.</div> : null}
               </div>
             ))}

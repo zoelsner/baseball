@@ -1704,25 +1704,39 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         })
 
     def test_incoming_trade_surfaces_participant_policy_before_review(self):
+        mine = {"id": "p1", "name": "Mine", "slot": "1B", "positions": "1B", "fppg": 4.1, "age": 31}
+        young = {"id": "p2", "name": "Young Player", "slot": "OF", "positions": "OF", "fppg": 3.8, "age": 24}
         snapshot = {
             "id": 281, "taken_at": NOW, "team_id": "mine",
-            "data": {"team_id": "mine", "pending_trades": [{
-                "trade_id": "tx-young", "proposed_by_id": "other", "moves": [
-                    {"from_team_id": "mine", "to_team_id": "other", "player_id": "p1", "player": "Mine"},
-                    {"from_team_id": "other", "to_team_id": "mine", "player_id": "p2", "player": "Young Player"},
-                ],
-            }]},
+            "data": {
+                "team_id": "mine",
+                "roster": {"rows": [mine]},
+                "all_team_rosters": {
+                    "mine": {"team_id": "mine", "is_me": True, "rows": [mine]},
+                    "other": {"team_id": "other", "rows": [young]},
+                },
+                "pending_trades": [{
+                    "trade_id": "tx-young", "proposed_by_id": "other", "moves": [
+                        {"from_team_id": "mine", "to_team_id": "other", "player_id": "p1", "player": "Mine"},
+                        {"from_team_id": "other", "to_team_id": "mine", "player_id": "p2", "player": "Young Player"},
+                    ],
+                }],
+            },
         }
         reason = "get player Young Player is age 24 and requires manual dynasty review"
-        with (
-            patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot),
-            patch("sandlot_api.sandlot_trades.offer_validation_error", return_value=reason),
-        ):
+        with patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot):
             offer = self.client.get("/api/trades/incoming").json()["offers"][0]
 
         self.assertFalse(offer["gradeable"])
         self.assertIn("participant_policy", offer["blocked_reasons"])
         self.assertEqual(offer["manual_review_reason"], reason)
+        self.assertEqual(offer["manual_review"]["recommendation"]["title"], "Hold this offer for now")
+        self.assertEqual(offer["manual_review"]["horizons"][2]["key"], "dynasty")
+        self.assertEqual(offer["manual_review"]["horizons"][2]["status"], "manual_review")
+        self.assertTrue(offer["manual_review"]["manual_only"])
+        self.assertTrue(offer["manual_review"]["read_only"])
+        self.assertFalse(offer["manual_review"]["fantrax_changed"])
+        self.assertFalse(offer["manual_review"]["writes_enabled"])
 
     def test_incoming_trade_excludes_ambiguous_proposer_and_blocks_duplicate_players(self):
         base_moves = [

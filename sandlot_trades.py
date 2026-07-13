@@ -103,6 +103,262 @@ def offer_validation_error(
     return None
 
 
+def build_manual_review(
+    snapshot_row: dict[str, Any],
+    give_ids: list[str],
+    get_ids: list[str],
+    *,
+    expected_get_owner_id: str | None = None,
+    scheduled_execution_at_label: str | None = None,
+) -> dict[str, Any]:
+    """Explain an exact but ungradeable incoming offer without inventing value.
+
+    This path is deterministic and read-only. It intentionally does not create
+    a letter grade, acceptance recommendation, or trade receipt. Its job is to
+    turn a fail-closed participant-policy result into a useful owner decision:
+    hold, understand the roster consequences, and inspect the blocked evidence.
+    """
+    give_ids, get_ids = _validate_offer_ids(give_ids, get_ids)
+    data = snapshot_row.get("data") or {}
+    give_players, get_players = _resolve_trade_sides(
+        data,
+        give_ids,
+        get_ids,
+        expected_get_owner_id=expected_get_owner_id,
+    )
+    blockers = _manual_review_blockers(give_players, get_players)
+    if not blockers:
+        raise TradeGradeError("manual review requires a fail-closed participant-policy reason")
+
+    give_names = ", ".join(str(row.get("name") or "Unknown") for row in give_players)
+    get_names = ", ".join(str(row.get("name") or "Unknown") for row in get_players)
+    blocker_names = list(dict.fromkeys(str(item.get("player_name") or "Unknown") for item in blockers))
+    blocker_summary = ", ".join(blocker_names)
+    unavailable_get_names = [
+        str(item.get("player_name") or "Unknown")
+        for item in blockers
+        if item.get("kind") == "unavailable" and item.get("side") == "get"
+    ]
+    unavailable_give_names = [
+        str(item.get("player_name") or "Unknown")
+        for item in blockers
+        if item.get("kind") == "unavailable" and item.get("side") == "give"
+    ]
+    unavailable_names = unavailable_give_names + unavailable_get_names
+    dynasty_names = list(dict.fromkeys(
+        str(item.get("player_name") or "Unknown")
+        for item in blockers
+        if item.get("kind") in {"protected_asset", "young_asset", "missing_age"}
+    ))
+    replacement_value = _manual_replacement_value(data, give_players, give_ids)
+    give_rates = [_actionable_current_rate(row) for row in give_players]
+    give_rate = (
+        round(sum(rate for rate in give_rates if rate is not None), 2)
+        if all(rate is not None for rate in give_rates)
+        else None
+    )
+    give_positions = sorted(set().union(*(_position_tokens(row) for row in give_players)))
+    get_positions = sorted(set().union(*(_position_tokens(row) for row in get_players)))
+
+    current_period_detail = (
+        f"Withheld because {', '.join(unavailable_names)} cannot be projected from current health and role evidence."
+        if unavailable_names
+        else "Withheld because one or more assets do not have gradeable current-period evidence."
+    )
+    ros_detail = (
+        "Return timing and future role are not verified for " + ", ".join(unavailable_names) + "."
+        if unavailable_names
+        else "Current roles and playing-time assumptions are not complete enough for a rest-of-season comparison."
+    )
+    dynasty_detail = (
+        "Manual dynasty valuation required for " + ", ".join(dynasty_names) + "."
+        if dynasty_names
+        else "Age alone cannot establish the long-term value of this package."
+    )
+    if unavailable_get_names and unavailable_give_names:
+        counter_title = "Counter direction: resolve health uncertainty on both sides"
+        counter_detail = "Do not compare or reshape the package until both unavailable sides have verified return and role evidence."
+    elif unavailable_get_names:
+        counter_title = "Counter direction: ask for healthy, gradeable value"
+        counter_detail = "Ask the other manager to replace the unavailable incoming asset before Sandlot ranks an exact counter package."
+    elif unavailable_give_names:
+        counter_title = "Counter direction: value your unavailable player first"
+        counter_detail = "Do not sell from a stale rate; verify your outgoing player's return, role, and dynasty value before naming a counter."
+    elif dynasty_names:
+        counter_title = "Counter direction: value the long-term assets first"
+        counter_detail = "Do not name an exact counter until the young or protected assets receive a manual dynasty review."
+    else:
+        counter_title = "Counter direction: verify the missing evidence first"
+        counter_detail = "Do not name an exact counter until every participant has a valid current-rate evidence record."
+
+    do_nothing_rate = (
+        f" at a verified current snapshot package rate of {give_rate:.2f} FP/G"
+        if give_rate is not None
+        else " with its current package rate withheld"
+    )
+    skipper_prompt = (
+        f"Review this exact incoming Fantrax offer. I give {give_names}; I get {get_names}. "
+        f"Sandlot is holding the offer because the blocked participants are {blocker_summary}. "
+        f"The do-nothing alternative is to keep {give_names}{do_nothing_rate}. "
+        "Explain current-matchup, rest-of-season, dynasty, roster-fit, and replacement-value implications. "
+        "Then propose a health- and dynasty-aware counter direction. Clearly separate verified facts from assumptions, "
+        "and do not claim the trade was accepted, rejected, or sent."
+    )
+
+    return {
+        "state": "manual_review_required",
+        "recommendation": {
+            "action": "hold",
+            "title": "Hold this offer for now",
+            "detail": f"Sandlot cannot safely compare the full package while {blocker_summary} has unresolved value evidence.",
+        },
+        "uncertainty": {
+            "level": "high",
+            "label": "Value withheld",
+            "detail": "A current-rate grade would treat uncertain health, roles, or long-term assets as if they were normal active players.",
+        },
+        "deadline": {
+            "state": "unknown",
+            "label": "Not provided",
+            "fantrax_schedule_label": str(scheduled_execution_at_label or "Pending"),
+            "detail": "The Fantrax schedule label is not a verified response deadline. Recheck the offer before answering.",
+        },
+        "do_nothing": {
+            "title": f"Keep {give_names}",
+            "detail": (
+                "The roster stays unchanged and the incoming offer remains unanswered in Fantrax."
+                if give_rate is not None
+                else "The roster stays unchanged; current-rate value is withheld because the outgoing side is unavailable or missing valid FP/G evidence."
+            ),
+            "current_rate_preserved": give_rate,
+            "unit": "FP/G",
+        },
+        "horizons": [
+            {"key": "current_matchup", "label": "Current matchup", "status": "withheld", "detail": current_period_detail},
+            {"key": "rest_of_season", "label": "Rest of season", "status": "withheld", "detail": ros_detail},
+            {"key": "dynasty", "label": "Dynasty", "status": "manual_review", "detail": dynasty_detail},
+        ],
+        "roster_consequences": {
+            "give_positions": give_positions,
+            "get_positions": get_positions,
+            "label": f"Moves out {', '.join(give_positions) or 'unverified positions'}; brings in {', '.join(get_positions) or 'unverified positions'}.",
+            "detail": "This describes roster shape only; it is not proof that every incoming player can fill the vacated lineup role.",
+        },
+        "replacement_value": replacement_value,
+        "counteroffer": {
+            "state": "direction_only",
+            "title": counter_title,
+            "detail": counter_detail,
+            "exact_package_available": False,
+        },
+        "blockers": blockers,
+        "safest_next_action": {
+            "type": "ask_skipper",
+            "label": "Ask Skipper to pressure-test it",
+            "detail": "Review return timing, role risk, and long-term asset value before taking any action in Fantrax.",
+        },
+        "skipper_prompt": skipper_prompt,
+        "manual_only": True,
+        "read_only": True,
+        "fantrax_changed": False,
+        "writes_enabled": False,
+    }
+
+
+def _manual_review_blockers(
+    give_players: list[dict[str, Any]],
+    get_players: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    blockers: list[dict[str, Any]] = []
+    for side, players in (("give", give_players), ("get", get_players)):
+        for row in players:
+            player_id = str(row.get("id") or "")
+            player_name = str(row.get("name") or player_id or "Unknown")
+            common = {"side": side, "player_id": player_id, "player_name": player_name}
+            if _is_protected_trade_player(row):
+                blockers.append({**common, "kind": "protected_asset", "reason": "Protected keeper or minors value requires manual review."})
+            unavailable = _unavailable_reason(row)
+            if unavailable:
+                blockers.append({**common, "kind": "unavailable", "reason": f"Currently {unavailable}; return timing and role are not modeled."})
+            fppg = _number(row.get("fppg"))
+            if fppg is None or not math.isfinite(fppg):
+                blockers.append({**common, "kind": "missing_rate", "reason": "Current FP/G evidence is unavailable."})
+            age = _age(row)
+            if age is None:
+                blockers.append({**common, "kind": "missing_age", "reason": "Trusted age evidence is unavailable for dynasty review."})
+            elif age <= DYNASTY_MANUAL_REVIEW_MAX_AGE:
+                blockers.append({**common, "kind": "young_asset", "reason": f"Age {age:g} requires manual dynasty valuation."})
+    return blockers
+
+
+def _manual_replacement_value(
+    data: dict[str, Any],
+    give_players: list[dict[str, Any]],
+    give_ids: list[str],
+) -> dict[str, Any]:
+    my_rows = [row for row in ((data.get("roster") or {}).get("rows") or []) if isinstance(row, dict)]
+    excluded = set(give_ids)
+    comparisons = []
+    for outgoing in give_players:
+        outgoing_tokens = _replacement_tokens(outgoing)
+        candidates = []
+        for row in my_rows:
+            if str(row.get("id") or "") in excluded or not _is_inactive(row):
+                continue
+            if _is_unavailable(row) or _is_protected_trade_player(row):
+                continue
+            if not (outgoing_tokens & _replacement_tokens(row)):
+                continue
+            if _actionable_current_rate(row) is None:
+                continue
+            candidates.append(row)
+        candidates.sort(key=lambda row: (_fppg(row), str(row.get("name") or "")), reverse=True)
+        replacement = candidates[0] if candidates else None
+        outgoing_rate = _actionable_current_rate(outgoing)
+        replacement_rate = _actionable_current_rate(replacement) if replacement else None
+        comparisons.append({
+            "outgoing": _slim_player(outgoing),
+            "replacement": _slim_player(replacement) if replacement else None,
+            "gap_fppg": round(replacement_rate - outgoing_rate, 2) if replacement_rate is not None and outgoing_rate is not None else None,
+            "status": "reserve_cover_found" if replacement else "no_verified_reserve_cover",
+        })
+    covered = [item for item in comparisons if item.get("replacement")]
+    if covered:
+        covered.sort(key=lambda item: (
+            item.get("gap_fppg") is not None,
+            float(item.get("gap_fppg") or 0.0),
+            float((item.get("replacement") or {}).get("fppg") or 0.0),
+        ), reverse=True)
+        best = covered[0]
+        replacement = best["replacement"]
+        if best.get("gap_fppg") is not None:
+            gap = float(best["gap_fppg"])
+            label = f"Best reserve cover: {replacement.get('name')} ({gap:+.2f} FP/G vs outgoing)"
+            detail = "Reserve-only, same-position comparison; exact post-trade lineup optimization is not simulated."
+        else:
+            label = f"Reserve cover found: {replacement.get('name')} (numeric gap withheld)"
+            detail = "The outgoing player's current rate is not actionable, so Sandlot does not calculate a replacement gap."
+        status = "directional"
+    else:
+        label = "No verified reserve cover found"
+        detail = "Sandlot cannot show a safe internal replacement for the outgoing side from the current roster snapshot."
+        status = "unavailable"
+    return {"status": status, "label": label, "detail": detail, "comparisons": comparisons}
+
+
+def _replacement_tokens(row: dict[str, Any]) -> set[str]:
+    tokens = _position_tokens(row)
+    baseball_positions = tokens - {"UT"}
+    return baseball_positions or tokens
+
+
+def _actionable_current_rate(row: dict[str, Any] | None) -> float | None:
+    if not row or _is_unavailable(row):
+        return None
+    value = _number(row.get("fppg"))
+    return value if value is not None and math.isfinite(value) else None
+
+
 def grade_offer(
     snapshot_row: dict[str, Any],
     give_ids: list[str],
