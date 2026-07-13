@@ -132,6 +132,24 @@ deadline state, current-matchup/ROS/dynasty evidence states, do-nothing value,
 roster-shape and reserve-replacement consequences, directional counter advice,
 the complete blocker list, and an exact Skipper prompt. The brief does not call
 AI during refresh, propose an exact package, write a receipt, or change Fantrax.
+Its explicit `Research this trade in Skipper` control is the cost boundary: one
+click sends the exact evidence prompt with high reasoning and public-web search.
+The prompt requires a verdict and separately labeled weekly, rest-of-season,
+dynasty, roster-fit, replacement, counteroffer, do-nothing, and safest-action
+sections. It also requires Fantrax facts, linked web facts, assumptions, unknowns,
+and uncertainty to remain distinct. This is qualitative model-assisted research,
+not a new deterministic trade grade. General Ask Skipper handoffs continue to
+open as unsent drafts, and neither path can answer or send a Fantrax trade.
+Queued research is claimed into component-local state immediately, so leaving
+Skipper before its options/history load finishes cancels it instead of arming a
+later surprise request. Every pre-token model fallback retains the capped search
+tool. Assistant chat rows persist source metadata and whether requested web
+verification actually ran; history restores source cards, while both live and
+restored answers display an explicit unverified warning when search produced no
+evidence. Search execution, citation availability, and cumulative fallback
+request counts are recorded separately so a search without links is not called
+verified and retry spend is not hidden. Citations are scoped to the model attempt
+that produced the answer; sources from failed attempts are discarded.
 The same preflight fails closed when either side is OUT, suspended, or in an
 injured-list slot. Sandlot's only modeled trade value is current snapshot FP/G,
 so a stale healthy rate cannot be presented as an actionable edge for an
@@ -191,7 +209,9 @@ failures remain pending.
 ### Skipper
 
 Skipper is an explainer and Q&A layer over real snapshot context. It must not be
-the only way to discover important roster issues.
+the only way to discover important roster issues. High-reasoning or web-backed
+analysis must begin from an explicit user action; background refreshes never
+spend model tokens.
 
 ## AI Pattern
 

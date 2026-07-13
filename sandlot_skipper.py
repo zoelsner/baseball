@@ -886,11 +886,13 @@ class SkipperClient:
         """
         failures: list[str] = []
         extra_body = _reasoning_extra_body(reasoning_effort)
-        web_tool_attempted = False
+        total_web_search_requests = 0
         for model in (model_order or default_model_order()):
             yielded_any = False
+            attempt_web_search_requests = 0
+            attempt_sources: dict[str, dict[str, Any]] = {}
             try:
-                attach_web_tool = web_search and not web_tool_attempted
+                attach_web_tool = web_search
                 kwargs = {
                     "model": model,
                     "messages": messages,
@@ -899,16 +901,17 @@ class SkipperClient:
                 }
                 if attach_web_tool:
                     kwargs["tools"] = [web_search_tool()]
-                    web_tool_attempted = True
                 if extra_body:
                     kwargs["extra_body"] = extra_body
                 stream = self.client.chat.completions.create(**kwargs)
                 for chunk in stream:
                     for source in _extract_url_citations(chunk):
-                        yield ("source", source)
+                        url = str(source.get("url") or "")
+                        if url and url not in attempt_sources:
+                            attempt_sources[url] = source
                     requests = _extract_web_search_requests(chunk)
                     if requests:
-                        yield ("web_search_requests", requests)
+                        attempt_web_search_requests = max(attempt_web_search_requests, requests)
                     try:
                         delta = chunk.choices[0].delta
                     except (AttributeError, IndexError):
@@ -917,12 +920,20 @@ class SkipperClient:
                     if text:
                         yielded_any = True
                         yield ("token", text)
+                if attempt_web_search_requests:
+                    total_web_search_requests += attempt_web_search_requests
+                    yield ("web_search_requests", total_web_search_requests)
                 if yielded_any:
+                    for source in attempt_sources.values():
+                        yield ("source", source)
                     yield ("model", model)
                     return
                 failures.append(f"{model}: empty stream")
                 log.warning("Skipper model %s returned no tokens; trying fallback", model)
             except Exception as e:
+                if attempt_web_search_requests:
+                    total_web_search_requests += attempt_web_search_requests
+                    yield ("web_search_requests", total_web_search_requests)
                 if yielded_any:
                     # Tokens already went out — falling back here would splice a
                     # second model's full reply onto a partial one.
