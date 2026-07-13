@@ -1,7 +1,7 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-13** (incoming trade decision brief in progress).
+> Last updated: **2026-07-13** (on-demand trade research in progress).
 
 ## Where things stand
 
@@ -11,10 +11,19 @@
   `Hold this offer for now` brief with uncertainty, the unverified deadline,
   current-matchup/ROS/dynasty evidence states, the do-nothing alternative,
   roster-shape and reserve-replacement consequences, counter direction, every
-  blocker, and an exact Skipper handoff. It still withholds the grade, exact
-  counter package, and all trade mutations. Current verification: 560 Python
-  tests pass (2 disposable-Postgres tests skipped), and the focused mobile
-  browser flow passes through the Skipper draft handoff.
+  blocker, and an exact Skipper handoff. The manual brief now offers one
+  explicit, on-demand research click: after the user clicks, Skipper sends the
+  exact offer with high reasoning and public-web search and asks for one
+  verdict plus weekly, rest-of-season, dynasty, fit, replacement, counter,
+  do-nothing, and safest-action sections. Refresh does not invoke a model, and
+  ordinary Ask Skipper handoffs remain unsent drafts. It still withholds the
+  deterministic grade, exact counter package, and all trade mutations. Current
+  source cards and web-verification state are stored with chat history; model
+  fallbacks retain the search tool, and leaving Skipper cancels queued research.
+  Search execution, citation availability, and cumulative fallback request
+  counts remain separate so verification and spend are not overstated. Current
+  verification: 562 Python tests pass (2 disposable-Postgres tests skipped),
+  plus all 11 trade and 4 Skipper web mobile browser journeys.
 
 - **Verified starter cadence in progress:** `matchup_projection_v5` can now
   supplement missing posted probables with a frozen `verified_gs_cadence_v1`

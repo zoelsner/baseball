@@ -156,6 +156,23 @@ test.describe('Trade page', () => {
 
   test('explains a young-player dynasty policy block without generic stale copy', async ({ page }) => {
     await mockTradeAdvisor(page);
+    let skipperSubmitted: any = null;
+    let skipperPostCount = 0;
+    await page.route('**/api/skipper/messages', async route => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      skipperSubmitted = route.request().postDataJSON();
+      skipperPostCount += 1;
+      await route.fulfill({
+        status:200,
+        contentType:'text/event-stream',
+        body:[
+          'data: {"type":"token","text":"**Verdict: HOLD** — verify the missing evidence before answering."}',
+          'data: {"type":"sources","sources":[{"title":"MLB injury update","url":"https://www.mlb.com/example"}]}',
+          'data: {"type":"done","model":"deepseek/deepseek-v4-flash","reasoning":true,"web_search":true}',
+          '',
+        ].join('\n\n'),
+      });
+    });
     await page.route('**/api/trades/incoming', route => route.fulfill({
       status:200, contentType:'application/json',
       body:JSON.stringify({
@@ -181,7 +198,7 @@ test.describe('Trade page', () => {
             replacement_value:{ status:'directional', label:'Best reserve cover: Bench Bat (-0.80 FP/G vs outgoing)', detail:'Reserve-only, same-position comparison.' },
             counteroffer:{ state:'direction_only', title:'Counter direction: value the long-term assets first', detail:'Do not name an exact counter yet.' },
             blockers:[{ player_id:'o1', player_name:'Young Player', kind:'young_asset', reason:'Age 24 requires manual dynasty valuation.' }],
-            skipper_prompt:'Review this exact incoming Fantrax offer. I give My Second Baseman; I get Young Player. Clearly separate verified facts from assumptions.',
+            skipper_prompt:'Sandlot trade-analysis evidence: I give My Second Baseman; I get Young Player. Run a deep trade analysis with current web sources.',
             manual_only:true, read_only:true, fantrax_changed:false, writes_enabled:false,
           },
         }],
@@ -204,10 +221,67 @@ test.describe('Trade page', () => {
     await expect(review.getByText(/Keep My Second Baseman/)).toBeVisible();
     await expect(review.getByText(/Best reserve cover: Bench Bat/)).toBeVisible();
     await expect(review.getByText(/Counter direction: value the long-term assets first/)).toBeVisible();
-    await expect(review.getByText(/no trade was accepted, rejected, or sent/i)).toBeVisible();
+    await expect(review.getByText(/no trade is answered or sent/i)).toBeVisible();
     await expect(incoming.getByText(/incomplete, stale, or includes terms/i)).toHaveCount(0);
-    await review.getByRole('button', { name:'Ask Skipper to pressure-test it' }).click();
-    await expect(page.getByPlaceholder('Ask about your roster, waivers, matchups...')).toHaveValue(/I give My Second Baseman; I get Young Player/);
+    await review.getByRole('button', { name:'Research this trade in Skipper' }).click();
+    await expect(page.getByText(/Verdict: HOLD/)).toBeVisible();
+    await expect(page.getByRole('button', { name:'Reasoning on' })).toBeVisible();
+    await expect(page.getByRole('button', { name:'Web fallback on' })).toBeVisible();
+    expect(skipperPostCount).toBe(1);
+    expect(skipperSubmitted).toEqual({
+      content:'Sandlot trade-analysis evidence: I give My Second Baseman; I get Young Player. Run a deep trade analysis with current web sources.',
+      model:'deepseek/deepseek-v4-flash',
+      reasoning:true,
+      reasoning_effort:'high',
+      web_search:true,
+    });
+  });
+
+  test('cancels queued trade research when the user leaves Skipper before setup finishes', async ({ page }) => {
+    await mockTradeAdvisor(page);
+    let releaseHistory!: () => void;
+    const historyGate = new Promise<void>(resolve => { releaseHistory = resolve; });
+    let skipperPostCount = 0;
+    await page.route('**/api/skipper/messages', async route => {
+      if (route.request().method() === 'POST') {
+        skipperPostCount += 1;
+        return route.fulfill({ status:500, contentType:'application/json', body:'{}' });
+      }
+      await historyGate;
+      return route.fulfill({
+        status:200, contentType:'application/json', body:JSON.stringify({ messages:[] }),
+      });
+    });
+    await page.route('**/api/trades/incoming', route => route.fulfill({
+      status:200, contentType:'application/json',
+      body:JSON.stringify({
+        snapshot_id:321, freshness:{ state:'fresh' }, read_only:true, fantrax_changed:false, writes_enabled:false,
+        offers:[{
+          trade_id:'tx-cancel', proposed_by:'Other Team', gradeable:false, manual_only:true, status:'pending',
+          give:[{ player_id:'m1', player_name:'My Second Baseman' }],
+          get:[{ player_id:'o1', player_name:'Young Player' }],
+          blocked_reasons:['participant_policy'],
+          manual_review:{
+            recommendation:{ action:'hold', title:'Hold this offer for now', detail:'Research is optional.' },
+            horizons:[], blockers:[],
+            skipper_prompt:'Sandlot trade-analysis evidence: cancel this queued research if I leave.',
+            manual_only:true, read_only:true, fantrax_changed:false, writes_enabled:false,
+          },
+        }],
+      }),
+    }));
+
+    await page.goto('/');
+    await waitForAppMount(page);
+    await gotoTab(page, 'League');
+    await page.getByRole('button', { name:/Grade an offer/i }).click();
+    await page.getByRole('button', { name:'Research this trade in Skipper' }).click();
+    await page.getByRole('button', { name:'Today', exact:true }).click();
+    releaseHistory();
+    await gotoTab(page, 'Skipper');
+    await page.waitForTimeout(100);
+
+    expect(skipperPostCount).toBe(0);
   });
 
   test('discards an in-flight incoming grade when the Fantrax snapshot refreshes', async ({ page }) => {

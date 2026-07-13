@@ -150,13 +150,13 @@ class SkipperModelConfigTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(chunks[0][0], "source")
-        self.assertEqual(chunks[0][1]["url"], "https://www.mlb.com/player/martin-perez-527048")
+        sources = [payload for kind, payload in chunks if kind == "source"]
+        self.assertEqual(sources[0]["url"], "https://www.mlb.com/player/martin-perez-527048")
         self.assertIn(("web_search_requests", 1), chunks)
         self.assertIn(("token", "web-backed reply"), chunks)
         self.assertIn(("model", "test/model"), chunks)
 
-    def test_stream_only_attaches_web_search_tool_to_first_model_attempt(self):
+    def test_stream_keeps_web_search_available_on_model_fallback(self):
         class FallbackCompletions:
             def __init__(self):
                 self.calls = []
@@ -185,7 +185,78 @@ class SkipperModelConfigTests(unittest.TestCase):
 
         self.assertEqual(chunks, [("token", "fallback reply"), ("model", "fallback/model")])
         self.assertIn("tools", completions.calls[0])
-        self.assertNotIn("tools", completions.calls[1])
+        self.assertIn("tools", completions.calls[1])
+
+    def test_stream_reports_cumulative_search_requests_across_fallbacks(self):
+        usage = SimpleNamespace(server_tool_use=SimpleNamespace(web_search_requests=1))
+
+        class RetryingCompletions:
+            def create(self, **kwargs):
+                if kwargs["model"] == "primary/model":
+                    return [SimpleNamespace(choices=[], usage=usage)]
+                return [
+                    SimpleNamespace(
+                        choices=[SimpleNamespace(delta=SimpleNamespace(content="fallback reply"))],
+                    ),
+                    SimpleNamespace(choices=[], usage=usage),
+                ]
+
+        client = sandlot_skipper.SkipperClient(api_key="test-key")
+        client.client = SimpleNamespace(chat=SimpleNamespace(completions=RetryingCompletions()))
+
+        chunks = list(
+            client.stream(
+                [{"role": "user", "content": "find missing player stats"}],
+                model_order=("primary/model", "fallback/model"),
+                web_search=True,
+            )
+        )
+
+        self.assertIn(("web_search_requests", 1), chunks)
+        self.assertIn(("web_search_requests", 2), chunks)
+        self.assertEqual(chunks[-1], ("model", "fallback/model"))
+
+    def test_stream_discards_citations_from_an_empty_failed_attempt(self):
+        failed_citation = {
+            "type": "url_citation",
+            "url_citation": {
+                "url": "https://failed.example/source",
+                "title": "Failed attempt source",
+            },
+        }
+
+        class CitationFallbackCompletions:
+            def create(self, **kwargs):
+                if kwargs["model"] == "primary/model":
+                    return [
+                        SimpleNamespace(
+                            choices=[
+                                SimpleNamespace(
+                                    delta=SimpleNamespace(content=None, annotations=[failed_citation]),
+                                )
+                            ],
+                        )
+                    ]
+                return [
+                    SimpleNamespace(
+                        choices=[SimpleNamespace(delta=SimpleNamespace(content="uncited fallback"))],
+                    )
+                ]
+
+        client = sandlot_skipper.SkipperClient(api_key="test-key")
+        client.client = SimpleNamespace(chat=SimpleNamespace(completions=CitationFallbackCompletions()))
+
+        chunks = list(
+            client.stream(
+                [{"role": "user", "content": "research this offer"}],
+                model_order=("primary/model", "fallback/model"),
+                web_search=True,
+            )
+        )
+
+        self.assertFalse(any(kind == "source" for kind, _ in chunks))
+        self.assertIn(("token", "uncited fallback"), chunks)
+        self.assertEqual(chunks[-1], ("model", "fallback/model"))
 
     def test_stream_omits_web_search_tool_when_disabled(self):
         class CapturingCompletions:

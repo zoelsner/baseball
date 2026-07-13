@@ -580,9 +580,15 @@ function V2App({ initial }) {
     setDetail(id);
   }, []);
 
-  const continueInSkipper = React.useCallback((prompt) => {
+  const continueInSkipper = React.useCallback((prompt, options={}) => {
     if (!prompt) return;
-    setSkipperDraft({ id: Date.now(), text: prompt });
+    setSkipperDraft({
+      id:Date.now(), text:prompt,
+      autoSend:options.autoSend === true,
+      reasoning:options.reasoning === true,
+      reasoningEffort:options.reasoningEffort || null,
+      webSearch:options.webSearch === true,
+    });
     setPage('skipper');
   }, []);
 
@@ -596,7 +602,7 @@ function V2App({ initial }) {
       : <V2League model={model} onOpenTeam={setLeagueTeam} onOpenTrade={()=>setPage('trade')}/>,
     fa:      <V2FreeAgents onOpenPlayer={openPlayer} onAskSkipper={continueInSkipper}/>,
     trade:   <V2TradeGrader model={model} onAskSkipper={continueInSkipper}/>,
-    skipper: <V2Skipper model={model} sync={syncState} onOpenPlayer={openPlayer} draft={skipperDraft}/>,
+    skipper: <V2Skipper model={model} sync={syncState} onOpenPlayer={openPlayer} draft={skipperDraft} onDraftConsumed={()=>setSkipperDraft(null)}/>,
     settings:<V2Settings model={model} sync={syncState} onRefresh={refreshSnapshot} onSignOut={()=>setAuthed(false)}/>,
   };
 
@@ -3393,7 +3399,9 @@ function V2ManualTradeReview({ offer, onAskSkipper }) {
   const horizons = Array.isArray(review.horizons) ? review.horizons : [];
   const rawPreserved = doNothing.current_rate_preserved;
   const preserved = rawPreserved === null || rawPreserved === undefined || rawPreserved === '' ? NaN : Number(rawPreserved);
-  const askSkipper = () => onAskSkipper && onAskSkipper(review.skipper_prompt);
+  const researchWithSkipper = () => onAskSkipper && onAskSkipper(review.skipper_prompt, {
+    autoSend:true, reasoning:true, reasoningEffort:'high', webSearch:true,
+  });
 
   return (
     <section aria-label="Manual trade review" style={{
@@ -3475,14 +3483,14 @@ function V2ManualTradeReview({ offer, onAskSkipper }) {
         </details>
       ) : null}
 
-      <button onClick={askSkipper} disabled={!onAskSkipper || !review.skipper_prompt} style={{
+      <button onClick={researchWithSkipper} disabled={!onAskSkipper || !review.skipper_prompt} style={{
         minHeight:44, width:'100%', border:'none', borderRadius:999,
         background:V2.ink, color:'#fff', fontFamily:'inherit', fontSize:11.5, fontWeight:850,
         cursor:onAskSkipper && review.skipper_prompt ? 'pointer' : 'not-allowed',
         opacity:onAskSkipper && review.skipper_prompt ? 1 : 0.6,
-      }}>Ask Skipper to pressure-test it</button>
+      }}>Research this trade in Skipper</button>
       <div style={{ color:V2.muted, fontSize:9.5, lineHeight:1.35, textAlign:'center' }}>
-        Read-only · no trade was accepted, rejected, or sent to Fantrax
+        On demand · web sources + high reasoning · no trade is answered or sent
       </div>
     </section>
   );
@@ -5093,7 +5101,7 @@ function V2MatchupProjectionCard({ matchup, dataQuality }) {
 }
 
 // ── /skipper ───────────────────────────────────────────────────
-function V2Skipper({ model, sync, onOpenPlayer, draft }) {
+function V2Skipper({ model, sync, onOpenPlayer, draft, onDraftConsumed }) {
   const prompts = ['Weekly matchup assessment', 'Deep matchup analysis', 'Best waiver swap to review?', 'Where am I weakest?', 'Who is my best 2B?'];
   const [msgs, setMsgs] = React.useState([]);
   const [input, setInput] = React.useState('');
@@ -5108,6 +5116,9 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
   const [chatModel, setChatModel] = React.useState(V2_SKIPPER_DEFAULT_MODEL);
   const [reasoning, setReasoning] = React.useState(false);
   const [webFallback, setWebFallback] = React.useState(true);
+  const [optionsReady, setOptionsReady] = React.useState(false);
+  const [historyReady, setHistoryReady] = React.useState(false);
+  const [pendingAutoDraft, setPendingAutoDraft] = React.useState(null);
   const scrollRef = React.useRef(null);
 
   const playerNameIndex = React.useMemo(
@@ -5144,13 +5155,17 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
         setModelOptions(options);
         setChatModel(current => options.models.some(m => m.id === current) ? current : options.defaultModel);
         setWebFallback(options.webSearch.defaultEnabled && options.webSearch.available);
+        setOptionsReady(true);
       })
-      .catch(() => {});
+      .catch(() => { if (!cancelled) setOptionsReady(true); });
     return () => { cancelled = true; };
   }, []);
 
   React.useEffect(() => {
-    if (draft?.text) setInput(draft.text);
+    if (!draft?.text) return;
+    if (draft.autoSend) setPendingAutoDraft(draft);
+    else setInput(draft.text);
+    onDraftConsumed?.();
   }, [draft?.id]);
 
   React.useEffect(() => {
@@ -5179,13 +5194,25 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
         if (cancelled) return;
         const loaded = (data.messages || [])
           .filter(m => !(m.role === 'assistant' && v2IsBrokenSkipperReply(m.content)))
-          .map(m => ({
-            role: m.role === 'assistant' ? 'ai' : m.role,
-            text: m.content,
-          }));
+          .map(m => {
+            const sources = Array.isArray(m.metadata?.sources) ? m.metadata.sources : [];
+            const sourcesAvailable = m.metadata?.sources_available === true || sources.length > 0;
+            return {
+              role:m.role === 'assistant' ? 'ai' : m.role,
+              text:m.content,
+              sources,
+              webSearchUnverified:m.metadata?.web_search_requested === true && !sourcesAvailable,
+            };
+          });
         setMsgs(loaded);
+        setHistoryReady(true);
       })
-      .catch(e => { if (!cancelled) setError(`Couldn't load history: ${e.message}`); });
+      .catch(e => {
+        if (!cancelled) {
+          setError(`Couldn't load history: ${e.message}`);
+          setHistoryReady(true);
+        }
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -5196,9 +5223,12 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
     }
   }, [msgs]);
 
-  const send = async (text) => {
+  const send = async (text, overrides={}) => {
     const t = (text ?? input).trim();
     if (!t || streaming) return;
+    const useReasoning = overrides.reasoning === undefined ? reasoning : overrides.reasoning === true;
+    const reasoningEffort = useReasoning ? (overrides.reasoningEffort || 'medium') : null;
+    const useWebSearch = overrides.webSearch === undefined ? webSearchEnabled : overrides.webSearch === true;
     setError(null);
     setInput('');
     // Tag the upcoming AI bubble with chart:'matchup' when the prompt asks for
@@ -5214,9 +5244,9 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
         body: JSON.stringify({
           content: t,
           model: chatModel,
-          reasoning,
-          reasoning_effort: reasoning ? 'medium' : null,
-          web_search: webSearchEnabled,
+          reasoning:useReasoning,
+          reasoning_effort:reasoningEffort,
+          web_search:useWebSearch,
         }),
       });
       if (!resp.ok || !resp.body) {
@@ -5271,6 +5301,14 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
               next[next.length - 1] = { ...last, sources };
               return next;
             });
+          } else if (evt.type === 'done' && evt.web_search_requested === true && evt.sources_available !== true) {
+            setMsgs(m => {
+              if (!m.length) return m;
+              const next = m.slice();
+              const last = next[next.length - 1] || {};
+              next[next.length - 1] = { ...last, webSearchUnverified:true };
+              return next;
+            });
           } else if (evt.type === 'error') {
             setError(evt.message || 'Skipper failed');
             // Drop the AI bubble if the stream errored before any tokens
@@ -5296,6 +5334,19 @@ function V2Skipper({ model, sync, onOpenPlayer, draft }) {
       setStreaming(false);
     }
   };
+
+  React.useEffect(() => {
+    if (!pendingAutoDraft?.text || !optionsReady || !historyReady) return;
+    const queued = pendingAutoDraft;
+    setPendingAutoDraft(null);
+    setReasoning(queued.reasoning === true);
+    setWebFallback(queued.webSearch === true);
+    send(queued.text, {
+      reasoning:queued.reasoning === true,
+      reasoningEffort:queued.reasoningEffort || 'high',
+      webSearch:queued.webSearch === true,
+    });
+  }, [pendingAutoDraft?.id, optionsReady, historyReady]);
 
   const clear = async () => {
     if (streaming) return;
@@ -5459,6 +5510,11 @@ function V2Bubble({ m, renderText, matchup, dataQuality }) {
       <div style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, color:V2.ink, padding:'10px 13px', borderRadius:'14px 14px 14px 4px', fontSize:13.5, maxWidth:'92%', lineHeight:1.5 }}>
         {showProjectionCard && <V2MatchupProjectionCard matchup={matchup} dataQuality={dataQuality}/>}
         {body}
+        {m.webSearchUnverified ? (
+          <div role="status" style={{ marginTop:9, color:V2.warn, fontSize:11.5, lineHeight:1.4, fontWeight:750 }}>
+            Web verification was requested but unavailable. Treat this answer as unverified.
+          </div>
+        ) : null}
         <V2WebSources sources={m.sources}/>
       </div>
     </div>

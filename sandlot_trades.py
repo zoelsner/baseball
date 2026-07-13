@@ -197,13 +197,24 @@ def build_manual_review(
         if give_rate is not None
         else " with its current package rate withheld"
     )
+    blocker_detail = "; ".join(
+        f"{item.get('player_name') or 'Unknown'}: {item.get('reason') or 'evidence incomplete'}"
+        for item in blockers
+    )
     skipper_prompt = (
-        f"Review this exact incoming Fantrax offer. I give {give_names}; I get {get_names}. "
-        f"Sandlot is holding the offer because the blocked participants are {blocker_summary}. "
+        f"Sandlot trade-analysis evidence: this is an exact incoming Fantrax offer. "
+        f"I give {give_names}; I get {get_names}. Sandlot's deterministic recommendation is HOLD. "
+        f"The blocked evidence is: {blocker_detail}. "
         f"The do-nothing alternative is to keep {give_names}{do_nothing_rate}. "
-        "Explain current-matchup, rest-of-season, dynasty, roster-fit, and replacement-value implications. "
-        "Then propose a health- and dynasty-aware counter direction. Clearly separate verified facts from assumptions, "
-        "and do not claim the trade was accepted, rejected, or sent."
+        f"Roster consequence: moves out {', '.join(give_positions) or 'unverified positions'} and brings in "
+        f"{', '.join(get_positions) or 'unverified positions'}. Internal replacement evidence: "
+        f"{replacement_value.get('label')}. Current counter direction: {counter_title}. "
+        "Run a deep, on-demand trade analysis using current public web sources where the snapshot is missing health, role, "
+        "prospect, or dynasty context. Start with one explicit verdict: ACCEPT, REJECT, COUNTER, or HOLD. Then cover "
+        "Weekly impact; Rest-of-season; Dynasty; Roster fit; Replacement value; Counteroffer; Do nothing; and Safest next action. "
+        "For every section distinguish verified Fantrax facts, web-verified facts with source links, assumptions, and unknowns; "
+        "state uncertainty as low, medium, or high. Quantify only when the metric is sourced and comparable; never convert "
+        "another fantasy format's points into Fantrax value. Do not claim the trade was accepted, rejected, countered, or sent."
     )
 
     return {

@@ -64,7 +64,7 @@ test.describe('Skipper web fallback', () => {
           '',
           'data: {"type":"sources","sources":[{"url":"https://www.mlb.com/player/martin-perez-527048","title":"Martin Perez Stats"}]}',
           '',
-          'data: {"type":"done","model":"test","web_search_requested":true,"web_search":true,"web_search_requests":1}',
+          'data: {"type":"done","model":"test","web_search_requested":true,"web_search":true,"sources_available":true,"web_search_requests":1}',
           '',
           '',
         ].join('\n'),
@@ -134,5 +134,94 @@ test.describe('Skipper web fallback', () => {
     await gotoTab(page, 'Skipper');
 
     await expect(page.getByRole('button', { name: /Web fallback/i })).toHaveCount(0);
+  });
+
+  test('restores source provenance and an unverified warning from chat history', async ({ page }) => {
+    await page.route('**/api/snapshot/latest', route => route.fulfill({
+      status:200, contentType:'application/json', body:JSON.stringify(snapshot),
+    }));
+    await page.route('**/api/skipper/options', route => route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({
+        default_model:'deepseek/deepseek-v4-flash',
+        models:[{ id:'deepseek/deepseek-v4-flash', label:'DeepSeek V4 Flash', short:'DS Flash' }],
+        reasoning:{ default_enabled:false, default_effort:'medium', efforts:['medium'] },
+        web_search:{ available:true, default_enabled:true, tool:'openrouter:web_search' },
+      }),
+    }));
+    await page.route('**/api/waiver-swaps/latest', route => route.fulfill({
+      status:200, contentType:'application/json', body:JSON.stringify({ brief:{ state:'missing' } }),
+    }));
+    await page.route('**/api/skipper/messages', route => route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({
+        session_id:1,
+        messages:[
+          {
+            role:'assistant', content:'Sourced trade analysis',
+            metadata:{
+              sources:[{ url:'https://www.mlb.com/example', title:'MLB evidence' }],
+              web_search_requested:true, web_search:true,
+            },
+          },
+          {
+            role:'assistant', content:'Fallback trade analysis',
+            metadata:{ sources:[], web_search_requested:true, web_search:false },
+          },
+        ],
+      }),
+    }));
+
+    await page.goto('/');
+    await waitForAppMount(page);
+    await gotoTab(page, 'Skipper');
+
+    await expect(page.getByRole('link', { name:'MLB evidence' })).toHaveAttribute('href', 'https://www.mlb.com/example');
+    await expect(page.getByRole('status')).toContainText(/Web verification was requested but unavailable/i);
+  });
+
+  test('labels a completed search without citations as unverified', async ({ page }) => {
+    await page.route('**/api/snapshot/latest', route => route.fulfill({
+      status:200, contentType:'application/json', body:JSON.stringify(snapshot),
+    }));
+    await page.route('**/api/skipper/options', route => route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify({
+        default_model:'deepseek/deepseek-v4-flash',
+        models:[{ id:'deepseek/deepseek-v4-flash', label:'DeepSeek V4 Flash', short:'DS Flash' }],
+        reasoning:{ default_enabled:false, default_effort:'medium', efforts:['medium'] },
+        web_search:{ available:true, default_enabled:true, tool:'openrouter:web_search' },
+      }),
+    }));
+    await page.route('**/api/waiver-swaps/latest', route => route.fulfill({
+      status:200, contentType:'application/json', body:JSON.stringify({ brief:{ state:'missing' } }),
+    }));
+    await page.route('**/api/skipper/messages', route => {
+      if (route.request().method() === 'GET') return route.fulfill({
+        status:200, contentType:'application/json', body:JSON.stringify({ messages:[] }),
+      });
+      return route.fulfill({
+        status:200,
+        contentType:'text/event-stream',
+        body:[
+          'data: {"type":"token","text":"No cited evidence was returned."}',
+          'data: {"type":"done","web_search_requested":true,"web_search":true,"sources_available":false,"web_search_requests":1}',
+          '',
+        ].join('\n\n'),
+      });
+    });
+
+    await page.goto('/');
+    await waitForAppMount(page);
+    await gotoTab(page, 'Skipper');
+    const input = page.getByPlaceholder(/ask about your roster/i);
+    await input.fill('Research this trade');
+    await input.press('Enter');
+
+    await expect(page.getByRole('status')).toContainText(/Treat this answer as unverified/i);
+    await expect(page.getByText('Web sources')).toHaveCount(0);
   });
 });

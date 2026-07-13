@@ -819,6 +819,7 @@ def skipper_history() -> dict[str, Any]:
                 "content": r.get("content"),
                 "tier": r.get("tier"),
                 "model": r.get("model"),
+                "metadata": r.get("metadata") if isinstance(r.get("metadata"), dict) else {},
                 "created_at": r.get("created_at"),
             }
             for r in rows
@@ -988,6 +989,9 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
 
         raw = "".join(assistant_buf)
         full = sandlot_skipper.repair_reply(raw, user_text, snapshot)
+        sources = list(sources_by_url.values())
+        web_search_executed = bool(web_search_requests)
+        sources_available = bool(sources)
         if sandlot_skipper.is_broken_reply(raw) and full:
             # The streamed text was a broken refusal; tell the frontend to swap
             # in the deterministic explanation that replaces it.
@@ -995,11 +999,21 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
         if full:
             try:
                 sandlot_db.append_chat_message(
-                    session_id, "assistant", full, tier=tier, model=used_model
+                    session_id,
+                    "assistant",
+                    full,
+                    tier=tier,
+                    model=used_model,
+                    metadata={
+                        "sources": sources,
+                        "web_search_requested": use_web_search,
+                        "web_search": web_search_executed,
+                        "sources_available": sources_available,
+                        "web_search_requests": web_search_requests,
+                    },
                 )
             except Exception as exc:
                 log.exception("Failed to persist assistant message")
-        sources = list(sources_by_url.values())
         if sources:
             yield _sse({"type": "sources", "sources": sources})
         yield _sse({
@@ -1009,7 +1023,8 @@ def skipper_send(payload: SkipperMessageIn) -> StreamingResponse:
             "selected_model": selected_model,
             "reasoning": bool(reasoning_effort),
             "web_search_requested": use_web_search,
-            "web_search": bool(sources or web_search_requests),
+            "web_search": web_search_executed,
+            "sources_available": sources_available,
             "web_search_requests": web_search_requests,
         })
 
