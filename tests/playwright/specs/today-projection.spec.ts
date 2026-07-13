@@ -17,8 +17,7 @@ import { waitForAppMount } from '../fixtures/sandlot';
 
 async function overlayProjection(page: import('@playwright/test').Page, projection: any, matchupOverrides: Record<string, any> = {}) {
   await page.route('**/api/snapshot/latest', async route => {
-    const res = await route.fetch();
-    const body = res.ok() ? await res.json() : {
+    const body = {
       status: 'success',
       source: 'test',
       snapshot_id: 1,
@@ -43,7 +42,7 @@ async function overlayProjection(page: import('@playwright/test').Page, projecti
         complete: false,
       },
     };
-    if (body?.matchup) body.matchup = { ...body.matchup, ...matchupOverrides, projection };
+    body.matchup = { ...body.matchup, ...matchupOverrides, projection };
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
 }
