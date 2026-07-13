@@ -150,6 +150,22 @@ evidence. Search execution, citation availability, and cumulative fallback
 request counts are recorded separately so a search without links is not called
 verified and retry spend is not hidden. Citations are scoped to the model attempt
 that produced the answer; sources from failed attempts are discarded.
+Trade handoffs buffer model tokens server-side instead of exposing the draft.
+The server emits an immediate research-started frame and safe progress frames
+at least every 12 seconds while a worker drains the model stream; these frames
+contain no model text and keep long-running production connections alive.
+The worker-to-response queue is bounded, and response teardown signals the
+worker while directly closing the per-request provider stream/client. This
+allows provider transport cancellation even during the pre-token wait and
+prevents unbounded buffering after a disconnected client.
+After generation, Sandlot constructs the visible eight-section answer from
+deterministic weekly, rest-of-season, replacement, counter, do-nothing, and
+safest-action evidence plus only bounded dynasty and roster-fit context parsed
+from exact section headings. Combined or unknown headings fail closed. Weekly
+and ROS totals remain withheld, current rates remain labeled as snapshots, and
+only the guarded answer is emitted and persisted. The UI labels the wait as
+cited-evidence research with Sandlot guardrails. This is enforcement, not
+another model prompt.
 The same preflight fails closed when either side is OUT, suspended, or in an
 injured-list slot. Sandlot's only modeled trade value is current snapshot FP/G,
 so a stale healthy rate cannot be presented as an actionable edge for an
