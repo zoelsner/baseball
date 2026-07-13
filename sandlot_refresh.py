@@ -22,6 +22,7 @@ import sandlot_data_quality
 import sandlot_db
 import sandlot_future_games
 import sandlot_matchup
+import sandlot_pitcher_opportunities
 import sandlot_receipts
 import sandlot_trade_outcomes
 
@@ -65,6 +66,19 @@ def _run_refresh_unlocked(source: str, started: float) -> RefreshResult:
         session, cookies, cookie_source = _session_from_available_cookies()
         snapshot = fantrax_data.collect_all(session, league_id, team_id)
         snapshot = sandlot_future_games.enrich_snapshot_future_games(snapshot)
+        try:
+            snapshot = sandlot_pitcher_opportunities.enrich_snapshot_pitcher_opportunities(snapshot)
+        except Exception as exc:
+            log.warning("Pitcher cadence enrichment unavailable: %s", exc)
+            snapshot = {
+                **snapshot,
+                "pitcher_opportunity_provenance": {
+                    "version": sandlot_pitcher_opportunities.MODEL_VERSION,
+                    "state": "partial",
+                    "reason": "pitcher cadence enrichment unavailable",
+                    "errors": [type(exc).__name__],
+                },
+            }
         snapshot = _maybe_apply_dom_slot_proof(snapshot, cookies, league_id, team_id)
         duration_ms = int((time.perf_counter() - started) * 1000)
         section_errors = [str(e) for e in (snapshot.get("errors") or [])]

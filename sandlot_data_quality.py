@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any
 
 import sandlot_future_games
+import sandlot_pitcher_opportunities
 
 
 INACTIVE_SLOTS = {"BN", "IL", "IR", "RES", "RESERVE", "BE", "BENCH", "INJ", "INJ RES", "MIN", "MINORS"}
@@ -24,6 +25,11 @@ UNAVAILABLE_STATUSES = {"OUT", "SUSP", "SUSPENDED", "IL", "IL10", "IL60", "IR"}
 def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Describe whether a raw snapshot can support projections/recommendations."""
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
+    projection_matchup = (
+        snapshot.get("editable_matchup")
+        if isinstance(snapshot.get("editable_matchup"), dict)
+        else matchup
+    )
     roster = snapshot.get("roster") if isinstance(snapshot.get("roster"), dict) else {}
     my_rows = roster.get("rows") if isinstance(roster, dict) else None
     all_rosters = snapshot.get("all_team_rosters") if isinstance(snapshot.get("all_team_rosters"), dict) else None
@@ -41,7 +47,11 @@ def snapshot_data_quality(snapshot: dict[str, Any]) -> dict[str, Any]:
     opponent_roster_quality = _opponent_roster_quality(matchup, all_rosters, opponent_rows)
     fppg_quality = _coverage_section("Active-player FP/G", active_rows, _has_fppg)
     future_games_quality = _future_games_quality(active_rows)
-    projection_future_games_quality = _future_games_quality(active_rows, projection=True)
+    projection_future_games_quality = _future_games_quality(
+        active_rows,
+        projection=True,
+        period_end=_date_value((projection_matchup or {}).get("end")),
+    )
     eligibility_quality = _coverage_section("Eligibility/position", active_rows, _has_position)
     lineup_slots_quality = _lineup_slots_quality(my_rows_list)
     projection_slots_quality = _projection_slots_quality(my_rows_list + opponent_rows_list)
@@ -194,6 +204,11 @@ def _iso_date(value: Any) -> str | None:
         return date.fromisoformat(text[:10]).isoformat()
     except ValueError:
         return None
+
+
+def _date_value(value: Any) -> date | None:
+    iso = _iso_date(value)
+    return date.fromisoformat(iso) if iso else None
 
 
 def _period_mismatch_reason(period: dict[str, Any]) -> str:
@@ -361,6 +376,7 @@ def _future_games_quality(
     rows: list[dict[str, Any]],
     *,
     projection: bool = False,
+    period_end: date | None = None,
 ) -> dict[str, Any]:
     predicate = _has_projection_future_games if projection else _has_future_games
     label = "Projection future-game" if projection else "Future-game"
@@ -378,10 +394,28 @@ def _future_games_quality(
     if status_counts:
         quality["status_counts"] = status_counts
     if projection and status_counts.get("pitcher_probables_unavailable"):
-        quality["pitchers_without_probable_start"] = status_counts["pitcher_probables_unavailable"]
-        quality["projection_scope"] = "known_opportunities_lower_bound"
+        missing_probables = status_counts["pitcher_probables_unavailable"]
+        cadence_estimated = sum(
+            1 for row in rows
+            if _future_game_status(row) == "pitcher_probables_unavailable"
+            if sandlot_pitcher_opportunities.valid_projection_estimate(
+                row.get("pitcher_opportunity_estimate"), period_end
+            ) is not None
+        )
+        unmodeled = max(0, missing_probables - cadence_estimated)
+        quality["pitchers_without_probable_start"] = missing_probables
+        quality["pitchers_with_cadence_estimate"] = cadence_estimated
+        quality["pitchers_without_opportunity_model"] = unmodeled
+        quality["projection_scope"] = (
+            "partial_estimated_pitcher_opportunities"
+            if cadence_estimated and unmodeled
+            else "estimated_pitcher_opportunities"
+            if cadence_estimated
+            else "known_opportunities_lower_bound"
+        )
         quality["assumption"] = (
-            "Pitchers without a posted probable start contribute zero until MLB publishes a player-specific opportunity."
+            f"{cadence_estimated} pitcher(s) use a frozen verified-GS cadence estimate; "
+            f"{unmodeled} pitcher(s) remain unmodeled and contribute zero."
         )
     if failed_examples:
         quality["failed_examples"] = failed_examples

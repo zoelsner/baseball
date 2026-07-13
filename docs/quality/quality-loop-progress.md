@@ -568,6 +568,20 @@
   copy, blocked `Propose swap`, `Ask Skipper`, and `Deep research` actions
   visible above the long evidence section, no empty-snapshot regression, and
   no console errors.
+- 2026-07-12: Started the verified pitcher-opportunity coverage slice after
+  production snapshot `285` showed 16 active pitchers without posted
+  probables. Independent review rejected historical probable-pitcher names as
+  actual-start evidence and rejected name-only identity joins. The revised
+  `verified_gs_cadence_v1` uses exact current-team MLB identity, completed
+  player game-log `GS`, a frozen 30-day window, completed team-game exposure,
+  recent-start and starter-role gates, and fractional expectations. Cadence
+  remains projection-only: probability release, action deltas, proposals, and
+  execution all stay fail-closed. A read-only live-data replay recovered 11
+  active-starter estimates, kept Logan Henderson plus six reliever slots
+  unmodeled, and changed the informational projection from 5.9 behind to 15.8
+  ahead. Full Python verification passes `553` tests plus `98` subtests (`2`
+  environment-specific tests skipped); no Fantrax or production-table write
+  occurred during the replay.
 
 ## Next Loop Phase
 

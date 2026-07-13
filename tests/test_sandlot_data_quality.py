@@ -353,6 +353,56 @@ class SnapshotDataQualityTests(unittest.TestCase):
         self.assertEqual(quality["projection_future_games"]["projection_scope"], "known_opportunities_lower_bound")
         self.assertEqual(quality["projection_reasons"], [])
 
+    def test_verified_cadence_is_separate_from_posted_and_unmodeled_counts(self):
+        snapshot = good_snapshot()
+        pitcher = snapshot["roster"]["rows"][0]
+        pitcher.update({
+            "slot": "SP",
+            "positions": "SP",
+            "slot_source": "raw.lineupSlot",
+            "future_games": [],
+            "future_games_source": "mlb_schedule",
+            "future_games_status": "pitcher_probables_unavailable",
+            "future_games_scope": "pitcher_probable_starts",
+            "pitcher_opportunity_estimate": {
+                "version": "verified_gs_cadence_v1",
+                "state": "estimated",
+                "expected_starts": 1.4,
+                "period_window": {"start": "2026-05-14", "end": "2026-05-20"},
+                "action_eligible": False,
+                "probability_release_eligible": False,
+            },
+        })
+
+        quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+
+        projection_games = quality["projection_future_games"]
+        self.assertEqual(projection_games["pitchers_without_probable_start"], 1)
+        self.assertEqual(projection_games["pitchers_with_cadence_estimate"], 1)
+        self.assertEqual(projection_games["pitchers_without_opportunity_model"], 0)
+        self.assertEqual(projection_games["projection_scope"], "estimated_pitcher_opportunities")
+        self.assertTrue(quality["projection_ready"])
+
+        for invalid_update in (
+            {"period_window": {"start": "2026-05-14", "end": "2026-05-21"}},
+            {"action_eligible": None},
+            {"expected_starts": float("nan")},
+        ):
+            with self.subTest(invalid_update=invalid_update):
+                evidence = pitcher["pitcher_opportunity_estimate"]
+                original = dict(evidence)
+                evidence.update(invalid_update)
+                invalid_quality = sandlot_data_quality.snapshot_data_quality(snapshot)
+                self.assertEqual(
+                    invalid_quality["projection_future_games"]["pitchers_with_cadence_estimate"],
+                    0,
+                )
+                self.assertEqual(
+                    invalid_quality["projection_future_games"]["pitchers_without_opportunity_model"],
+                    1,
+                )
+                pitcher["pitcher_opportunity_estimate"] = original
+
     def test_failed_pitcher_schedule_still_blocks_projection(self):
         snapshot = good_snapshot()
         pitcher = snapshot["roster"]["rows"][0]

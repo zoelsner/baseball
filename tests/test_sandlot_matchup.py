@@ -47,6 +47,72 @@ class MatchupProjectionTests(unittest.TestCase):
         self.assertEqual(projection["pitchers_without_probable_start"], 1)
         self.assertEqual(projection["drivers"]["pitchers_without_probable_start"], 1)
 
+    def test_verified_cadence_changes_projection_but_never_authorizes_pitcher_action(self):
+        cadence = {
+            "version": "verified_gs_cadence_v1",
+            "state": "estimated",
+            "expected_starts": 2.0,
+            "period_window": {"start": "2026-05-14", "end": "2026-05-20"},
+            "action_eligible": False,
+            "probability_release_eligible": False,
+        }
+        snapshot = {
+            "matchup": {
+                "my_score": 0,
+                "opponent_score": 0,
+                "opponent_team_id": "opp",
+                "start": "2026-05-14",
+                "end": "2026-05-20",
+                "complete": False,
+            },
+            "roster": {"rows": [
+                {
+                    "id": "active-sp", "name": "Active SP", "slot": "SP", "positions": "SP",
+                    "slot_source": "raw.posId", "fppg": 10.0, "future_games": [],
+                    "future_games_source": "mlb_schedule",
+                    "future_games_status": "pitcher_probables_unavailable",
+                    "future_games_scope": "pitcher_probable_starts",
+                    "pitcher_opportunity_estimate": cadence,
+                },
+                {
+                    "id": "bench-sp", "name": "Bench SP", "slot": "RES", "positions": "SP",
+                    "slot_source": "raw.statusId", "fppg": 20.0, "future_games": [],
+                    "future_games_source": "mlb_schedule",
+                    "future_games_status": "pitcher_probables_unavailable",
+                    "future_games_scope": "pitcher_probable_starts",
+                    "pitcher_opportunity_estimate": {**cadence, "expected_starts": 3.0},
+                },
+            ]},
+            "all_team_rosters": {"opp": {"rows": [{
+                "id": "opp-hitter", "slot": "SS", "positions": "SS", "slot_source": "raw.posId",
+                "fppg": 1.0, "future_games": [future_game(14)],
+                "future_games_source": "mlb_schedule", "future_games_status": "ok",
+            }]}},
+        }
+        quality = {
+            "projection_ready": True,
+            "recommendations_ready": True,
+            "lineup_recommendations_ready": True,
+        }
+
+        projection = sandlot_matchup.compute_projection(snapshot, quality)
+        simulation = sandlot_matchup.simulate_lineup_move_impact(snapshot, quality)
+
+        self.assertEqual(projection["projected_my"], 20.0)
+        self.assertEqual(projection["my_remaining_games"], 2.0)
+        self.assertEqual(projection["opportunity_completeness"], "estimated_pitcher_opportunities")
+        self.assertEqual(projection["pitchers_without_probable_start"], 1)
+        self.assertEqual(projection["pitchers_with_cadence_estimate"], 1)
+        self.assertEqual(projection["pitchers_without_opportunity_model"], 0)
+        self.assertEqual(
+            projection["pitchers_using_posted_probable_only"]
+            + projection["pitchers_with_cadence_estimate"]
+            + projection["pitchers_without_opportunity_model"],
+            projection["active_pitchers"],
+        )
+        self.assertEqual(simulation["actions"], [])
+        self.assertIn("future-game provenance is not trusted", simulation["no_action"]["reason"])
+
     def test_projects_active_rows_with_future_games_and_probability(self):
         snapshot = {
             "matchup": {
@@ -342,7 +408,7 @@ class MatchupProjectionTests(unittest.TestCase):
 
         self.assertGreater(projection["win_probability"], 0.5)
         self.assertLess(projection["win_probability"], 1.0)
-        self.assertEqual(projection["scoring_basis"], "current_snapshot_fppg_x_remaining_games")
+        self.assertEqual(projection["scoring_basis"], "current_snapshot_fppg_x_remaining_opportunities")
         self.assertFalse(projection["probability_calibrated"])
 
     def test_nonfinite_scores_or_rates_do_not_emit_projection(self):

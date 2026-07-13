@@ -7,12 +7,21 @@ This is a baseline forecast, not a truth machine and not machine learning. Its j
 For each open matchup, Sandlot starts with the live Fantrax score:
 
 ```text
-projected_final = current_score + sum(active_player_fp_per_game * remaining_games)
+projected_final = current_score + sum(active_player_fp_per_game * remaining_opportunities)
 ```
 
-It runs that formula for your active roster and the opponent's active roster. Bench, IL, reserve, and unavailable players are excluded from the active projection. Remaining games come from the snapshot's future-game data and only count games through the matchup period end.
+It runs that formula for your active roster and the opponent's active roster. Bench, IL, reserve, and unavailable players are excluded from the active projection. Hitter opportunities are remaining team games through the matchup period end.
 
-For `matchup_projection_v3`, generic future-game data is only counted as a projected appearance for hitter rows. Pitcher rows are excluded from future-game counting unless the game entry has pitcher-specific start or appearance evidence. Team schedule context is not enough to project an SP/RP/P row, because it would treat every remaining team game as a guaranteed pitcher appearance. A generic `player` payload on the future-game row is not start evidence; Fantrax attaches that to normal player schedule rows.
+For `matchup_projection_v5`, pitchers never inherit every team game as an appearance. Posted MLB probable starts remain exact opportunities. Active SP rows may additionally use a fractional expected-start total from `verified_gs_cadence_v1`: exact MLB player/team identity, completed pitching game-log rows with `gamesStarted`, completed team-game exposure over a frozen 30-day lookback, and the remaining team schedule.
+
+```text
+expected_starts = max(
+  posted_probable_starts,
+  verified_starts_recent / completed_team_games_recent * future_team_games
+)
+```
+
+The estimate requires at least two verified recent starts, a latest start no more than 14 days old, a starter-majority role, and nonzero historical/future team-game exposure. It remains fractional and is capped by remaining team games. Reliever cadence is not yet in the live matchup model. Missing or stale evidence fails closed to an explicit zero.
 
 The projected margin is:
 
@@ -30,9 +39,7 @@ Those values drive the plain-language explanations: current margin, projected ma
 
 ## Probability Approximation
 
-The win probability is an approximation layered on top of the deterministic projection. It treats the remaining projected points as a rough variance source and uses a normal approximation to estimate the chance your projected final beats the opponent's projected final.
-
-That means the probability is useful for direction and comparison, but it is not calibrated truth yet. The UI should prefer bands like "slight edge", "toss-up", or "comfortable edge" over precise probability claims when confidence is thin.
+The win probability approximation is layered on top of the deterministic projection, but it remains withheld in product. A forecast that uses cadence estimates is stored in its own non-complete opportunity cohort and is never eligible for probability release or action-probability deltas.
 
 Completed matchups are simpler: the probability is deterministic from the final score.
 
@@ -44,6 +51,8 @@ Supported move shapes:
 
 - Direct bench-to-active swaps when the bench player's eligibility proves the target slot is legal.
 - One-hop freeing-up swaps, where an active multi-position player moves to another legal slot, opening the needed slot for a bench player.
+
+Cadence evidence is projection-only. Exact-game counting, proposal participant checks, action contracts, dry-runs, and execution still require a posted player-specific probable start. A cadence-only pitcher cannot become a lineup proposal or execution participant.
 
 The ranking layer prefers win-probability gain, but it also requires a meaningful projected-points gain. Tiny moves are suppressed so the app can honestly say "no compelling action" instead of manufacturing advice.
 
@@ -58,7 +67,7 @@ Actual ML would start after enough logged projections and outcomes exist to prov
 - FP/G is a reasonable short-term baseline for each player.
 - Active roster slots define who contributes to the matchup projection.
 - Future-game data is available and correctly attached to hitter rows.
-- Pitcher future games require pitcher-specific start or appearance data before they contribute to the projection.
+- Pitcher exact games require a posted player-specific start. A qualified active SP can contribute a separately labeled fractional verified-GS estimate to the informational matchup projection only.
 - Injury/out/IL flags are enough to suppress unavailable players.
 - Remaining points can be treated as a rough variance term for probability.
 - Multi-position eligibility in the snapshot is enough to prove legal lineup swaps.
@@ -66,7 +75,8 @@ Actual ML would start after enough logged projections and outcomes exist to prov
 
 ## Known Weaknesses
 
-- Pitcher scoring is conservative: generic team future games do not project pitcher points, so pitcher contribution is understated until probable-start or appearance data is available.
+- Reliever scoring remains conservative: relievers without a posted start are unmodeled until a separately validated appearance-cadence model exists.
+- Starter cadence can miss a rotation change after the frozen snapshot; posted probable schedules remain the exact evidence source as MLB publishes them.
 - Negative fantasy points are handled in the mean but do not add negative variance.
 - Recent form is not modeled beyond whatever is already reflected in FP/G.
 - Lineup uncertainty, rest days, rainouts, probables, and role changes are only as good as the snapshot.

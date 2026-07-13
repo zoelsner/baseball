@@ -78,13 +78,14 @@ def expected_games(
     is_pure_pitcher = bool(tokens & PITCHER_TOKENS) and not (tokens - PITCHER_TOKENS)
     if is_pure_pitcher:
         starter_usage = starts_recent > 0 and starts_recent * 2 >= games_recent
+        exposure = float(team_games_recent)
+        future = float(team_games_next)
         if starter_usage:
-            # Rotation cadence: a healthy every-5th-day starter shows ~6
-            # starts over 30 days -> ~1.4 expected. Posted probables are
-            # ground truth when MLB has published them.
-            est = starts_recent / 30.0 * 7.0
+            # Rotation cadence is measured per completed team game so breaks,
+            # off days, and doubleheaders affect the denominator explicitly.
+            est = starts_recent / exposure * future if exposure > 0 else 0.0
             return max(est, float(probable_starts))
-        return games_recent / 30.0 * 7.0
+        return games_recent / exposure * future if exposure > 0 else 0.0
     # Hitters (and two-way players, who overwhelmingly earn as hitters):
     # team schedule x playing-time share.
     share = min(1.0, games_recent / team_games_recent) if team_games_recent else 0.0

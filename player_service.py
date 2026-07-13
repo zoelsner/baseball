@@ -315,11 +315,35 @@ def _load_games(
     group: str,
     force_refresh: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    return load_player_game_log(
+        mlb_id,
+        season=season,
+        group=group,
+        force_refresh=force_refresh,
+    )
+
+
+def load_player_game_log(
+    mlb_id: int,
+    *,
+    season: int,
+    group: str,
+    refresh_if_stale: bool = False,
+    force_refresh: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Load a frozen MLB game log, refreshing only when policy requires it.
+
+    Matchup cadence uses ``refresh_if_stale`` so frequent Fantrax refreshes do
+    not refetch every player. Explicit player-profile refreshes retain the
+    stronger ``force_refresh`` behavior.
+    """
     cached = sandlot_db.get_player_game_log(mlb_id, group_type=group, season=season)
+    cached_state = _game_log_cache_state(cached) if cached else None
     if not force_refresh:
-        if cached:
-            return cached.get("games") or [], _game_log_cache_state(cached)
-        return [], {"state": "missing", "fetched_at": None, "age_hours": None}
+        if cached and (not refresh_if_stale or cached_state.get("state") == "fresh"):
+            return cached.get("games") or [], cached_state
+        if not refresh_if_stale:
+            return [], {"state": "missing", "fetched_at": None, "age_hours": None}
     try:
         games = mlb_stats.fetch_game_log(mlb_id, season=season, group=group)
     except Exception as exc:
