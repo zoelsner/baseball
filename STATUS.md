@@ -1,9 +1,20 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-13** (local recommendation review handoff in progress).
+> Last updated: **2026-07-13** (extended-period projection context in progress).
 
 ## Where things stand
+
+- **Projection trust repair in progress:** Today now presents the 409–393
+  forecast as a rounded 14-day total, converts it to an approximately 29–28
+  FP/day pace, compares that with the latest completed period's 38–36
+  FP/day (265–249 over seven days), labels the FP/G estimate as not calibrated,
+  and discloses 11 cadence-estimated plus six unmodeled pitchers across both
+  rosters. This is presentation and
+  evidence context only: it does not invent a confidence interval or win
+  probability and does not change the projection model. Focused mobile
+  verification passes 20 relevant browser journeys with one production-only
+  smoke skipped.
 
 - **Incoming trade decision brief in progress:** an exact Fantrax player offer
   that fails the health, evidence, or young-asset policy no longer dead-ends at

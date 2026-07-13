@@ -15,7 +15,7 @@ import { waitForAppMount } from '../fixtures/sandlot';
  * shows; gate removed so the suite catches future regressions.
  */
 
-async function overlayProjection(page: import('@playwright/test').Page, projection: any) {
+async function overlayProjection(page: import('@playwright/test').Page, projection: any, matchupOverrides: Record<string, any> = {}) {
   await page.route('**/api/snapshot/latest', async route => {
     const res = await route.fetch();
     const body = res.ok() ? await res.json() : {
@@ -43,7 +43,7 @@ async function overlayProjection(page: import('@playwright/test').Page, projecti
         complete: false,
       },
     };
-    if (body?.matchup) body.matchup.projection = projection;
+    if (body?.matchup) body.matchup = { ...body.matchup, ...matchupOverrides, projection };
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
   });
 }
@@ -63,7 +63,7 @@ test.describe('Today — matchup projection ring', () => {
     await page.goto('/');
     await waitForAppMount(page);
 
-    await expect(page.getByText(/Projected\s+270\.4\s*[—-]\s*240\.1/i)).toBeVisible();
+    await expect(page.getByText(/Projected\s+270\s*[—-]\s*240/i)).toBeVisible();
   });
 
   test('renders projected line when win probability is low (<40%)', async ({ page }) => {
@@ -80,7 +80,7 @@ test.describe('Today — matchup projection ring', () => {
     await page.goto('/');
     await waitForAppMount(page);
 
-    await expect(page.getByText(/Projected\s+200\.0\s*[—-]\s*250\.0/i)).toBeVisible();
+    await expect(page.getByText(/Projected\s+200\s*[—-]\s*250/i)).toBeVisible();
   });
 
   test('hides projected line when matchup is complete (tied or not)', async ({ page }) => {
@@ -117,7 +117,7 @@ test.describe('Today — matchup projection ring', () => {
     await page.goto('/');
     await waitForAppMount(page);
     await expect(page.getByText(/^margin$/i)).toBeVisible();
-    await expect(page.getByText(/Projected\s+250\.0\s*[—-]\s*240\.0/i)).toBeVisible();
+    await expect(page.getByText(/Projected\s+250\s*[—-]\s*240/i)).toBeVisible();
     await expect(page.getByText(/probability unavailable/i)).toBeVisible();
   });
 
@@ -134,7 +134,64 @@ test.describe('Today — matchup projection ring', () => {
 
     await page.goto('/');
     await waitForAppMount(page);
-    await expect(page.getByText(/probability uncalibrated/i)).toBeVisible();
+    await expect(page.getByText('FP/G estimate · not calibrated', { exact:true })).toBeVisible();
     await expect(page.getByText('EDGE', { exact: true })).toHaveCount(0);
+  });
+
+  test('anchors an extended-period total to daily pace and the last completed period', async ({ page }) => {
+    await overlayProjection(page, {
+      projected_my: 409.2,
+      projected_opp: 393.4,
+      my_remaining_games: 114.5864,
+      opp_remaining_games: 113.1846,
+      probability_calibrated: false,
+      pitchers_with_cadence_estimate: 11,
+      pitchers_without_opportunity_model: 6,
+      complete: false,
+    }, {
+      start: '2026-07-13',
+      end: '2026-07-26',
+      days: 14,
+      latest_completed: {
+        start: '2026-07-06',
+        end: '2026-07-12',
+        days: 7,
+        my_score: 265.0,
+        opponent_score: 248.5,
+      },
+    });
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    await expect(page.getByText(/Projected\s+409\s*[—-]\s*393/i)).toBeVisible();
+    const context = page.getByRole('note', { name:'Projection scale and evidence' });
+    await expect(context.getByText('14-day scoring period · Jul 13–Jul 26', { exact:true })).toBeVisible();
+    await expect(context.getByText('≈ 29–28 FP/day · last: 38–36/day (265–249, 7d)', { exact:true })).toBeVisible();
+    await expect(context.getByText('Both rosters: 11 cadence-estimated · 6 unmodeled pitchers · totals are partial', { exact:true })).toBeVisible();
+    await expect(page.getByText('FP/G estimate · not calibrated', { exact:true })).toBeVisible();
+  });
+
+  test('discloses cadence-estimated pitchers when none remain unmodeled', async ({ page }) => {
+    await overlayProjection(page, {
+      projected_my: 280,
+      projected_opp: 210,
+      probability_calibrated: false,
+      pitchers_with_cadence_estimate: 4,
+      pitchers_without_opportunity_model: 0,
+      complete: false,
+    }, {
+      start: '2026-07-13',
+      end: '2026-07-19',
+      days: 7,
+    });
+
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const context = page.getByRole('note', { name:'Projection scale and evidence' });
+    await expect(context.getByText('≈ 40–30 FP/day', { exact:true })).toBeVisible();
+    await expect(context.getByText('Both rosters: 4 cadence-estimated pitchers', { exact:true })).toBeVisible();
+    await expect(context.getByText(/totals are partial/i)).toHaveCount(0);
   });
 });
