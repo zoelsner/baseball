@@ -180,6 +180,16 @@ class ProjectionLoggingTests(unittest.TestCase):
         self.assertEqual(record["matchup_key"], "league:4:me:opp")
         self.assertEqual(record["predicted_margin"], 3.0)
         self.assertIn("drivers", record)
+        self.assertEqual(
+            record["drivers"]["forecast_provenance"],
+            sandlot_matchup.FORECAST_PROVENANCE_VERSION,
+        )
+
+    def test_completed_matchup_is_never_logged_as_a_forecast(self):
+        snapshot = projection_ready_snapshot()
+        snapshot["matchup"]["complete"] = True
+
+        self.assertIsNone(sandlot_matchup.projection_log_payload(123, snapshot))
 
     def test_refresh_marks_empty_my_roster_snapshot_failed(self):
         snapshot = projection_ready_snapshot()
@@ -423,13 +433,28 @@ class ProjectionLoggingTests(unittest.TestCase):
         calls = []
 
         class FakeResult:
+            def __init__(self, *, one=None, many=None):
+                self.one = one
+                self.many = many or []
+
+            def fetchone(self):
+                return self.one
+
             def fetchall(self):
-                return [{"id": 1}, {"id": 2}]
+                return self.many
 
         class FakeConn:
             def execute(self, sql, params=None):
                 calls.append((sql, params))
-                return FakeResult()
+                if "SELECT id" in sql:
+                    return FakeResult(many=[{
+                        "id": 1, "my_team_id": "me", "opponent_team_id": "opp",
+                        "actual_my": None, "actual_opp": None, "actual_winner": None,
+                    }, {
+                        "id": 2, "my_team_id": "me", "opponent_team_id": "opp",
+                        "actual_my": None, "actual_opp": None, "actual_winner": None,
+                    }])
+                return FakeResult(many=[{"id": 1}, {"id": 2}])
 
         @contextmanager
         def fake_connect():
@@ -445,9 +470,95 @@ class ProjectionLoggingTests(unittest.TestCase):
             )
 
         self.assertEqual(count, 2)
-        sql, params = calls[0]
+        self.assertEqual(len(calls), 2)
+        conflict_sql, conflict_params = calls[0]
+        self.assertIn("FOR UPDATE", conflict_sql)
+        self.assertEqual(conflict_params, ("league:4:me:opp", "4"))
+        sql, params = calls[1]
         self.assertIn("UPDATE projection_logs", sql)
+        self.assertIn("period_id = %s", sql)
+        self.assertNotIn("IS NULL OR", sql)
         self.assertEqual(params[3], "league:4:me:opp")
+        self.assertEqual(params[4], "4")
+        self.assertEqual(params[5:], (12.0, 10.0, "me"))
+
+    def test_update_projection_actuals_rejects_incomplete_or_contradictory_identity(self):
+        with self.assertRaisesRegex(ValueError, "identity is incomplete"):
+            sandlot_db.update_projection_actuals(
+                matchup_key="league:4:me:opp", period_id="", actual_my=12.0,
+                actual_opp=10.0, actual_winner="me",
+            )
+
+        class FakeResult:
+            def fetchall(self):
+                return [{
+                    "id": 1, "my_team_id": "me", "opponent_team_id": "opp",
+                    "actual_my": 11.0, "actual_opp": 10.0, "actual_winner": "me",
+                }]
+
+        class FakeConn:
+            def execute(self, sql, params=None):
+                self.sql = sql
+                self.params = params
+                return FakeResult()
+
+        @contextmanager
+        def fake_connect():
+            yield FakeConn()
+
+        with patch.object(sandlot_db, "connect", fake_connect), self.assertRaisesRegex(
+            ValueError, "contradict immutable"
+        ):
+            sandlot_db.update_projection_actuals(
+                matchup_key="league:4:me:opp", period_id="4", actual_my=12.0,
+                actual_opp=10.0, actual_winner="me",
+            )
+
+    def test_update_projection_actuals_validates_winner_and_is_idempotent(self):
+        class Result:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+        target = {
+            "id": 1, "my_team_id": "me", "opponent_team_id": "opp",
+            "actual_my": 12.0, "actual_opp": 10.0, "actual_winner": "me",
+        }
+
+        class Conn:
+            def execute(self, sql, params=None):
+                return Result([target] if "SELECT id" in sql else [{"id": 1}])
+
+        @contextmanager
+        def fake_connect():
+            yield Conn()
+
+        with patch.object(sandlot_db, "connect", fake_connect):
+            self.assertEqual(sandlot_db.update_projection_actuals(
+                matchup_key="league:4:me:opp", period_id="4", actual_my=12.0,
+                actual_opp=10.0, actual_winner="me",
+            ), 1)
+            with self.assertRaisesRegex(ValueError, "winner contradicts"):
+                sandlot_db.update_projection_actuals(
+                    matchup_key="league:4:me:opp", period_id="4", actual_my=12.0,
+                    actual_opp=10.0, actual_winner="opp",
+                )
+
+        class EmptyConn:
+            def execute(self, sql, params=None):
+                return Result([])
+
+        @contextmanager
+        def empty_connect():
+            yield EmptyConn()
+
+        with patch.object(sandlot_db, "connect", empty_connect):
+            self.assertEqual(sandlot_db.update_projection_actuals(
+                matchup_key="league:99:me:opp", period_id="99", actual_my=1.0,
+                actual_opp=0.0, actual_winner="me",
+            ), 0)
 
 
 if __name__ == "__main__":

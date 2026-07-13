@@ -278,6 +278,79 @@ def recommendation_learning(
     return jsonable_encoder(_public_recommendation_learning(report))
 
 
+@app.get("/api/matchup-probability-readiness")
+def matchup_probability_readiness() -> dict[str, Any]:
+    """Expose calibration evidence without activating probability product claims."""
+    try:
+        rows = sandlot_db.list_projection_logs_for_calibration()
+        report = sandlot_matchup.calibration_report(rows)
+        snapshot_row = sandlot_db.latest_successful_snapshot()
+        plan = _matchup_decisions(dict(snapshot_row))["win_this_week"] if snapshot_row else {}
+    except Exception as exc:
+        log.exception("Matchup probability readiness report failed")
+        raise HTTPException(
+            status_code=503, detail="Matchup probability readiness is temporarily unavailable"
+        ) from exc
+    group = next(
+        (
+            item for item in report.get("groups") or []
+            if item.get("model_version") == sandlot_matchup.MODEL_VERSION
+            and item.get("surface") == "api"
+        ),
+        None,
+    )
+    readiness = report.get("release_readiness") or {}
+    current = plan.get("matchup") if isinstance(plan.get("matchup"), dict) else {}
+    unknown_pitchers = max(0, int(current.get("pitchers_without_probable_start") or 0))
+    opportunity_complete = (
+        current.get("opportunity_completeness") == "complete" and unknown_pitchers == 0
+    )
+    current_reasons = []
+    if not current:
+        current_reasons.append("current_forecast_unavailable")
+    elif not opportunity_complete:
+        current_reasons.append("current_pitcher_opportunity_coverage_incomplete")
+    evidence_band_ready = readiness.get("state") == "band_ready"
+    applicability_reasons = list(readiness.get("reasons") or []) + current_reasons
+    applicability_state = (
+        "eligible_for_separate_release_review"
+        if evidence_band_ready and opportunity_complete
+        else "withheld"
+    )
+    return jsonable_encoder({
+        "model_version": sandlot_matchup.MODEL_VERSION,
+        "state": readiness.get("state") or "collecting",
+        "probability_calibrated": False,
+        "sample_unit": "unique_matchup",
+        "forecast_row_count": int((group or {}).get("forecast_row_count") or 0),
+        "labeled_row_count": int((group or {}).get("labeled_row_count") or 0),
+        "eligible_matchup_count": int((group or {}).get("eligible_matchup_count") or 0),
+        "independent_matchup_count": int((group or {}).get("independent_matchup_count") or 0),
+        "actual_coverage": (group or {}).get("actual_coverage") or 0.0,
+        "opportunity_cohorts": (group or {}).get("opportunity_cohorts") or {},
+        "metrics": (group or {}).get("metrics") or {},
+        "readiness": readiness,
+        "current_forecast": {
+            "planning_horizon": plan.get("planning_horizon") or {},
+            "opportunity_completeness": current.get("opportunity_completeness"),
+            "pitchers_without_probable_start": unknown_pitchers,
+        },
+        "current_applicability": {
+            "state": applicability_state,
+            "evidence_band_ready": evidence_band_ready,
+            "opportunity_complete": opportunity_complete,
+            "reasons": list(dict.fromkeys(applicability_reasons)),
+        },
+        "product_activation": {
+            "state": "locked",
+            "requires_separate_reviewed_release": True,
+            "precise_probability": False,
+            "action_probability_delta": False,
+            "autopilot_eligible": False,
+        },
+    })
+
+
 @app.post("/api/recommendation-receipts/{receipt_id}/decision")
 def decide_recommendation_receipt(
     receipt_id: str,

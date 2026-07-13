@@ -2089,12 +2089,46 @@ def upsert_projection_log(
 def update_projection_actuals(
     *,
     matchup_key: str,
-    period_id: str | None,
+    period_id: str,
     actual_my: float,
     actual_opp: float,
     actual_winner: str,
 ) -> int:
+    matchup_key = str(matchup_key or "").strip()
+    period_id = str(period_id or "").strip()
+    actual_winner = str(actual_winner or "").strip()
+    if not matchup_key or not period_id or not actual_winner:
+        raise ValueError("projection actual identity is incomplete")
+    if not all(math.isfinite(float(value)) for value in (actual_my, actual_opp)):
+        raise ValueError("projection actual scores must be finite")
     with connect() as conn:
+        targets = conn.execute(
+            """
+            SELECT id, my_team_id, opponent_team_id, actual_my, actual_opp, actual_winner
+            FROM projection_logs
+            WHERE matchup_key = %s
+              AND period_id = %s
+            FOR UPDATE
+            """,
+            (matchup_key, period_id),
+        ).fetchall()
+        if not targets:
+            return 0
+        for target in targets:
+            expected_winner = "tie"
+            if actual_my > actual_opp:
+                expected_winner = str(target.get("my_team_id") or "").strip()
+            elif actual_opp > actual_my:
+                expected_winner = str(target.get("opponent_team_id") or "").strip()
+            if not expected_winner or actual_winner != expected_winner:
+                raise ValueError("projection actual winner contradicts scores or team identity")
+            existing = (
+                target.get("actual_my"), target.get("actual_opp"), target.get("actual_winner")
+            )
+            if any(value is not None for value in existing) and existing != (
+                actual_my, actual_opp, actual_winner
+            ):
+                raise ValueError("projection actuals contradict immutable recorded results")
         rows = conn.execute(
             """
             UPDATE projection_logs
@@ -2103,11 +2137,20 @@ def update_projection_actuals(
                 actual_winner = %s,
                 updated_at = now()
             WHERE matchup_key = %s
-              AND (%s IS NULL OR period_id = %s)
+              AND period_id = %s
+              AND (
+                (actual_my IS NULL AND actual_opp IS NULL AND actual_winner IS NULL)
+                OR (actual_my = %s AND actual_opp = %s AND actual_winner = %s)
+              )
             RETURNING id
             """,
-            (actual_my, actual_opp, actual_winner, matchup_key, period_id, period_id),
+            (
+                actual_my, actual_opp, actual_winner, matchup_key, period_id,
+                actual_my, actual_opp, actual_winner,
+            ),
         ).fetchall()
+        if len(rows) != len(targets):
+            raise RuntimeError("projection actual rows changed during immutable update")
     return len(rows)
 
 
@@ -2123,6 +2166,26 @@ def list_projection_logs_for_evaluation(limit: int | None = None) -> list[dict[s
           AND actual_opp IS NOT NULL
           AND actual_winner IS NOT NULL
         ORDER BY updated_at DESC, id DESC
+    """
+    params: tuple[Any, ...] = ()
+    if limit is not None:
+        sql += " LIMIT %s"
+        params = (limit,)
+    with connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_projection_logs_for_calibration(limit: int | None = None) -> list[dict[str, Any]]:
+    """Return forecast rows including missing labels so coverage cannot self-select."""
+    sql = """
+        SELECT
+          id, snapshot_id, model_version, surface, shown_date, matchup_key, period_id,
+          my_team_id, opponent_team_id, predicted_my, predicted_opp,
+          predicted_margin, win_probability, data_quality, drivers,
+          actual_my, actual_opp, actual_winner, created_at, updated_at
+        FROM projection_logs
+        ORDER BY shown_date ASC, id ASC
     """
     params: tuple[Any, ...] = ()
     if limit is not None:

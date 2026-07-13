@@ -85,6 +85,29 @@ The calibration report checks:
 - Brier score for probability error
 - game-volume bias, especially whether teams with more remaining games are consistently overrated
 
+Daily forecasts and Skipper/API surfaces are retained for horizon diagnostics,
+but they are not independent samples. Release readiness selects the earliest
+forecast checkpoint for each exact model/matchup and gates on unique completed
+matchups. Unlabeled forecast matchups remain in the coverage denominator.
+Lower-bound opportunities are reported as a separate cohort rather than being
+silently treated as complete pitcher coverage.
+
+Sandlot exposes this evidence at `GET /api/matchup-probability-readiness`.
+The endpoint is diagnostic only: product activation, precise probability,
+action probability deltas, and autopilot stay locked behind a separate reviewed
+release even if a future evidence checkpoint passes. Coarse probability bands
+require at least 40 independent, provenance-verified, complete-opportunity
+matchups, 95% label coverage, balanced wins and losses, and skill over naive
+Brier and margin baselines. Precise percentages remain uncertified until a
+later contract adds probability-bin coverage, reliability error, uncertainty,
+and temporal holdout evidence; action deltas need separate counterfactual
+evidence.
+
+Completed matchup scores are outcomes, never forecasts. The logger refuses to
+upsert a completed matchup because doing so could overwrite an earlier same-day
+forecast with the final answer. Outcome attachment is exact on matchup and
+period and rejects contradictory previously recorded results.
+
 Until there is enough logged history, any accuracy claim should be treated as premature.
 
 ## Roadmap Sequence
