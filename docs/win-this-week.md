@@ -35,6 +35,14 @@ Win probability is included only after calibration is supported. Until then,
 the engine explicitly ranks by projected points and returns
 `win_probability_delta: null`.
 
+Calibration readiness is measurable at
+`GET /api/matchup-probability-readiness`. Its release denominator is unique
+matchups, not daily log rows or repeated UI surfaces, and missing outcome labels
+remain in the coverage denominator. Passing that evidence checkpoint does not
+automatically activate product behavior: base probability still needs a
+reviewed release, while action probability deltas require their own
+counterfactual validation.
+
 The post-action outlook is deterministic: Sandlot adds the primary action's
 comparable point impact to the pre-action projected margin and states whether
 the remaining-week estimate still leaves the manager behind, tied, or ahead.

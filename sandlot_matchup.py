@@ -28,6 +28,10 @@ MODEL_VERSION = "matchup_projection_v4"
 MAX_ABS_FPPG = 100.0
 MIN_MEANINGFUL_POINTS_DELTA = 1.0
 MIN_MEANINGFUL_WIN_PROBABILITY_DELTA = 0.01
+MIN_BAND_READY_MATCHUPS = 40
+MIN_CALIBRATION_LABEL_COVERAGE = 0.95
+MIN_OUTCOMES_PER_SIDE = 10
+FORECAST_PROVENANCE_VERSION = "open_matchup_pre_outcome_v1"
 HITTER_POSITIONS = {"C", "1B", "2B", "3B", "SS", "OF", "LF", "CF", "RF"}
 PITCHER_POSITIONS = {"P", "SP", "RP"}
 POSITION_ALIASES = {
@@ -207,6 +211,11 @@ def projection_log_payload(
     matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
     if not projection or not matchup:
         return None
+    # A completed matchup is an outcome, not a forecast. Logging the final
+    # score would overwrite an earlier same-day forecast and leak the answer
+    # into calibration through the daily idempotency key.
+    if matchup.get("complete"):
+        return None
 
     predicted_my = _number(projection.get("projected_my"))
     predicted_opp = _number(projection.get("projected_opp"))
@@ -226,7 +235,10 @@ def projection_log_payload(
         "predicted_margin": round(predicted_my - predicted_opp, 1),
         "win_probability": win_probability,
         "data_quality": data_quality or {},
-        "drivers": projection.get("drivers") or {},
+        "drivers": {
+            **(projection.get("drivers") or {}),
+            "forecast_provenance": FORECAST_PROVENANCE_VERSION,
+        },
     }
 
 
@@ -255,12 +267,38 @@ def actual_result_payload(snapshot: dict[str, Any]) -> dict[str, Any] | None:
 def calibration_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in rows or []:
-        if not _has_evaluation_fields(row):
+        if not _has_forecast_fields(row):
             continue
         model_version = str(row.get("model_version") or "unknown")
         surface = str(row.get("surface") or "unknown")
         groups.setdefault((model_version, surface), []).append(row)
 
+    labeled_rows = [row for values in groups.values() for row in values if _has_evaluation_fields(row)]
+    eligible_matchups = {
+        (str(row.get("model_version") or "unknown"), str(row.get("matchup_key") or ""))
+        for values in groups.values() for row in values if row.get("matchup_key")
+    }
+    model_rows: dict[str, list[dict[str, Any]]] = {}
+    for values in groups.values():
+        for row in values:
+            model_rows.setdefault(str(row.get("model_version") or "unknown"), []).append(row)
+    labeled_matchups = {
+        (model_version, str(row.get("matchup_key")))
+        for model_version, values in model_rows.items()
+        for row in _independent_forecast_checkpoints(values)
+        if _has_evaluation_fields(row)
+    }
+    grouped = [
+        _calibration_group(model_version, surface, values)
+        for (model_version, surface), values in sorted(groups.items())
+    ]
+    current_api = next(
+        (
+            group for group in grouped
+            if group.get("model_version") == MODEL_VERSION and group.get("surface") == "api"
+        ),
+        None,
+    )
     return {
         "minimum_actual_fields": [
             "actual_my",
@@ -271,22 +309,89 @@ def calibration_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "win_probability",
             "model_version",
         ],
-        "sample_size": sum(len(values) for values in groups.values()),
-        "groups": [
-            _calibration_group(model_version, surface, values)
-            for (model_version, surface), values in sorted(groups.items())
-        ],
+        "forecast_row_count": sum(len(values) for values in groups.values()),
+        "labeled_row_count": len(labeled_rows),
+        # Backward-compatible diagnostic count. Release gates never use it.
+        "sample_size": len(labeled_rows),
+        "eligible_matchup_count": len(eligible_matchups),
+        "independent_matchup_count": len(labeled_matchups),
+        "groups": grouped,
+        "release_readiness": (
+            current_api.get("release_readiness")
+            if isinstance(current_api, dict)
+            else _probability_release_readiness(
+                independent_matchups=0,
+                eligible_matchups=0,
+                metrics={},
+                checkpoint_rows=[],
+            )
+        ),
     }
 
 
 def _calibration_group(model_version: str, surface: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    labeled_rows = [row for row in rows if _has_evaluation_fields(row)]
+    checkpoints = _independent_forecast_checkpoints(rows)
+    labeled_checkpoints = [row for row in checkpoints if _has_evaluation_fields(row)]
+    eligible_matchups = {str(row.get("matchup_key")) for row in checkpoints}
+    labeled_matchups = {str(row.get("matchup_key")) for row in labeled_checkpoints}
+    release_rows = [row for row in rows if _release_forecast_eligible(row)]
+    release_checkpoints = _independent_forecast_checkpoints(release_rows)
+    release_labeled = [row for row in release_checkpoints if _has_evaluation_fields(row)]
+    release_eligible_matchups = {str(row.get("matchup_key")) for row in release_checkpoints}
+    release_labeled_matchups = {str(row.get("matchup_key")) for row in release_labeled}
+    metrics = _calibration_metrics(labeled_checkpoints)
+    release_metrics = _calibration_metrics(release_labeled)
+    release_readiness = _probability_release_readiness(
+        independent_matchups=len(release_labeled_matchups),
+        eligible_matchups=len(release_eligible_matchups),
+        metrics=release_metrics,
+        checkpoint_rows=release_labeled,
+    )
+    if not release_eligible_matchups:
+        release_readiness["reasons"] = [
+            "no_complete_provenance_eligible_forecasts",
+            *release_readiness["reasons"],
+        ]
+    return {
+        "model_version": model_version,
+        "surface": surface,
+        "count": len(labeled_rows),
+        "forecast_row_count": len(rows),
+        "labeled_row_count": len(labeled_rows),
+        "eligible_matchup_count": len(eligible_matchups),
+        "independent_matchup_count": len(labeled_matchups),
+        "actual_coverage": round(len(labeled_matchups) / len(eligible_matchups), 4) if eligible_matchups else 0.0,
+        "metric_checkpoint_policy": "earliest_forecast_per_matchup_before_label_filtering",
+        "metric_checkpoint_count": len(labeled_checkpoints),
+        "opportunity_cohorts": _opportunity_cohort_counts(checkpoints),
+        "metrics": metrics,
+        "flags": _calibration_flags(len(labeled_checkpoints), metrics),
+        "release_cohort": {
+            "forecast_provenance": FORECAST_PROVENANCE_VERSION,
+            "opportunity_completeness": "complete",
+            "eligible_matchup_count": len(release_eligible_matchups),
+            "independent_matchup_count": len(release_labeled_matchups),
+            "actual_coverage": (
+                round(len(release_labeled_matchups) / len(release_eligible_matchups), 4)
+                if release_eligible_matchups else 0.0
+            ),
+            "metrics": release_metrics,
+        },
+        "release_exclusions": _release_exclusion_counts(checkpoints),
+        "release_readiness": release_readiness,
+    }
+
+
+def _calibration_metrics(checkpoints: list[dict[str, Any]]) -> dict[str, Any]:
     score_errors: list[float] = []
     margin_errors: list[float] = []
     margin_abs_errors: list[float] = []
     brier_scores: list[float] = []
     game_edge_errors: dict[str, list[float]] = {"positive": [], "negative": [], "even": []}
 
-    for row in rows:
+    actual_margin_abs: list[float] = []
+    for row in checkpoints:
         predicted_my = _number(row.get("predicted_my")) or 0.0
         predicted_opp = _number(row.get("predicted_opp")) or 0.0
         predicted_margin = _number(row.get("predicted_margin"))
@@ -295,6 +400,7 @@ def _calibration_group(model_version: str, surface: str, rows: list[dict[str, An
         actual_my = _number(row.get("actual_my")) or 0.0
         actual_opp = _number(row.get("actual_opp")) or 0.0
         actual_margin = actual_my - actual_opp
+        actual_margin_abs.append(abs(actual_margin))
         margin_error = predicted_margin - actual_margin
         probability = _number(row.get("win_probability")) or 0.0
         outcome = _actual_probability_outcome(actual_my, actual_opp)
@@ -313,23 +419,150 @@ def _calibration_group(model_version: str, surface: str, rows: list[dict[str, An
         else:
             game_edge_errors["even"].append(margin_error)
 
-    metrics = {
+    return {
         "score_mae": _mean(score_errors),
         "margin_mae": _mean(margin_abs_errors),
         "margin_bias": _mean(margin_errors),
         "brier_score": _mean(brier_scores),
+        "naive_even_brier_score": 0.25 if brier_scores else None,
+        "brier_skill_vs_even": (
+            round(1.0 - (_mean(brier_scores) / 0.25), 4)
+            if brier_scores and _mean(brier_scores) is not None
+            else None
+        ),
+        "naive_zero_margin_mae": _mean(actual_margin_abs),
         "game_volume_bias": {
             key: _mean(values)
             for key, values in game_edge_errors.items()
             if values
         },
     }
+
+
+def _has_forecast_fields(row: dict[str, Any]) -> bool:
+    required = ("predicted_my", "predicted_opp", "win_probability", "model_version", "matchup_key")
+    return all(row.get(key) is not None for key in required)
+
+
+def _independent_forecast_checkpoints(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Choose one predeclared forecast per matchup; daily/surface rows are not samples."""
+    by_matchup: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not _has_forecast_fields(row) or not row.get("matchup_key"):
+            continue
+        key = str(row["matchup_key"])
+        current = by_matchup.get(key)
+        candidate_order = (
+            str(row.get("shown_date") or row.get("created_at") or "9999-12-31"),
+            int(row.get("id") or 0),
+        )
+        current_order = (
+            str((current or {}).get("shown_date") or (current or {}).get("created_at") or "9999-12-31"),
+            int((current or {}).get("id") or 0),
+        )
+        if current is None or candidate_order < current_order:
+            by_matchup[key] = row
+    return [by_matchup[key] for key in sorted(by_matchup)]
+
+
+def _release_forecast_eligible(row: dict[str, Any]) -> bool:
+    drivers = row.get("drivers") if isinstance(row.get("drivers"), dict) else {}
+    return (
+        drivers.get("forecast_provenance") == FORECAST_PROVENANCE_VERSION
+        and drivers.get("opportunity_completeness") == "complete"
+    )
+
+
+def _release_exclusion_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        drivers = row.get("drivers") if isinstance(row.get("drivers"), dict) else {}
+        if drivers.get("forecast_provenance") != FORECAST_PROVENANCE_VERSION:
+            reason = "unverified_forecast_provenance"
+        elif drivers.get("opportunity_completeness") != "complete":
+            reason = "incomplete_opportunity_scope"
+        else:
+            continue
+        counts[reason] = counts.get(reason, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _opportunity_cohort_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        drivers = row.get("drivers") if isinstance(row.get("drivers"), dict) else {}
+        cohort = str(drivers.get("opportunity_completeness") or "unknown")
+        counts[cohort] = counts.get(cohort, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _probability_release_readiness(
+    *, independent_matchups: int, eligible_matchups: int,
+    metrics: dict[str, Any], checkpoint_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    coverage = independent_matchups / eligible_matchups if eligible_matchups else 0.0
+    outcomes = {"wins": 0, "losses": 0, "ties": 0}
+    for row in checkpoint_rows:
+        actual_my = _number(row.get("actual_my"))
+        actual_opp = _number(row.get("actual_opp"))
+        if actual_my is None or actual_opp is None:
+            continue
+        if actual_my > actual_opp:
+            outcomes["wins"] += 1
+        elif actual_my < actual_opp:
+            outcomes["losses"] += 1
+        else:
+            outcomes["ties"] += 1
+    band_gates = {
+        "independent_matchups": independent_matchups >= MIN_BAND_READY_MATCHUPS,
+        "actual_coverage": coverage >= MIN_CALIBRATION_LABEL_COVERAGE,
+        "outcome_balance": min(outcomes["wins"], outcomes["losses"]) >= MIN_OUTCOMES_PER_SIDE,
+        "brier_skill_vs_even": isinstance(metrics.get("brier_skill_vs_even"), (int, float)) and metrics["brier_skill_vs_even"] > 0,
+        "margin_skill_vs_zero": (
+            isinstance(metrics.get("margin_mae"), (int, float))
+            and isinstance(metrics.get("naive_zero_margin_mae"), (int, float))
+            and metrics["margin_mae"] < metrics["naive_zero_margin_mae"]
+        ),
+        "margin_bias": isinstance(metrics.get("margin_bias"), (int, float)) and abs(metrics["margin_bias"]) < 5,
+    }
+    band_ready = all(band_gates.values())
+    reasons = []
+    if not band_gates["independent_matchups"]:
+        reasons.append("insufficient_independent_matchups")
+    if not band_gates["actual_coverage"]:
+        reasons.append("insufficient_actual_coverage")
+    if not band_gates["outcome_balance"]:
+        reasons.append("insufficient_outcome_balance")
+    if not band_gates["brier_skill_vs_even"]:
+        reasons.append("brier_skill_not_established")
+    if not band_gates["margin_skill_vs_zero"]:
+        reasons.append("margin_baseline_not_beaten")
+    if not band_gates["margin_bias"]:
+        reasons.append("margin_bias_not_acceptable")
+    reasons.append("numeric_probability_not_certified")
     return {
-        "model_version": model_version,
-        "surface": surface,
-        "count": len(rows),
-        "metrics": metrics,
-        "flags": _calibration_flags(len(rows), metrics),
+        "state": "band_ready" if band_ready else "collecting",
+        "sample_unit": "unique_matchup",
+        "checkpoint_policy": "earliest_complete_provenance_eligible_forecast_per_matchup",
+        "independent_matchup_count": independent_matchups,
+        "eligible_matchup_count": eligible_matchups,
+        "actual_coverage": round(coverage, 4),
+        "outcomes": outcomes,
+        "requirements": {
+            "band_ready_matchups": MIN_BAND_READY_MATCHUPS,
+            "minimum_actual_coverage": MIN_CALIBRATION_LABEL_COVERAGE,
+            "minimum_wins_and_losses": MIN_OUTCOMES_PER_SIDE,
+        },
+        "gates": band_gates,
+        "reasons": reasons,
+        "allowed_outputs": {
+            "projected_score": True,
+            "projected_margin": True,
+            "margin_based_band": True,
+            "precise_probability": False,
+            # Counterfactual action deltas require their own evidence contract.
+            "action_probability_delta": False,
+        },
     }
 
 

@@ -12,7 +12,7 @@ import sandlot_matchup
 
 def build_report(*, limit: int | None = None) -> dict[str, Any]:
     sandlot_db.init_schema()
-    rows = sandlot_db.list_projection_logs_for_evaluation(limit=limit)
+    rows = sandlot_db.list_projection_logs_for_calibration(limit=limit)
     return sandlot_matchup.calibration_report(rows)
 
 
