@@ -134,6 +134,7 @@ def build_manual_review(
     get_names = ", ".join(str(row.get("name") or "Unknown") for row in get_players)
     blocker_names = list(dict.fromkeys(str(item.get("player_name") or "Unknown") for item in blockers))
     blocker_summary = ", ".join(blocker_names)
+    blocker_verb = "has" if len(blocker_names) == 1 else "have"
     unavailable_get_names = [
         str(item.get("player_name") or "Unknown")
         for item in blockers
@@ -210,7 +211,7 @@ def build_manual_review(
         "recommendation": {
             "action": "hold",
             "title": "Hold this offer for now",
-            "detail": f"Sandlot cannot safely compare the full package while {blocker_summary} has unresolved value evidence.",
+            "detail": f"Sandlot cannot safely compare the full package while {blocker_summary} {blocker_verb} unresolved value evidence.",
         },
         "uncertainty": {
             "level": "high",

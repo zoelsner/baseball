@@ -80,6 +80,7 @@ class TradeCounterTests(unittest.TestCase):
         self.assertEqual(review["state"], "manual_review_required")
         self.assertEqual(review["recommendation"]["action"], "hold")
         self.assertEqual(review["recommendation"]["title"], "Hold this offer for now")
+        self.assertIn("Their Outfielder has unresolved value evidence", review["recommendation"]["detail"])
         self.assertEqual(review["deadline"]["label"], "Not provided")
         self.assertEqual(review["deadline"]["fantrax_schedule_label"], "Pending")
         self.assertEqual(review["do_nothing"]["title"], "Keep My Second Baseman")
@@ -145,12 +146,14 @@ class TradeCounterTests(unittest.TestCase):
             player("m4", "Reserve Second Baseman", slot="RES", positions="2B", fppg=1.2, team="ME", age=29),
             player("m5", "Reserve Outfielder", slot="RES", positions="OF", fppg=5.8, team="ME", age=29),
         ])
+        my_rows[0]["age"] = 24
         snapshot["data"]["all_team_rosters"]["opp"]["rows"][0]["age"] = 24
 
         review = sandlot_trades.build_manual_review(snapshot, ["m1", "m3"], ["o1"], expected_get_owner_id="opp")
 
         self.assertIn("Reserve Outfielder", review["replacement_value"]["label"])
         self.assertIn("-0.20 FP/G", review["replacement_value"]["label"])
+        self.assertIn("My Second Baseman, Their Outfielder have unresolved value evidence", review["recommendation"]["detail"])
 
     def test_grade_offer_returns_three_honest_counter_bands(self):
         with patch.object(
