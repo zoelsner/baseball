@@ -207,6 +207,13 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
 
     def test_fantrax_false_is_preserved_when_official_slate_is_terminal(self):
         raw = historical_roster()
+        mlb_response = mlb_schedule_response("2026-07-03", ["Final", "Postponed"])
+        postponed = mlb_response.json()["dates"][0]["games"][1]
+        postponed.update({
+            "officialDate": "2026-07-04",
+            "rescheduleGameDate": "2026-07-04",
+            "calendarEventID": "14-800001-2026-07-03",
+        })
 
         def request(_api, method, **kwargs):
             if method == "getTeamRosterInfo":
@@ -224,7 +231,7 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
         ), patch.object(
             fantrax_data.requests,
             "get",
-            return_value=mlb_schedule_response("2026-07-03", ["Final", "Postponed"]),
+            return_value=mlb_response,
         ) as get:
             evidence = fantrax_data.extract_completed_lineup_evidence(
                 EvidenceApi(current_roster(), raw), "me", completed_matchup()
@@ -236,14 +243,22 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
         self.assertTrue(day["completion_evidence"]["override_applied"])
         proof = day["completion_evidence"]["official_mlb_slate"]
         self.assertEqual([item["status"] for item in proof["games"]], ["final", "postponed"])
+        self.assertEqual(proof["games"][1]["schedule_date"], "2026-07-03")
+        self.assertEqual(proof["games"][1]["official_date"], "2026-07-04")
         self.assertEqual(len(proof["games_hash"]), 64)
         get.assert_called_once()
 
     def test_official_slate_rejects_nonterminal_empty_and_partial_evidence(self):
+        cross_date_final = mlb_schedule_response("2026-07-03", ["Final"])
+        cross_date_final.json()["dates"][0]["games"][0]["officialDate"] = "2026-07-04"
+        unproved_reschedule = mlb_schedule_response("2026-07-03", ["Postponed"])
+        unproved_reschedule.json()["dates"][0]["games"][0]["officialDate"] = "2026-07-04"
         cases = (
             (mlb_schedule_response("2026-07-03", ["Suspended"]), "non-terminal"),
             (mlb_schedule_response("2026-07-03", []), "empty or partial"),
             (mlb_schedule_response("2026-07-03", ["Final"], total_games=2), "empty or partial"),
+            (cross_date_final, "date identity"),
+            (unproved_reschedule, "date identity"),
         )
         for response, message in cases:
             with self.subTest(message=message), patch.object(
