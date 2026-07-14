@@ -173,6 +173,68 @@ class RecommendationReceiptBuilderTests(unittest.TestCase):
                 decision_deadline_at=datetime(2026, 7, 13, 23, 0, tzinfo=timezone.utc),
             )
 
+    def test_reconciliation_distinguishes_partial_applied_skipped_awaiting_and_unavailable(self):
+        entries = [
+            {
+                "id": "starter", "name": "Current Starter", "tokens": {"OF", "UT"},
+                "proj": 4.0, "hitter_proj": 4.0, "pitcher_proj": 0.0,
+                "basis": "2.0/gm x 2 games", "slot": "OF", "slot_source": "raw.posId", "injury": "",
+            },
+            {
+                "id": "bench", "name": "Bench Bat", "tokens": {"OF", "UT"},
+                "proj": 7.0, "hitter_proj": 7.0, "pitcher_proj": 0.0,
+                "basis": "3.5/gm x 2 games", "slot": "RES", "slot_source": "raw.statusId", "injury": "",
+            },
+        ]
+        receipt = receipt_fixture(
+            entries=entries,
+            result={"lineup": [("OF", "Bench Bat")], "projected_total": 7.0, "unfilled": list(DEFAULT_UNFILLED)},
+        )
+
+        def snapshot(rows):
+            return {
+                "id": 291,
+                "taken_at": "2026-07-14T13:02:52Z",
+                "data": {
+                    "league_id": "league", "team_id": "team",
+                    "matchup": {"start": "2026-07-13", "end": "2026-07-26"},
+                    "roster": {"rows": rows},
+                },
+            }
+
+        partial = sandlot_receipts.reconcile_lineup_receipt(receipt, snapshot([
+            {"id": "starter", "name": "Current Starter", "slot": "OF", "slot_source": "raw.posId"},
+            {"id": "bench", "name": "Bench Bat", "slot": "OF", "slot_source": "raw.posId"},
+        ]))
+        self.assertEqual(partial["state"], "partially_applied")
+        self.assertEqual((partial["applied_count"], partial["total_changes"]), (1, 2))
+        self.assertEqual(partial["applied_changes"][0]["player_name"], "Bench Bat")
+
+        applied = sandlot_receipts.reconcile_lineup_receipt(receipt, snapshot([
+            {"id": "starter", "name": "Current Starter", "slot": "RES", "slot_source": "raw.statusId"},
+            {"id": "bench", "name": "Bench Bat", "slot": "OF", "slot_source": "raw.posId"},
+        ]))
+        self.assertEqual(applied["state"], "applied")
+        self.assertEqual(applied["applied_count"], 2)
+
+        awaiting_rows = [
+            {"id": "starter", "name": "Current Starter", "slot": "OF", "slot_source": "raw.posId"},
+            {"id": "bench", "name": "Bench Bat", "slot": "RES", "slot_source": "raw.statusId"},
+        ]
+        awaiting = sandlot_receipts.reconcile_lineup_receipt(receipt, snapshot(awaiting_rows))
+        self.assertEqual(awaiting["state"], "awaiting")
+        skipped = sandlot_receipts.reconcile_lineup_receipt(
+            {**receipt, "decision_state": "rejected"}, snapshot(awaiting_rows)
+        )
+        self.assertEqual(skipped["state"], "skipped")
+
+        unavailable = sandlot_receipts.reconcile_lineup_receipt(receipt, snapshot([
+            {"id": "starter", "name": "Current Starter", "slot": "OF", "slot_source": "raw.posId"},
+            {"id": "bench", "name": "Bench Bat", "slot": "RES", "slot_source": "position_fallback"},
+        ]))
+        self.assertEqual(unavailable["state"], "unavailable")
+        self.assertEqual(unavailable["reason"], "changed_player_slot_untrusted:bench")
+
     def test_first_scheduled_game_deadline_uses_earliest_timezone_aware_game(self):
         response = Mock()
         response.raise_for_status.return_value = None
@@ -554,6 +616,47 @@ class RecommendationOutcomeBuilderTests(unittest.TestCase):
         self.assertEqual(unavailable["reason"], "completed_period_evidence_missed_after_grace_window")
         self.assertFalse(unavailable["retryable"])
         self.assertEqual(len(unavailable["evidence_hash"]), 64)
+
+
+class ManualReceiptReconciliationRefreshTests(unittest.TestCase):
+    def test_refresh_records_manual_acceptance_only_after_full_fantrax_match(self):
+        receipt = {**receipt_fixture(), "decision_state": "pending"}
+        full_snapshot = {
+            "timestamp": "2026-07-14T13:02:52Z",
+            "league_id": "league",
+            "team_id": "team",
+            "matchup": {"start": "2026-07-13", "end": "2026-07-26"},
+            "roster": {"rows": [
+                {"id": "two-way", "name": "Two Way", "slot": "SP", "slot_source": "raw.posId"},
+                {"id": "bat", "name": "Bench Bat", "slot": "OF", "slot_source": "raw.posId"},
+            ]},
+        }
+        decide = Mock()
+        with (
+            patch.dict(os.environ, {"DATABASE_URL": "postgres://test"}),
+            patch.object(sandlot_db, "latest_active_recommendation_receipt", return_value=receipt),
+            patch.object(sandlot_db, "decide_recommendation_receipt", decide),
+        ):
+            sandlot_refresh._reconcile_manual_lineup_receipt(291, full_snapshot)
+
+        decide.assert_called_once_with(
+            receipt_id=receipt["receipt_id"],
+            input_hash=receipt["input_hash"],
+            decision="accepted",
+            source="fantrax_snapshot_reconciliation",
+            reason="All 1 proposed assignment changes observed in Fantrax snapshot 291",
+        )
+
+        decide.reset_mock()
+        partial_snapshot = copy.deepcopy(full_snapshot)
+        partial_snapshot["roster"]["rows"][1].update({"slot": "RES", "slot_source": "raw.statusId"})
+        with (
+            patch.dict(os.environ, {"DATABASE_URL": "postgres://test"}),
+            patch.object(sandlot_db, "latest_active_recommendation_receipt", return_value=receipt),
+            patch.object(sandlot_db, "decide_recommendation_receipt", decide),
+        ):
+            sandlot_refresh._reconcile_manual_lineup_receipt(292, partial_snapshot)
+        decide.assert_not_called()
 
 
 class CounterfactualLineupEvaluationTests(unittest.TestCase):
@@ -1463,7 +1566,22 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         }
 
     def test_latest_receipt_is_public_but_projection_inputs_are_not(self):
-        with patch("sandlot_api.sandlot_db.latest_active_recommendation_receipt", return_value=self.receipt):
+        snapshot = {
+            "id": 291,
+            "taken_at": "2026-07-14T13:02:52Z",
+            "data": {
+                "league_id": "league", "team_id": "team",
+                "matchup": {"start": "2026-07-13", "end": "2026-07-26"},
+                "roster": {"rows": [
+                    {"id": "two-way", "name": "Two Way", "slot": "SP", "slot_source": "raw.posId"},
+                    {"id": "bat", "name": "Bench Bat", "slot": "OF", "slot_source": "raw.posId"},
+                ]},
+            },
+        }
+        with (
+            patch("sandlot_api.sandlot_db.latest_active_recommendation_receipt", return_value=self.receipt),
+            patch("sandlot_api.sandlot_db.latest_successful_snapshot", return_value=snapshot),
+        ):
             response = self.client.get("/api/recommendation-receipts/latest")
 
         self.assertEqual(response.status_code, 200)
@@ -1475,6 +1593,8 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         self.assertTrue(payload["read_only"])
         self.assertFalse(payload["fantrax_changed"])
         self.assertFalse(payload["writes_enabled"])
+        self.assertEqual(payload["reconciliation"]["state"], "applied")
+        self.assertEqual(payload["reconciliation"]["snapshot_id"], 291)
 
     def test_trade_grade_persists_and_returns_sanitized_exact_receipt(self):
         snapshot = {"id": 281, "taken_at": "2026-07-12T14:00:00Z", "league_id": "league", "team_id": "team"}

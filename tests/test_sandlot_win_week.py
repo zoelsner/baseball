@@ -669,6 +669,21 @@ class WinThisWeekTests(unittest.TestCase):
         self.assertIsNone(plan["summary"]["projected_margin_after_action"])
         self.assertIn("current remaining-week estimate", plan["summary"]["outlook"].lower())
 
+    def test_extended_matchup_uses_matchup_and_remaining_period_language(self):
+        summary = sandlot_win_week._summary(
+            {"my_score": 0, "opponent_score": 0, "complete": False},
+            {"projected_my": 415, "projected_opp": 393, "probability_calibrated": False},
+            None,
+            "No worthwhile move.",
+            {"mode": "current_matchup", "start": "2026-07-13", "end": "2026-07-26"},
+        )
+
+        self.assertEqual(sandlot_win_week._period_language({
+            "start": "2026-07-13", "end": "2026-07-26",
+        })["surface_label"], "Win This Matchup")
+        self.assertIn("current remaining-period estimate", summary["outlook"].lower())
+        self.assertIn("projected remaining-period points", summary["win_probability_excluded_reason"])
+
     def test_snapshot_api_payload_exposes_the_read_only_plan(self):
         payload = _snapshot_payload(snapshot_row())
 

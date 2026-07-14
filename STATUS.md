@@ -1,9 +1,22 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-13** (extended-period projection context in progress).
+> Last updated: **2026-07-14** (truthful lineup receipt reconciliation in progress).
 
 ## Where things stand
+
+- **Truthful lineup receipts in progress (#157):** the latest immutable lineup
+  proposal is now reconciled against the latest successful Fantrax snapshot by
+  exact player identity, assigned slot, team, league, period, timestamp, and
+  slot provenance. The receipt reports all applied, partially applied, skipped,
+  awaiting, or unavailable; it never claims Sandlot executed a move. A refresh
+  records acceptance automatically only after every proposed assignment is
+  observed. Current live pre-deploy evidence classifies the July 13–19 plan as
+  partially applied: Daylen Lile to OF and Carlos Cortes to reserve are present,
+  while the other nine proposed changes are not assumed. The extended July
+  13–26 matchup is labeled “Win This Matchup” and uses remaining-period language,
+  while the lineup receipt retains its exact seven-day window. This is a trust
+  correction, not evidence that the recommendation improved the result.
 
 - **Projection trust repair in progress:** Today now presents the 409–393
   forecast as a rounded 14-day total, converts it to an approximately 29–28

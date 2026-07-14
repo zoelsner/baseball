@@ -284,6 +284,28 @@ test.describe('Today — Attention Queue', () => {
     await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/writes enabled: no/);
   });
 
+  test('labels an extended Fantrax period as a matchup instead of a week', async ({ page }) => {
+    test.skip(!isLocalBundle, 'Extended-period copy is verified against the rebuilt local bundle.');
+    const payload = baseSnapshot();
+    payload.win_this_week.planning_horizon = {
+      mode:'current_matchup', period_number:17, start:'2026-07-13', end:'2026-07-26',
+      matchup_key:6, evidence_source:'fantrax_schedule',
+    };
+    payload.win_this_week.summary.outlook = 'After this move, the remaining-period estimate puts you 9.8 points ahead.';
+    payload.win_this_week.summary.win_probability_excluded_reason = 'Win probability is not calibrated; actions are ranked by projected remaining-period points.';
+    await mockSnapshot(page, payload);
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const panel = page.getByRole('region', { name:'Win This Matchup' });
+    await expect(panel).toBeVisible();
+    await expect(panel.getByText('After this move, the remaining-period estimate puts you 9.8 points ahead.', { exact:true })).toBeVisible();
+    await expect(page.getByText('Win This Week', { exact:true })).toHaveCount(0);
+    await panel.getByRole('button', { name:'Pressure-test with Skipper' }).click();
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/top Win This Matchup action/);
+    await expect(page.getByPlaceholder(/Ask about your roster/)).toHaveValue(/Expected remaining-period impact: \+5.8 points/);
+  });
+
   test('shows a clear empty state when the snapshot has no queue items', async ({ page }) => {
     test.skip(
       !isLocalBundle,
@@ -574,7 +596,7 @@ test.describe('Today — Attention Queue', () => {
     await page.goto('/');
     await waitForAppMount(page);
 
-    const panel = page.getByRole('region', { name: 'Win This Week' });
+    const panel = page.getByRole('region', { name: 'Plan Period 17' });
     await expect(panel.getByText('Plan Period 17', { exact: true })).toBeVisible();
     await expect(panel.getByText('Best next-period lineup', { exact: true })).toBeVisible();
     await expect(panel.getByText(/Planning Period 17: the best legal lineup path/)).toBeVisible();
