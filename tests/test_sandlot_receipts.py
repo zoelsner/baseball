@@ -681,7 +681,7 @@ class CounterfactualLineupEvaluationTests(unittest.TestCase):
         missing.assert_called_once_with(
             source="monday_lineup",
             scoring_version="counterfactual_lineup_v1",
-            evidence_version="fantrax_period_lineup_v2",
+            evidence_version="fantrax_period_lineup_v3",
         )
         evaluation = record.call_args.kwargs["evaluation"]
         self.assertEqual(evaluation["metrics"]["counterfactual_gain"], 13.0)

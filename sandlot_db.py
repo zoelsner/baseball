@@ -892,7 +892,7 @@ def list_lineup_decision_science_rows(*, limit: int | None = None) -> list[dict[
                AND l.team_id = r.team_id
                AND l.period_start = r.period_start
                AND l.period_end = r.period_end
-               AND l.evidence_version = 'fantrax_period_lineup_v2'
+               AND l.evidence_version = 'fantrax_period_lineup_v3'
               WHERE r.source = 'monday_lineup'
                 AND r.lifecycle_state = 'active'
             )

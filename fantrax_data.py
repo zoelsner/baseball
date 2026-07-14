@@ -19,6 +19,7 @@ import types
 from datetime import date as date_cls, datetime, time as time_cls, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 from fantraxapi import FantraxAPI
@@ -180,8 +181,15 @@ def _raw_team_roster(api: Any, team_id: str) -> dict[str, Any] | None:
     return raw if isinstance(raw, dict) else None
 
 
-LINEUP_PERIOD_EVIDENCE_VERSION = "fantrax_period_lineup_v2"
+LINEUP_PERIOD_EVIDENCE_VERSION = "fantrax_period_lineup_v3"
 PARENT_LINEUP_PERIOD_EVIDENCE_VERSION = "fantrax_period_lineup_v1"
+MLB_TERMINAL_SCHEDULE_STATES = {
+    "final": "final",
+    "completed early": "completed_early",
+    "postponed": "postponed",
+    "cancelled": "cancelled",
+    "canceled": "cancelled",
+}
 VERIFIED_WEEKLY_LINEUP_POLICIES = {
     ("lydahdo6mhcvnob7", 2026): {
         "source": "fantrax.league_rules_summary",
@@ -605,6 +613,73 @@ def lineup_period_evidence_hash(evidence: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _official_mlb_terminal_day_evidence(day: date_cls) -> dict[str, Any]:
+    """Return exact official terminal-slate proof for one past MLB date."""
+    try:
+        response = requests.get(
+            f"{mlb_stats.BASE_URL}/schedule",
+            params={"sportId": 1, "date": day.isoformat()},
+            timeout=mlb_stats.DEFAULT_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise ValueError("official MLB completion evidence is unavailable") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("official MLB completion evidence is invalid")
+    dates = payload.get("dates")
+    if not isinstance(dates, list) or len(dates) != 1 or not isinstance(dates[0], dict):
+        raise ValueError("official MLB completion evidence is empty or ambiguous")
+    slate = dates[0]
+    if str(slate.get("date") or "") != day.isoformat():
+        raise ValueError("official MLB completion evidence returned a different date")
+    games = slate.get("games")
+    total_games = slate.get("totalGames")
+    response_total_games = payload.get("totalGames")
+    if (
+        not isinstance(games, list)
+        or not games
+        or isinstance(total_games, bool)
+        or not isinstance(total_games, int)
+        or isinstance(response_total_games, bool)
+        or not isinstance(response_total_games, int)
+        or total_games != len(games)
+        or response_total_games != total_games
+    ):
+        raise ValueError("official MLB completion evidence is empty or partial")
+    normalized_games: list[dict[str, Any]] = []
+    seen_game_ids: set[int] = set()
+    for game in games:
+        if not isinstance(game, dict) or str(game.get("officialDate") or "") != day.isoformat():
+            raise ValueError("official MLB completion evidence contains an invalid game")
+        game_pk = game.get("gamePk")
+        status = game.get("status") if isinstance(game.get("status"), dict) else {}
+        detailed_state = " ".join(str(status.get("detailedState") or "").strip().split()).casefold()
+        normalized_state = MLB_TERMINAL_SCHEDULE_STATES.get(detailed_state)
+        if (
+            isinstance(game_pk, bool)
+            or not isinstance(game_pk, int)
+            or game_pk in seen_game_ids
+            or normalized_state is None
+        ):
+            raise ValueError("official MLB completion evidence contains a non-terminal or invalid game")
+        seen_game_ids.add(game_pk)
+        normalized_games.append({
+            "game_pk": game_pk,
+            "official_date": day.isoformat(),
+            "status": normalized_state,
+        })
+    normalized_games.sort(key=lambda item: item["game_pk"])
+    canonical = json.dumps(normalized_games, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return {
+        "source": "statsapi.mlb.com/api/v1/schedule",
+        "official_date": day.isoformat(),
+        "total_games": total_games,
+        "games": normalized_games,
+        "games_hash": hashlib.sha256(canonical.encode()).hexdigest(),
+    }
+
+
 def _completed_period_participation(
     *,
     api: Any,
@@ -621,6 +696,7 @@ def _completed_period_participation(
         raise ValueError("completed period dates are invalid") from exc
     if end < start or (end - start).days > 13:
         raise ValueError("completed period participation window is invalid")
+    observed_date = datetime.now(ZoneInfo("America/New_York")).date()
     expected = {(item["player_id"], item["scoring_role"]): item for item in period_players}
     inactive_slots = {"RES", "IR", "MIN", "IL", "INJ", "BENCH", "BN", "BE"}
     expected_state = {
@@ -652,7 +728,22 @@ def _completed_period_participation(
         own_team_ids = {str(value) for value in (raw.get("ownTeamIds") or [])}
         if team_id not in own_team_ids:
             raise ValueError("daily Fantrax participation does not include the target team")
-        if raw.get("allEventsFinished") is not True:
+        fantrax_all_events_finished = raw.get("allEventsFinished")
+        if fantrax_all_events_finished is True:
+            completion_evidence = {
+                "state": "fantrax_final",
+                "override_applied": False,
+                "source": "fantrax.getLiveScoringStats.allEventsFinished",
+            }
+        elif fantrax_all_events_finished is False and day < observed_date:
+            completion_evidence = {
+                "state": "terminal_mlb_slate",
+                "override_applied": True,
+                "reason": "fantrax_false_with_terminal_official_mlb_slate",
+                "source": "fantrax.getLiveScoringStats+statsapi.schedule",
+                "official_mlb_slate": _official_mlb_terminal_day_evidence(day),
+            }
+        else:
             raise ValueError("daily Fantrax participation is not final")
         scorer_map = raw.get("scorerMap") if isinstance(raw.get("scorerMap"), dict) else {}
         found: dict[tuple[str, str], tuple[str, str | None]] = {}
@@ -702,7 +793,9 @@ def _completed_period_participation(
             "date": day_text,
             "lineup_window_start": window_key,
             "response_period": period_number,
-            "all_events_finished": True,
+            "fantrax_all_events_finished": fantrax_all_events_finished,
+            "completion_verified": True,
+            "completion_evidence": completion_evidence,
             "active_count": sum(1 for item in day_players if item["state"] == "active"),
             "bench_count": sum(1 for item in day_players if item["state"] == "bench"),
             "credited_team_total": daily_total,

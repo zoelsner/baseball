@@ -1,5 +1,6 @@
 import unittest
 from contextlib import contextmanager
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -138,6 +139,26 @@ def direct_requests(raw):
     return patch.object(fantrax_data, "_direct_fxpa_request", side_effect=request)
 
 
+def mlb_schedule_response(day_text, states, *, total_games=None):
+    games = [
+        {
+            "gamePk": 800000 + index,
+            "officialDate": day_text,
+            "status": {"detailedState": state},
+        }
+        for index, state in enumerate(states)
+    ]
+    payload = {
+        "totalGames": len(games) if total_games is None else total_games,
+        "dates": [{
+            "date": day_text,
+            "totalGames": len(games) if total_games is None else total_games,
+            "games": games,
+        }]
+    }
+    return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
+
+
 @contextmanager
 def evidence_context(raw):
     with patch.dict(
@@ -171,7 +192,8 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
         self.assertEqual(first["participation"]["days"][0]["active_count"], 2)
         self.assertEqual(first["participation"]["window_count"], 1)
         self.assertTrue(first["participation"]["stable_within_windows"])
-        self.assertEqual(first["evidence_version"], "fantrax_period_lineup_v2")
+        self.assertEqual(first["evidence_version"], "fantrax_period_lineup_v3")
+        self.assertFalse(first["participation"]["days"][0]["completion_evidence"]["override_applied"])
         self.assertEqual(len(first["parent_v1_evidence_hash"]), 64)
         self.assertTrue(first["counterfactual_capability"]["eligible"])
         self.assertEqual(len(first["evidence_hash"]), 64)
@@ -182,6 +204,52 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
             "teamId": "me", "period": "15",
             "seasonOrProjection": "SEASON_147_BY_PERIOD", "timeframeTypeCode": "BY_PERIOD",
         })
+
+    def test_fantrax_false_is_preserved_when_official_slate_is_terminal(self):
+        raw = historical_roster()
+
+        def request(_api, method, **kwargs):
+            if method == "getTeamRosterInfo":
+                return raw
+            response = daily_response(raw, kwargs["date"])
+            if kwargs["date"] == "2026-07-03":
+                response["allEventsFinished"] = False
+            return response
+
+        with patch.dict(
+            fantrax_data.VERIFIED_WEEKLY_LINEUP_POLICIES,
+            {("league", 2026): TEST_POLICY},
+        ), patch.object(
+            fantrax_data, "_direct_fxpa_request", side_effect=request
+        ), patch.object(
+            fantrax_data.requests,
+            "get",
+            return_value=mlb_schedule_response("2026-07-03", ["Final", "Postponed"]),
+        ) as get:
+            evidence = fantrax_data.extract_completed_lineup_evidence(
+                EvidenceApi(current_roster(), raw), "me", completed_matchup()
+            )
+
+        day = next(item for item in evidence["participation"]["days"] if item["date"] == "2026-07-03")
+        self.assertFalse(day["fantrax_all_events_finished"])
+        self.assertTrue(day["completion_verified"])
+        self.assertTrue(day["completion_evidence"]["override_applied"])
+        proof = day["completion_evidence"]["official_mlb_slate"]
+        self.assertEqual([item["status"] for item in proof["games"]], ["final", "postponed"])
+        self.assertEqual(len(proof["games_hash"]), 64)
+        get.assert_called_once()
+
+    def test_official_slate_rejects_nonterminal_empty_and_partial_evidence(self):
+        cases = (
+            (mlb_schedule_response("2026-07-03", ["Suspended"]), "non-terminal"),
+            (mlb_schedule_response("2026-07-03", []), "empty or partial"),
+            (mlb_schedule_response("2026-07-03", ["Final"], total_games=2), "empty or partial"),
+        )
+        for response, message in cases:
+            with self.subTest(message=message), patch.object(
+                fantrax_data.requests, "get", return_value=response
+            ), self.assertRaisesRegex(ValueError, message):
+                fantrax_data._official_mlb_terminal_day_evidence(date(2026, 7, 3))
 
     def test_wrong_returned_period_fails_closed(self):
         raw = historical_roster()
@@ -372,7 +440,7 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
             import sandlot_refresh
 
             sandlot_refresh._persist_lineup_period_evidence(
-                7, {"completed_lineup_evidence": {"evidence_version": "fantrax_period_lineup_v2"}}
+                7, {"completed_lineup_evidence": {"evidence_version": "fantrax_period_lineup_v3"}}
             )
 
     def test_archive_replay_is_idempotent_and_concurrency_safe(self):

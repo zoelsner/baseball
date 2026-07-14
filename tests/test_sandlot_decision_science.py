@@ -41,7 +41,7 @@ def row_fixture(index: int, *, projected_gain: float | None = None, actual_gain:
         "scoring_version": "counterfactual_lineup_v1",
         "metrics": {"counterfactual_gain": actual},
         "evaluated_at": generated + timedelta(days=9),
-        "source_evidence_version": "fantrax_period_lineup_v2",
+        "source_evidence_version": "fantrax_period_lineup_v3",
         "source_evidence_hash": "b" * 64,
         "evaluation_evidence_hash": f"{index:064x}",
     }
@@ -84,7 +84,7 @@ class DecisionScienceTests(unittest.TestCase):
         self.assertEqual(sample["features"]["assignment_change_count"], 2)
         self.assertEqual(sample["label"], {"counterfactual_gain": 3.0})
         self.assertNotIn("counterfactual_gain", sample["features"])
-        self.assertEqual(sample["lineage"]["source_evidence_version"], "fantrax_period_lineup_v2")
+        self.assertEqual(sample["lineage"]["source_evidence_version"], "fantrax_period_lineup_v3")
 
         changed_label = copy.deepcopy(raw)
         changed_label["metrics"]["counterfactual_gain"] = 999
