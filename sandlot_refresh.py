@@ -99,6 +99,7 @@ def _run_refresh_unlocked(source: str, started: float) -> RefreshResult:
             errors=errors,
         )
         if status == "success":
+            _reconcile_manual_lineup_receipt(snapshot_id, snapshot)
             _persist_projection_log(snapshot_id, snapshot)
             _persist_lineup_period_evidence(snapshot_id, snapshot)
             _persist_trade_period_outcomes(
@@ -198,6 +199,36 @@ def _persist_projection_log(snapshot_id: int, snapshot: dict[str, Any]) -> None:
             sandlot_db.update_projection_actuals(**actual)
     except Exception:
         log.exception("Projection log write failed for snapshot_id=%s", snapshot_id)
+
+
+def _reconcile_manual_lineup_receipt(snapshot_id: int, snapshot: dict[str, Any]) -> None:
+    """Persist accepted intent only when every proposed slot is observed live."""
+    if not os.environ.get("DATABASE_URL"):
+        return
+    try:
+        receipt = sandlot_db.latest_active_recommendation_receipt(source="monday_lineup")
+        if not receipt or receipt.get("decision_state") != "pending":
+            return
+        reconciliation = sandlot_receipts.reconcile_lineup_receipt(
+            receipt,
+            {
+                "id": snapshot_id,
+                "taken_at": snapshot.get("timestamp"),
+                "data": snapshot,
+            },
+        )
+        if reconciliation.get("state") != "applied":
+            return
+        total = int(reconciliation.get("total_changes") or 0)
+        sandlot_db.decide_recommendation_receipt(
+            receipt_id=receipt["receipt_id"],
+            input_hash=receipt["input_hash"],
+            decision="accepted",
+            source="fantrax_snapshot_reconciliation",
+            reason=f"All {total} proposed assignment changes observed in Fantrax snapshot {snapshot_id}",
+        )
+    except Exception:
+        log.exception("Manual lineup receipt reconciliation failed for snapshot_id=%s", snapshot_id)
 
 
 def _persist_lineup_period_evidence(snapshot_id: int, snapshot: dict[str, Any]) -> None:

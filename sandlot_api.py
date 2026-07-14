@@ -234,7 +234,7 @@ def latest_recommendation_receipt(source: Literal["monday_lineup"] = "monday_lin
         raise HTTPException(status_code=503, detail=f"Recommendation receipt unavailable: {exc}") from exc
     if not row:
         return Response(status_code=204, headers={"Cache-Control": "no-store"})
-    return jsonable_encoder(_public_recommendation_receipt(row))
+    return jsonable_encoder(_public_recommendation_receipt(row, _latest_reconciliation_snapshot()))
 
 
 @app.get("/api/recommendation-outcomes/recent")
@@ -386,7 +386,7 @@ def decide_recommendation_receipt(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Recommendation decision unavailable: {exc}") from exc
-    result = _public_recommendation_receipt(row)
+    result = _public_recommendation_receipt(row, _latest_reconciliation_snapshot())
     result["changed"] = changed
     result["fantrax_changed"] = False
     result["writes_enabled"] = False
@@ -1481,7 +1481,19 @@ def _run_summary(row: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
+def _latest_reconciliation_snapshot() -> dict[str, Any] | None:
+    """Keep receipt reads available even when fresh Fantrax evidence is not."""
+    try:
+        return sandlot_db.latest_successful_snapshot()
+    except Exception as exc:
+        log.warning("Latest Fantrax snapshot unavailable for receipt reconciliation: %s", exc)
+        return None
+
+
+def _public_recommendation_receipt(
+    row: dict[str, Any],
+    snapshot_row: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     recommendation = row.get("recommendation") if isinstance(row.get("recommendation"), dict) else {}
     evaluation = recommendation.get("evaluation") if isinstance(recommendation.get("evaluation"), dict) else {}
     snapshot = recommendation.get("snapshot") if isinstance(recommendation.get("snapshot"), dict) else {}
@@ -1489,7 +1501,7 @@ def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
     trade = recommendation.get("offer") if isinstance(recommendation.get("offer"), dict) else None
     trade_origin = recommendation.get("origin") if isinstance(recommendation.get("origin"), dict) else {}
     trade_outcome = recommendation.get("outcome_contract") if isinstance(recommendation.get("outcome_contract"), dict) else {}
-    return {
+    result = {
         "receipt_id": row.get("receipt_id"),
         "builder_version": row.get("builder_version"),
         "scope_key": row.get("scope_key"),
@@ -1566,6 +1578,9 @@ def _public_recommendation_receipt(row: dict[str, Any]) -> dict[str, Any]:
         "fantrax_changed": False,
         "writes_enabled": False,
     }
+    if row.get("action_type") == "lineup_plan":
+        result["reconciliation"] = sandlot_receipts.reconcile_lineup_receipt(row, snapshot_row)
+    return result
 
 
 def _public_trade_target_period(value: Any) -> dict[str, Any] | None:

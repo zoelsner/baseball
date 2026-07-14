@@ -1157,6 +1157,24 @@ function v2WinWeekDeadline(deadline) {
   return `Before ${parsed.toLocaleTimeString([], { weekday:'short', hour:'numeric', minute:'2-digit' })}`;
 }
 
+function v2InclusivePeriodDays(period) {
+  const start = period?.start ? new Date(`${period.start}T00:00:00Z`) : null;
+  const end = period?.end ? new Date(`${period.end}T00:00:00Z`) : null;
+  if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return null;
+  return Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+}
+
+function v2WinPeriodLanguage(plan) {
+  const horizon = plan?.planning_horizon || plan?.matchup || {};
+  const days = v2InclusivePeriodDays(horizon);
+  const weekly = days === null || days === 7;
+  return {
+    days,
+    surfaceLabel:weekly ? 'Win This Week' : 'Win This Matchup',
+    remainingLabel:weekly ? 'remaining-week' : 'remaining-period',
+  };
+}
+
 function v2WinWeekDeadlineExpired(deadline) {
   if (!deadline || deadline.state !== 'known' || !deadline.at) return false;
   const parsed = new Date(deadline.at);
@@ -1171,6 +1189,7 @@ function v2ProjectedMarginPosition(value) {
 }
 
 function v2WinWeekPrompt(action, plan) {
+  const periodLanguage = v2WinPeriodLanguage(plan);
   const points = v2Number(action?.expected_points?.estimate);
   const deadline = v2WinWeekDeadline(action?.deadline);
   const review = action?.review?.state === 'reviewable' ? action.review : null;
@@ -1183,10 +1202,10 @@ function v2WinWeekPrompt(action, plan) {
     return `${index + 1}. Move ${step.player_name || step.player_id} from ${step.from_slot || '?'} to ${step.to_slot || '?'}.`;
   });
   return [
-    'Pressure-test Sandlot’s top Win This Week action before I touch Fantrax.',
+    `Pressure-test Sandlot’s top ${periodLanguage.surfaceLabel} action before I touch Fantrax.`,
     '',
     `Plan: ${action?.title || 'Unknown action'}.`,
-    `Expected remaining-week impact: ${v2Signed(points, 1)} points. ${deadline}.`,
+    `Expected ${periodLanguage.remainingLabel} impact: ${v2Signed(points, 1)} points. ${deadline}.`,
     review ? `Immutable proposal: snapshot ${review.snapshot_id}; proposal ${review.proposal_id}; input hash ${review.input_hash}.` : null,
     review ? `Exact target: Period ${review.target_period?.period_number || '?'}; matchup ${review.target_period?.matchup_key || '?'}; ${review.target_period?.start || '?'} through ${review.target_period?.end || '?'}.` : null,
     plan?.summary?.outlook || null,
@@ -1222,7 +1241,8 @@ function V2WinThisWeekPanel({ plan, sync={}, onNav, onAskSkipper, onRefresh }) {
   const dynastyLevel = primary?.dynasty_cost?.level || 'unknown';
   const planningNextPeriod = plan.planning_horizon?.mode === 'editable_period';
   const targetPeriod = plan.planning_horizon?.period_number;
-  const panelLabel = planningNextPeriod && targetPeriod ? `Plan Period ${targetPeriod}` : 'Win This Week';
+  const periodLanguage = v2WinPeriodLanguage(plan);
+  const panelLabel = planningNextPeriod && targetPeriod ? `Plan Period ${targetPeriod}` : periodLanguage.surfaceLabel;
   const tone = refreshRequired
     ? { fg:V2.warn, bg:V2.warnSoft }
     : plan.state === 'ready'
@@ -1233,7 +1253,7 @@ function V2WinThisWeekPanel({ plan, sync={}, onNav, onAskSkipper, onRefresh }) {
 
   return (
     <>
-    <section aria-label="Win This Week" style={{
+    <section aria-label={panelLabel} style={{
       background:`linear-gradient(145deg, ${V2.surface} 0%, #fff7ed 100%)`,
       borderRadius:26,
       padding:18,
@@ -1717,6 +1737,24 @@ function v2ReceiptMoves(receipt) {
   return { starts, benches, slotChanges };
 }
 
+function v2ReceiptPeriodMeta(receipt) {
+  const period = receipt?.period || {};
+  const days = v2InclusivePeriodDays(period);
+  const format = value => {
+    const parsed = value ? new Date(`${value}T00:00:00Z`) : null;
+    return parsed && !Number.isNaN(parsed.getTime())
+      ? parsed.toLocaleDateString([], { month:'short', day:'numeric', timeZone:'UTC' })
+      : value || 'unknown';
+  };
+  const range = period.start && period.end ? `${format(period.start)}–${format(period.end)}` : 'dates unavailable';
+  return {
+    days,
+    range,
+    eyebrow:days ? `${days}-day lineup receipt` : 'Lineup receipt',
+    title:`Lineup plan · ${range}`,
+  };
+}
+
 function V2RecommendationReceipt({ sync, onAskSkipper }) {
   const [receipt, setReceipt] = React.useState(null);
   const [readState, setReadState] = React.useState('loading');
@@ -1746,7 +1784,7 @@ function V2RecommendationReceipt({ sync, onAskSkipper }) {
     } catch (error) {
       if (requestSeq !== receiptReadSeqRef.current) return null;
       setReadState('error');
-      setDecisionState({ state:'idle', error:error?.message || 'Weekly lineup receipt is unavailable.' });
+      setDecisionState({ state:'idle', error:error?.message || 'Lineup receipt is unavailable.' });
       return null;
     }
   }, []);
@@ -1795,26 +1833,46 @@ function V2RecommendationReceipt({ sync, onAskSkipper }) {
 
   if (readState === 'loading' || readState === 'empty') return null;
   if (readState === 'error') {
-    return <V2Caution eyebrow="Weekly receipt unavailable" tone="warn">{decisionState.error}</V2Caution>;
+    return <V2Caution eyebrow="Lineup receipt unavailable" tone="warn">{decisionState.error}</V2Caution>;
   }
   const rawGain = receipt?.evaluation?.projected_gain;
   const numericGain = rawGain === null || rawGain === undefined || rawGain === '' ? NaN : Number(rawGain);
   const gain = Number.isFinite(numericGain) ? numericGain : null;
   const moves = v2ReceiptMoves(receipt);
-  const pending = receipt?.decision_state === 'pending';
+  const periodMeta = v2ReceiptPeriodMeta(receipt);
+  const reconciliation = receipt?.reconciliation || {
+    state:receipt?.decision_state === 'rejected' ? 'skipped' : 'awaiting',
+    applied_count:0,
+    total_changes:0,
+    applied_changes:[],
+    remaining_changes:[],
+  };
+  const pending = receipt?.decision_state === 'pending' && reconciliation.state === 'awaiting';
   const canDecide = pending && bridge.state === 'ready' && bridge.decisionsEnabled;
   const localReviewHref = receipt?.receipt_id && receipt?.input_hash
     ? `${V2_OWNER_BRIDGE_URL}/recommendation-receipts/${encodeURIComponent(receipt.receipt_id)}/review?input_hash=${encodeURIComponent(receipt.input_hash)}`
     : null;
-  const decisionLabel = receipt?.decision_state === 'accepted' ? 'Using this plan' : receipt?.decision_state === 'rejected' ? 'Passed' : 'Awaiting your call';
-  const prompt = `Pressure-test this weekly lineup receipt. It projects ${gain === null ? 'an unscored change' : `${v2Signed(gain, 1)} points`} for ${receipt?.period?.start || 'the coming week'}. Explain the assumptions, downside, and whether I should use it. Receipt ${receipt?.receipt_id}.`;
+  const decisionLabel = reconciliation.state === 'applied'
+    ? 'Applied in Fantrax'
+    : reconciliation.state === 'partially_applied'
+      ? `Partially applied · ${reconciliation.applied_count || 0}/${reconciliation.total_changes || 0}`
+      : reconciliation.state === 'skipped'
+        ? 'Skipped'
+        : reconciliation.state === 'unavailable'
+          ? 'Fantrax state unavailable'
+          : receipt?.decision_state === 'accepted' ? 'Accepted · not yet confirmed' : 'Awaiting your call';
+  const prompt = `Pressure-test this ${periodMeta.days || 'current'}-day lineup receipt for ${periodMeta.range}. It projects ${gain === null ? 'an unscored change' : `${v2Signed(gain, 1)} points`}. Explain the assumptions, downside, and whether I should use it. Receipt ${receipt?.receipt_id}.`;
+  const appliedChangeText = (reconciliation.applied_changes || [])
+    .slice(0, 3)
+    .map(change => `${change.player_name} → ${change.proposed_slot}`)
+    .join('; ');
   return (
-    <section aria-labelledby="weekly-receipt-title" style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, padding:'16px 18px', boxShadow:'0 8px 24px rgba(31,20,12,0.045)' }}>
+    <section aria-labelledby="lineup-receipt-title" style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, padding:'16px 18px', boxShadow:'0 8px 24px rgba(31,20,12,0.045)' }}>
       <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
         <div style={{ minWidth:0 }}>
-          <V2Eyebrow color={receipt?.decision_state === 'accepted' ? V2.ok : receipt?.decision_state === 'rejected' ? V2.muted : V2.accent}>Weekly lineup receipt</V2Eyebrow>
-          <h2 id="weekly-receipt-title" style={{ margin:'7px 0 0', color:V2.ink, fontFamily:V2.fontDisplay, fontSize:22, lineHeight:1.08, letterSpacing:'-0.025em', textWrap:'balance' }}>
-            A measurable plan for next week
+          <V2Eyebrow color={reconciliation.state === 'applied' ? V2.ok : reconciliation.state === 'partially_applied' ? V2.warn : reconciliation.state === 'skipped' ? V2.muted : V2.accent}>{periodMeta.eyebrow}</V2Eyebrow>
+          <h2 id="lineup-receipt-title" style={{ margin:'7px 0 0', color:V2.ink, fontFamily:V2.fontDisplay, fontSize:22, lineHeight:1.08, letterSpacing:'-0.025em', textWrap:'balance' }}>
+            {periodMeta.title}
           </h2>
         </div>
         <div style={{ flexShrink:0, color:gain !== null && gain >= 0 ? V2.accent : V2.warn, fontFamily:V2.fontMono, fontSize:20, lineHeight:1, fontWeight:900, fontVariantNumeric:'tabular-nums', textAlign:'right' }}>
@@ -1853,14 +1911,29 @@ function V2RecommendationReceipt({ sync, onAskSkipper }) {
         <span>{decisionLabel}</span>
       </div>
 
-      {receipt?.decision_state === 'accepted' ? (
+      {reconciliation.state === 'applied' ? (
         <div role="status" style={{ marginTop:12, background:V2.okSoft, color:V2.body, borderRadius:14, padding:'11px 12px', fontSize:11.5, lineHeight:1.45, fontWeight:750, textWrap:'pretty' }}>
-          Decision recorded. You still need to set this lineup in Fantrax yourself.
+          Latest Fantrax snapshot confirms all {reconciliation.total_changes} planned assignment changes. Sandlot observed this; it did not execute it.
         </div>
       ) : null}
-      {receipt?.decision_state === 'rejected' ? (
+      {reconciliation.state === 'partially_applied' ? (
+        <div role="status" style={{ marginTop:12, background:V2.warnSoft, color:V2.body, borderRadius:14, padding:'11px 12px', fontSize:11.5, lineHeight:1.45, fontWeight:750, textWrap:'pretty' }}>
+          Latest Fantrax snapshot confirms {reconciliation.applied_count} of {reconciliation.total_changes} planned assignment changes{appliedChangeText ? `: ${appliedChangeText}` : ''}. The remaining {Math.max(0, (reconciliation.total_changes || 0) - (reconciliation.applied_count || 0))} are not assumed.
+        </div>
+      ) : null}
+      {reconciliation.state === 'skipped' ? (
         <div role="status" style={{ marginTop:12, background:V2.surface2, color:V2.body, borderRadius:14, padding:'11px 12px', fontSize:11.5, lineHeight:1.45, fontWeight:750 }}>
           Pass recorded. Sandlot will retain this decision for outcome analysis.
+        </div>
+      ) : null}
+      {reconciliation.state === 'awaiting' && receipt?.decision_state === 'accepted' ? (
+        <div role="status" style={{ marginTop:12, background:V2.warnSoft, color:V2.body, borderRadius:14, padding:'11px 12px', fontSize:11.5, lineHeight:1.45, fontWeight:750, textWrap:'pretty' }}>
+          Intent recorded, but the latest Fantrax snapshot does not yet confirm any planned assignment change.
+        </div>
+      ) : null}
+      {reconciliation.state === 'unavailable' ? (
+        <div role="status" style={{ marginTop:12, background:V2.warnSoft, color:V2.body, borderRadius:14, padding:'11px 12px', fontSize:11.5, lineHeight:1.45, fontWeight:750, textWrap:'pretty' }}>
+          Sandlot cannot verify the current Fantrax assignment from trusted snapshot evidence. Refresh before relying on this receipt.
         </div>
       ) : null}
       {pending && !canDecide ? (

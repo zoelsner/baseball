@@ -31,6 +31,16 @@ function receipt(decisionState = 'pending', overrides: Record<string, any> = {})
     evidence: { snapshot_id:277, snapshot_taken_at:'2026-07-12T14:40:58Z' },
     lifecycle_state: 'active',
     decision_state: decisionState,
+    reconciliation: {
+      state:decisionState === 'rejected' ? 'skipped' : 'awaiting',
+      snapshot_id:291,
+      snapshot_taken_at:'2026-07-14T13:02:52Z',
+      applied_count:0,
+      total_changes:2,
+      applied_changes:[],
+      remaining_changes:[],
+      fantrax_changed_by_sandlot:false,
+    },
     outcome_state: 'pending',
     generated_at: '2026-07-12T14:45:00Z',
     expires_at: '2026-07-13T23:59:00Z',
@@ -79,7 +89,7 @@ test.describe('Today recommendation receipt', () => {
     await page.goto('/');
     await waitForAppMount(page);
 
-    const card = page.getByRole('region', { name:'A measurable plan for next week' });
+    const card = page.getByRole('region', { name:'Lineup plan · Jul 13–Jul 19' });
     await expect(card.getByText(/^\+21\.8/)).toBeVisible();
     await expect(card.getByText('Bench Bat (OF)', { exact:true })).toBeVisible();
     await expect(card.getByText('Current Starter', { exact:true })).toBeVisible();
@@ -90,6 +100,43 @@ test.describe('Today recommendation receipt', () => {
       `http://127.0.0.1:8765/recommendation-receipts/${encodeURIComponent(RECEIPT_ID)}/review?input_hash=${HASH}`,
     );
     await expect(card.getByRole('button', { name:'Ask Skipper about this plan' })).toBeVisible();
+  });
+
+  test('shows exact period and partial live completion without stale decision controls', async ({ page }) => {
+    await page.unroute('**/api/recommendation-receipts/latest');
+    await page.route('**/api/recommendation-receipts/latest', route => route.fulfill({
+      status:200,
+      contentType:'application/json',
+      body:JSON.stringify(receipt('pending', {
+        baseline_assignment:[
+          { slot:'OF', player_id:'cortes', player_name:'Carlos Cortes', projected_points:3 },
+          { slot:'UT', player_id:'other', player_name:'Other Starter', projected_points:4 },
+        ],
+        proposed_assignment:[
+          { slot:'OF', player_id:'lile', player_name:'Daylen Lile', projected_points:7 },
+          { slot:'UT', player_id:'upgrade', player_name:'Other Upgrade', projected_points:6 },
+        ],
+        reconciliation:{
+          state:'partially_applied', snapshot_id:291, snapshot_taken_at:'2026-07-14T13:02:52Z',
+          applied_count:2, total_changes:4,
+          applied_changes:[
+            { player_id:'lile', player_name:'Daylen Lile', proposed_slot:'OF', observed_slot:'OF', matches_proposed:true },
+            { player_id:'cortes', player_name:'Carlos Cortes', proposed_slot:'RES', observed_slot:'RES', matches_proposed:true },
+          ],
+          remaining_changes:[], fantrax_changed_by_sandlot:false,
+        },
+      })),
+    }));
+    await page.route('http://127.0.0.1:8765/health', route => route.abort());
+    await page.goto('/');
+    await waitForAppMount(page);
+
+    const card = page.getByRole('region', { name:'Lineup plan · Jul 13–Jul 19' });
+    await expect(card.getByText('7-day lineup receipt', { exact:true })).toBeVisible();
+    await expect(card.getByText('Partially applied · 2/4', { exact:true })).toBeVisible();
+    await expect(card.getByText(/confirms 2 of 4 planned assignment changes: Daylen Lile → OF; Carlos Cortes → RES/)).toBeVisible();
+    await expect(card.getByRole('button', { name:'I’ll use this lineup' })).toHaveCount(0);
+    await expect(card.getByRole('button', { name:'Pass' })).toHaveCount(0);
   });
 
   test('shows the empty learning gate without implying that autopilot is available', async ({ page }) => {
@@ -313,12 +360,12 @@ test.describe('Today recommendation receipt', () => {
     await page.goto('/');
     await waitForAppMount(page);
 
-    const card = page.getByRole('region', { name:'A measurable plan for next week' });
+    const card = page.getByRole('region', { name:'Lineup plan · Jul 13–Jul 19' });
     await card.getByRole('button', { name:'I’ll use this lineup' }).click();
-    await expect(card.getByText('Decision recorded. You still need to set this lineup in Fantrax yourself.')).toBeVisible();
+    await expect(card.getByText('Intent recorded, but the latest Fantrax snapshot does not yet confirm any planned assignment change.')).toBeVisible();
     expect(posted.body).toEqual({ decision:'accepted', input_hash:HASH });
     expect(posted.headers['x-sandlot-bridge-nonce']).toBe('local-nonce');
-    await expect(card.getByText('Using this plan')).toBeVisible();
+    await expect(card.getByText('Accepted · not yet confirmed')).toBeVisible();
   });
 
   test('keeps active-to-active moves out of the bench list', async ({ page }) => {
@@ -335,7 +382,7 @@ test.describe('Today recommendation receipt', () => {
     await page.goto('/');
     await waitForAppMount(page);
 
-    const card = page.getByRole('region', { name:'A measurable plan for next week' });
+    const card = page.getByRole('region', { name:'Lineup plan · Jul 13–Jul 19' });
     await expect(card.getByText('Aaron Judge (OF → UT)', { exact:true })).toBeVisible();
     await expect(card.getByText('Keep the current starters', { exact:true })).toBeVisible();
     await expect(card.getByText('No additional bench moves', { exact:true })).toBeVisible();
@@ -362,7 +409,7 @@ test.describe('Today recommendation receipt', () => {
     await page.goto('/');
     await waitForAppMount(page);
 
-    const card = page.getByRole('region', { name:'A measurable plan for next week' });
+    const card = page.getByRole('region', { name:'Lineup plan · Jul 13–Jul 19' });
     await card.getByRole('button', { name:'Pass' }).click();
     await expect(card.getByRole('alert')).toContainText('A newer recommendation is available');
     expect(latestReads).toBeGreaterThanOrEqual(2);
@@ -396,7 +443,7 @@ test.describe('Today recommendation receipt', () => {
     await waitForAppMount(page);
 
     await page.getByRole('button', { name:'Refresh Fantrax data' }).click();
-    const card = page.getByRole('region', { name:'A measurable plan for next week' });
+    const card = page.getByRole('region', { name:'Lineup plan · Jul 13–Jul 19' });
     await expect(card.getByText(/^\+44\.4/)).toBeVisible();
     await page.waitForTimeout(550);
     await expect(card.getByText(/^\+44\.4/)).toBeVisible();
@@ -441,14 +488,14 @@ test.describe('Today recommendation receipt', () => {
     await page.goto('/');
     await waitForAppMount(page);
 
-    const card = page.getByRole('region', { name:'A measurable plan for next week' });
+    const card = page.getByRole('region', { name:'Lineup plan · Jul 13–Jul 19' });
     await card.getByRole('button', { name:'I’ll use this lineup' }).click();
     await expect.poll(() => decisionStarted).toBe(true);
     await page.getByRole('button', { name:'Refresh Fantrax data' }).click();
     await expect.poll(() => reads).toBeGreaterThanOrEqual(2);
-    await expect(card.getByText('Decision recorded. You still need to set this lineup in Fantrax yourself.')).toBeVisible();
+    await expect(card.getByText('Intent recorded, but the latest Fantrax snapshot does not yet confirm any planned assignment change.')).toBeVisible();
     await page.waitForTimeout(550);
-    await expect(card.getByText('Using this plan')).toBeVisible();
+    await expect(card.getByText('Accepted · not yet confirmed')).toBeVisible();
     await expect(card.getByRole('button', { name:'I’ll use this lineup' })).toHaveCount(0);
     finishRefresh?.();
   });

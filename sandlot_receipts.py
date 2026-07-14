@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from sandlot_autopsy import PITCHER_TOKENS
 from sandlot_lineup import FULL_ACTIVE_TEMPLATE
+import sandlot_data_quality
 import sandlot_trade_evidence
 
 
@@ -393,6 +394,172 @@ def immutable_receipt_fields(receipt: dict[str, Any]) -> dict[str, Any]:
         "projected_gain",
     )
     return {key: receipt.get(key) for key in keys}
+
+
+def reconcile_lineup_receipt(
+    receipt: dict[str, Any],
+    snapshot_row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Compare one immutable lineup proposal with the latest trusted Fantrax slots.
+
+    This is observation, not execution proof: Sandlot only reports assignments
+    present in a stored successful snapshot and never infers that it caused the
+    change.  The function intentionally fails closed when identity, period, or
+    slot provenance cannot support an exact comparison.
+    """
+    base = {
+        "state": "unavailable",
+        "source": "latest_successful_fantrax_snapshot",
+        "snapshot_id": None,
+        "snapshot_taken_at": None,
+        "applied_count": 0,
+        "total_changes": 0,
+        "applied_changes": [],
+        "remaining_changes": [],
+        "reason": None,
+        "fantrax_changed_by_sandlot": False,
+    }
+    if receipt.get("action_type") != "lineup_plan":
+        return {**base, "reason": "receipt_is_not_a_lineup_plan"}
+    if not isinstance(snapshot_row, dict):
+        return {**base, "reason": "latest_successful_snapshot_unavailable"}
+
+    snapshot = snapshot_row.get("data") if isinstance(snapshot_row.get("data"), dict) else snapshot_row
+    snapshot_id = snapshot_row.get("id") or snapshot.get("snapshot_id")
+    snapshot_taken_at = snapshot_row.get("taken_at") or snapshot.get("timestamp") or snapshot.get("snapshot_taken_at")
+    base.update({"snapshot_id": snapshot_id, "snapshot_taken_at": snapshot_taken_at})
+
+    receipt_league = str(receipt.get("league_id") or "").strip()
+    receipt_team = str(receipt.get("team_id") or "").strip()
+    snapshot_league = str(snapshot.get("league_id") or "").strip()
+    snapshot_team = str(snapshot.get("team_id") or "").strip()
+    if not receipt_league or not receipt_team or snapshot_league != receipt_league or snapshot_team != receipt_team:
+        return {**base, "reason": "snapshot_scope_mismatch"}
+
+    try:
+        if _utc_datetime(snapshot_taken_at) < _utc_datetime(receipt.get("generated_at")):
+            return {**base, "reason": "snapshot_predates_receipt"}
+    except (TypeError, ValueError):
+        return {**base, "reason": "snapshot_time_unavailable"}
+
+    matchup = snapshot.get("matchup") if isinstance(snapshot.get("matchup"), dict) else None
+    roster_meta = snapshot.get("roster") if isinstance(snapshot.get("roster"), dict) else {}
+    if not matchup or roster_meta.get("period_conflict") is True:
+        return {**base, "reason": "snapshot_period_unavailable"}
+    try:
+        receipt_start = _iso_date(receipt.get("period_start"), "receipt period start")
+        receipt_end = _iso_date(receipt.get("period_end"), "receipt period end")
+        matchup_start = _iso_date(matchup.get("start"), "matchup period start")
+        matchup_end = _iso_date(matchup.get("end"), "matchup period end")
+    except ValueError:
+        return {**base, "reason": "snapshot_period_unavailable"}
+    if not (matchup_start <= receipt_start <= receipt_end <= matchup_end):
+        return {**base, "reason": "snapshot_period_mismatch"}
+
+    recommendation = receipt.get("recommendation") if isinstance(receipt.get("recommendation"), dict) else receipt
+    baseline = recommendation.get("baseline_assignment") or receipt.get("baseline_assignment") or []
+    proposed = recommendation.get("proposed_assignment") or receipt.get("proposed_assignment") or []
+    try:
+        baseline_by_player = _receipt_assignment_by_player(baseline)
+        proposed_by_player = _receipt_assignment_by_player(proposed)
+    except ValueError as exc:
+        return {**base, "reason": str(exc)}
+
+    changed_ids = sorted(
+        player_id
+        for player_id in set(baseline_by_player) | set(proposed_by_player)
+        if _assignment_target(baseline_by_player.get(player_id))
+        != _assignment_target(proposed_by_player.get(player_id))
+    )
+    base["total_changes"] = len(changed_ids)
+    if not changed_ids:
+        return {**base, "reason": "receipt_has_no_assignment_changes"}
+
+    roster = snapshot.get("roster")
+    rows = roster.get("rows") if isinstance(roster, dict) else roster
+    if not isinstance(rows, list):
+        return {**base, "reason": "snapshot_roster_unavailable"}
+    current_by_player: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("id") is None:
+            continue
+        player_id = str(row["id"])
+        if player_id in current_by_player:
+            return {**base, "reason": "snapshot_has_duplicate_player_identity"}
+        current_by_player[player_id] = row
+
+    changes = []
+    for player_id in changed_ids:
+        current = current_by_player.get(player_id)
+        if not current:
+            return {**base, "reason": f"changed_player_missing:{player_id}"}
+        slot_source = str(current.get("slot_source") or "").strip().casefold()
+        if slot_source in sandlot_data_quality.UNTRUSTED_SLOT_SOURCES:
+            return {**base, "reason": f"changed_player_slot_untrusted:{player_id}"}
+        observed_slot = str(current.get("slot") or "").strip().upper()
+        if not observed_slot:
+            return {**base, "reason": f"changed_player_slot_missing:{player_id}"}
+        observed_target = _assignment_target({"slot": observed_slot})
+        baseline_item = baseline_by_player.get(player_id)
+        proposed_item = proposed_by_player.get(player_id)
+        proposed_target = _assignment_target(proposed_item)
+        name = str(
+            (proposed_item or {}).get("player_name")
+            or (baseline_item or {}).get("player_name")
+            or current.get("name")
+            or player_id
+        )
+        changes.append({
+            "player_id": player_id,
+            "player_name": name,
+            "baseline_slot": (baseline_item or {}).get("slot") or "RES",
+            "proposed_slot": (proposed_item or {}).get("slot") or "RES",
+            "observed_slot": observed_slot,
+            "matches_proposed": observed_target == proposed_target,
+        })
+
+    applied = [change for change in changes if change["matches_proposed"]]
+    remaining = [change for change in changes if not change["matches_proposed"]]
+    if len(applied) == len(changes):
+        state = "applied"
+    elif applied:
+        state = "partially_applied"
+    elif receipt.get("decision_state") == "rejected":
+        state = "skipped"
+    else:
+        state = "awaiting"
+    return {
+        **base,
+        "state": state,
+        "applied_count": len(applied),
+        "applied_changes": applied,
+        "remaining_changes": remaining,
+        "reason": None,
+    }
+
+
+def _receipt_assignment_by_player(items: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(items, list):
+        raise ValueError("receipt_assignment_unavailable")
+    result: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("receipt_assignment_invalid")
+        player_id = str(item.get("player_id") or "").strip()
+        slot = str(item.get("slot") or "").strip().upper()
+        if not player_id or not slot:
+            raise ValueError("receipt_assignment_invalid")
+        if player_id in result:
+            raise ValueError("receipt_has_duplicate_player_identity")
+        result[player_id] = {**item, "player_id": player_id, "slot": slot}
+    return result
+
+
+def _assignment_target(item: dict[str, Any] | None) -> str:
+    if not item:
+        return "INACTIVE"
+    slot = str(item.get("slot") or "").strip().upper()
+    return "INACTIVE" if slot in sandlot_data_quality.INACTIVE_SLOTS else slot
 
 
 def build_team_result_outcome(

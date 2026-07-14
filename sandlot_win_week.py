@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import copy
 import math
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -178,18 +178,22 @@ def build_plan(
         state = "no_action"
 
     no_action_reason = None
+    period_language = _period_language(planning_horizon)
     if not actions:
         if complete:
             no_action_reason = "The matchup is complete."
         elif not period_actions_ready:
             no_action_reason = period_reason
         elif base_projection is None:
-            no_action_reason = "Win This Week is paused because remaining-week projection inputs are incomplete."
+            no_action_reason = (
+                f"{period_language['surface_label']} is paused because "
+                f"{period_language['remaining_label']} projection inputs are incomplete."
+            )
         else:
             no_action_reason = (
                 (lineup_payload.get("no_action") or {}).get("reason")
                 or waiver_payload.get("message")
-                or "No legal action has a positive, provenance-backed remaining-week impact."
+                or f"No legal action has a positive, provenance-backed {period_language['remaining_label']} impact."
             )
     no_action = None
     if no_action_reason:
@@ -1243,6 +1247,7 @@ def _summary(
     no_action_reason: str | None,
     planning_horizon: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    period_language = _period_language(planning_horizon)
     my_score = _number(matchup.get("my_score"))
     opponent_score = _number(matchup.get("opponent_score"))
     margin = (my_score - opponent_score) if my_score is not None and opponent_score is not None else None
@@ -1263,7 +1268,8 @@ def _summary(
     outlook_margin = projected_margin_after_action if primary else projected_margin
     outlook = None
     if outlook_margin is not None and not matchup.get("complete"):
-        prefix = "After this move, the remaining-week estimate" if primary else "The current remaining-week estimate"
+        remaining = period_language["remaining_label"]
+        prefix = f"After this move, the {remaining} estimate" if primary else f"The current {remaining} estimate"
         if outlook_margin < 0:
             outlook = f"{prefix} leaves you {abs(outlook_margin):.1f} points behind."
         elif outlook_margin > 0:
@@ -1279,7 +1285,7 @@ def _summary(
         "projected_margin_after_action": projected_margin_after_action,
         "win_probability_excluded_reason": None
         if (projection or {}).get("probability_calibrated") is True
-        else "Win probability is not calibrated; actions are ranked by projected remaining-week points.",
+        else f"Win probability is not calibrated; actions are ranked by projected {period_language['remaining_label']} points.",
         "projection_caveat": _projection_caveat(projection),
     }
     if (planning_horizon or {}).get("mode") == "editable_period":
@@ -1291,8 +1297,30 @@ def _summary(
             else f"Planning Period {period}: {no_action_reason or 'no worthwhile lineup change is available yet.'}"
         )
         if summary.get("outlook"):
-            summary["outlook"] = str(summary["outlook"]).replace("remaining-week estimate", f"Period {period} estimate")
+            summary["outlook"] = str(summary["outlook"]).replace(
+                f"{period_language['remaining_label']} estimate",
+                f"Period {period} estimate",
+            )
     return summary
+
+
+def _period_language(planning_horizon: dict[str, Any] | None) -> dict[str, Any]:
+    """Return user-facing period terms from the exact inclusive date window."""
+    horizon = planning_horizon if isinstance(planning_horizon, dict) else {}
+    day_count = None
+    try:
+        start = date.fromisoformat(str(horizon.get("start")))
+        end = date.fromisoformat(str(horizon.get("end")))
+        if end >= start:
+            day_count = (end - start).days + 1
+    except (TypeError, ValueError):
+        pass
+    weekly = day_count in (None, 7)
+    return {
+        "day_count": day_count,
+        "surface_label": "Win This Week" if weekly else "Win This Matchup",
+        "remaining_label": "remaining-week" if weekly else "remaining-period",
+    }
 
 
 def _projection_caveat(projection: dict[str, Any] | None) -> str | None:
