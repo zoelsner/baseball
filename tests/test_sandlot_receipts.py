@@ -22,6 +22,7 @@ from scripts import run_monday_lineup
 
 
 NOW = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+FRESH_SNAPSHOT_AT = datetime.now(timezone.utc)
 DEFAULT_UNFILLED = (
     ["C", "1B", "2B", "3B", "SS"]
     + ["OF"] * 2
@@ -1538,7 +1539,7 @@ class RecommendationReceiptApiTests(unittest.TestCase):
 
     def test_incoming_trades_are_sanitized_exact_and_manual_only(self):
         snapshot = {
-            "id": 281, "taken_at": NOW, "team_id": "mine",
+            "id": 281, "taken_at": FRESH_SNAPSHOT_AT, "team_id": "mine",
             "data": {"team_id": "mine", "pending_trades": [
                 {
                     "trade_id": "tx1", "proposed_by_id": "other", "proposed_by": "Other Team",
@@ -1575,7 +1576,7 @@ class RecommendationReceiptApiTests(unittest.TestCase):
 
     def test_incoming_trade_with_draft_pick_fails_closed(self):
         snapshot = {
-            "id": 281, "taken_at": NOW, "team_id": "mine",
+            "id": 281, "taken_at": FRESH_SNAPSHOT_AT, "team_id": "mine",
             "data": {"team_id": "mine", "pending_trades": [{
                 "trade_id": "tx-pick", "proposed_by_id": "other", "moves": [
                     {"from_team_id": "mine", "to_team_id": "other", "player_id": "p1", "player": "Mine"},
@@ -1592,7 +1593,7 @@ class RecommendationReceiptApiTests(unittest.TestCase):
 
     def test_accepted_or_multi_team_incoming_trade_cannot_be_graded(self):
         snapshot = {
-            "id": 281, "taken_at": NOW, "team_id": "mine",
+            "id": 281, "taken_at": FRESH_SNAPSHOT_AT, "team_id": "mine",
             "data": {"team_id": "mine", "pending_trades": [{
                 "trade_id": "tx-multi", "proposed_by_id": "other", "accepted": "Jul 12",
                 "moves": [
@@ -1611,7 +1612,7 @@ class RecommendationReceiptApiTests(unittest.TestCase):
 
     def test_incoming_trade_grade_revalidates_snapshot_and_exact_sides(self):
         snapshot = {
-            "id": 281, "taken_at": NOW, "team_id": "mine", "league_id": "league",
+            "id": 281, "taken_at": FRESH_SNAPSHOT_AT, "team_id": "mine", "league_id": "league",
             "data": {"team_id": "mine", "pending_trades": [{
                 "trade_id": "tx1", "proposed_by_id": "other", "moves": [
                     {"from_team_id": "mine", "to_team_id": "other", "player_id": "p1", "player": "Mine"},
@@ -1637,7 +1638,7 @@ class RecommendationReceiptApiTests(unittest.TestCase):
 
     def test_incoming_trade_grade_binds_exact_fantrax_origin_to_receipt(self):
         snapshot = {
-            "id": 281, "taken_at": NOW, "team_id": "mine", "league_id": "league",
+            "id": 281, "taken_at": FRESH_SNAPSHOT_AT, "team_id": "mine", "league_id": "league",
             "data": {"team_id": "mine", "pending_trades": [{
                 "trade_id": "tx1", "proposed_by_id": "other", "proposed": "Jul 12", "executed": "Jul 13",
                 "moves": [
@@ -1707,7 +1708,7 @@ class RecommendationReceiptApiTests(unittest.TestCase):
         mine = {"id": "p1", "name": "Mine", "slot": "1B", "positions": "1B", "fppg": 4.1, "age": 31}
         young = {"id": "p2", "name": "Young Player", "slot": "OF", "positions": "OF", "fppg": 3.8, "age": 24}
         snapshot = {
-            "id": 281, "taken_at": NOW, "team_id": "mine",
+            "id": 281, "taken_at": FRESH_SNAPSHOT_AT, "team_id": "mine",
             "data": {
                 "team_id": "mine",
                 "roster": {"rows": [mine]},
@@ -1744,7 +1745,7 @@ class RecommendationReceiptApiTests(unittest.TestCase):
             {"from_team_id": "other", "to_team_id": "mine", "player_id": "p2", "player": "Theirs"},
         ]
         snapshot = {
-            "id": 281, "taken_at": NOW, "team_id": "mine",
+            "id": 281, "taken_at": FRESH_SNAPSHOT_AT, "team_id": "mine",
             "data": {"team_id": "mine", "pending_trades": [
                 {"trade_id": "ambiguous", "proposed_by_id": None, "moves": base_moves},
                 {"trade_id": "duplicate", "proposed_by_id": "other", "moves": [base_moves[0], base_moves[0], base_moves[1]]},
