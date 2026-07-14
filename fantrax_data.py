@@ -650,9 +650,10 @@ def _official_mlb_terminal_day_evidence(day: date_cls) -> dict[str, Any]:
     normalized_games: list[dict[str, Any]] = []
     seen_game_ids: set[int] = set()
     for game in games:
-        if not isinstance(game, dict) or str(game.get("officialDate") or "") != day.isoformat():
+        if not isinstance(game, dict):
             raise ValueError("official MLB completion evidence contains an invalid game")
         game_pk = game.get("gamePk")
+        official_date = str(game.get("officialDate") or "")
         status = game.get("status") if isinstance(game.get("status"), dict) else {}
         detailed_state = " ".join(str(status.get("detailedState") or "").strip().split()).casefold()
         normalized_state = MLB_TERMINAL_SCHEDULE_STATES.get(detailed_state)
@@ -663,10 +664,23 @@ def _official_mlb_terminal_day_evidence(day: date_cls) -> dict[str, Any]:
             or normalized_state is None
         ):
             raise ValueError("official MLB completion evidence contains a non-terminal or invalid game")
+        reschedule_game_date = None
+        if official_date != day.isoformat():
+            reschedule_game_date = str(game.get("rescheduleGameDate") or "")
+            calendar_event_id = str(game.get("calendarEventID") or "")
+            if (
+                normalized_state != "postponed"
+                or not official_date
+                or reschedule_game_date != official_date
+                or not calendar_event_id.endswith(f"-{day.isoformat()}")
+            ):
+                raise ValueError("official MLB completion evidence contains an invalid game date identity")
         seen_game_ids.add(game_pk)
         normalized_games.append({
             "game_pk": game_pk,
-            "official_date": day.isoformat(),
+            "schedule_date": day.isoformat(),
+            "official_date": official_date,
+            "reschedule_game_date": reschedule_game_date,
             "status": normalized_state,
         })
     normalized_games.sort(key=lambda item: item["game_pk"])
