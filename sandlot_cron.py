@@ -10,8 +10,12 @@ import logging
 import os
 import sys
 
+from datetime import date
+
 import player_service
 import sandlot_config
+import sandlot_db
+import sandlot_lineup_card
 import sandlot_scores
 import sandlot_waivers
 from sandlot_refresh import run_refresh
@@ -30,6 +34,17 @@ def main() -> int:
                 logging.exception("Sandlot game scores sync failed; snapshot is already stored")
         else:
             logging.info("Sandlot game scores sync disabled via SANDLOT_GAME_SCORES_SYNC_DISABLED")
+        try:
+            card = sandlot_lineup_card.build_card()
+            sandlot_db.set_lineup_proposal(
+                date.fromisoformat(card["week"][0]), result.snapshot_id, card
+            )
+            logging.info(
+                "Sandlot lineup card stored for week %s: %.1f projected (%+.1f)",
+                card["week"][0], card["projected_total"], card["delta"],
+            )
+        except Exception:
+            logging.exception("Sandlot lineup card failed; snapshot is already stored")
         if sandlot_config.profile_warm_enabled():
             warm_result = player_service.warm_roster_profiles(
                 snapshot_id=result.snapshot_id,

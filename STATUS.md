@@ -1,10 +1,18 @@
 # STATUS
 
 > Living next-steps file. Update this at the end of any session that changes the plan.
-> Last updated: **2026-07-06** (normalized `game_scores` table + cron sync).
+> Last updated: **2026-07-06** (normalized `game_scores` table + cron sync; Monday lineup card packaged: stored in DB, served at `/api/lineup/card`, Today-page card, Monday email).
 
 ## Where things stand
 
+- **Monday lineup card packaged (2026-07-06, same branch — closes the #93 loop):**
+  compute moved into `sandlot_lineup_card.build_card()` (single source of
+  truth). The cron computes and stores the card in `lineup_proposals` after
+  every refresh; `GET /api/lineup/card` serves the stored payload (no MLB
+  fan-out on page load); the Today page renders it after the Attention Queue;
+  the weekly Actions run also emails the card via Gmail SMTP when the
+  `GMAIL_USER` / `GMAIL_APP_PASSWORD` (+ optional `EMAIL_TO`) repo secrets
+  are set — it skips quietly when they're not.
 - **`game_scores` table (2026-07-06, branch `claude/debug-railway-crash-AvUM7`):**
   normalized per-game league-scored history — one row per (player, game, stat
   group) with exact league points, gs flag, and the raw stat blob.

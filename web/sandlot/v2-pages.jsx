@@ -1010,6 +1010,8 @@ function V2Today({ model, sync, onRefresh, onNav, onPlayer, onAskSkipper }) {
 
       <V2AttentionQueue items={attentionItems} hasRealData={hasRealData} sync={sync} pausedReason={lineupPausedReason} onPlayer={onPlayer} onNav={onNav} onAskSkipper={onAskSkipper}/>
 
+      <V2MondayLineupCard/>
+
       {lineupPausedReason ? (
         <V2Caution eyebrow="Advice paused" tone="warn">
           Lineup and replacement advice is paused: {lineupPausedReason}.
@@ -1599,6 +1601,256 @@ function V2AttentionEmptyState({ hasRealData, sync, pausedReason }) {
         <div style={{ marginTop:7, color:V2.body, fontSize:13, lineHeight:1.45, fontWeight:700 }}>
           {copy}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Monday lineup (#93) ────────────────────────────────────────
+// Reads the deterministic weekly proposal cached by the cron
+// (`GET /api/lineup/card`). Read-only: it never triggers a refresh.
+
+function v2LineupWeekLabel(week) {
+  const start = Array.isArray(week) ? week[0] : null;
+  return start ? `Week of ${v2ShortDate(start)}` : 'This week';
+}
+
+function v2LineupDeltaTone(delta) {
+  const n = Number(delta);
+  if (!Number.isFinite(n) || Math.abs(n) < 1) return { fg:V2.muted, bg:V2.surface2 };
+  if (n > 0) return { fg:V2.ok, bg:V2.okSoft };
+  return { fg:V2.warn, bg:V2.warnSoft };
+}
+
+function v2LineupMovesSummary(moves) {
+  const start = (moves?.start || []).filter(Boolean);
+  const bench = (moves?.bench || []).filter(Boolean);
+  if (!start.length && !bench.length) return 'No changes — current lineup is optimal.';
+  return [
+    start.length ? `Start: ${start.join(', ')}` : null,
+    bench.length ? `Bench: ${bench.join(', ')}` : null,
+  ].filter(Boolean).join(' · ');
+}
+
+// `basis` carries the day-to-day flag inline as "[DTD]"; lift it out so it can
+// render as a tag and leave the rest of the string (including "(probable)") as-is.
+function v2LineupBasis(basis) {
+  const raw = String(basis || '');
+  return {
+    dtd: /\[DTD\]/i.test(raw),
+    text: raw.replace(/\[DTD\]/ig, '').replace(/\s{2,}/g, ' ').trim(),
+  };
+}
+
+function v2LineupPoints(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(1) : '—';
+}
+
+function V2MondayLineupCard() {
+  const [state, setState] = React.useState({ status:'loading', payload:null, error:null });
+  const [expanded, setExpanded] = React.useState(false);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setState({ status:'loading', payload:null, error:null });
+    fetch('/api/lineup/card')
+      .then(async r => {
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data?.detail || `lineup card ${r.status}`);
+        return data;
+      })
+      .then(data => { if (!cancelled) setState({ status:'ready', payload:data, error:null }); })
+      .catch(err => { if (!cancelled) setState({ status:'error', payload:null, error:err.message }); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const card = state.payload || null;
+  const lineup = Array.isArray(card?.lineup) ? card.lineup : [];
+
+  if (state.status === 'loading') {
+    return (
+      <V2MondayLineupShell>
+        <V2Eyebrow>Monday Lineup</V2Eyebrow>
+        <div style={{ marginTop:9, fontSize:24, lineHeight:1.05, fontWeight:800, fontFamily:V2.fontDisplay }}>
+          Loading lineup
+        </div>
+        <div style={{ marginTop:7, color:V2.muted, fontSize:12.5, lineHeight:1.4, fontWeight:700 }}>
+          Reading this week's optimal lineup proposal.
+        </div>
+      </V2MondayLineupShell>
+    );
+  }
+
+  // 503 before the first cron run is the normal case, not a failure — keep it quiet.
+  if (state.status === 'error' || !lineup.length) {
+    return (
+      <V2MondayLineupShell>
+        <V2Eyebrow>Monday Lineup</V2Eyebrow>
+        <div title={state.error || undefined} style={{ marginTop:8, color:V2.muted, fontSize:12.5, lineHeight:1.4, fontWeight:700 }}>
+          Lineup card not available yet.
+        </div>
+      </V2MondayLineupShell>
+    );
+  }
+
+  const tone = v2LineupDeltaTone(card.delta);
+  const unfilled = (card.unfilled || []).filter(Boolean);
+  const bench = Array.isArray(card.bench) ? card.bench : [];
+  const excluded = Array.isArray(card.excluded) ? card.excluded : [];
+
+  return (
+    <section style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, overflow:'hidden' }}>
+      <button
+        onClick={()=>setExpanded(v => !v)}
+        aria-expanded={expanded}
+        style={{
+          width:'100%', display:'block', textAlign:'left', border:'none', background:'transparent',
+          padding:'17px 18px 14px', cursor:'pointer', fontFamily:'inherit', color:V2.ink,
+        }}
+      >
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+          <V2Eyebrow color={tone.fg}>Monday Lineup</V2Eyebrow>
+          <span style={{
+            background:tone.bg,
+            color:tone.fg,
+            borderRadius:999,
+            padding:'5px 9px',
+            fontSize:11,
+            fontWeight:900,
+            fontFamily:V2.fontMono,
+            fontVariantNumeric:'tabular-nums',
+            whiteSpace:'nowrap',
+          }}>{v2Signed(card.delta, 1)}</span>
+        </div>
+        <div style={{ marginTop:9, fontSize:24, lineHeight:1.05, fontWeight:800, fontFamily:V2.fontDisplay }}>
+          {v2LineupWeekLabel(card.week)}
+        </div>
+        <div style={{ marginTop:7, color:V2.muted, fontSize:12.5, lineHeight:1.4, fontWeight:700, textWrap:'pretty' }}>
+          {v2LineupMovesSummary(card.moves)}
+        </div>
+        <div style={{ marginTop:7, color:V2.body, fontSize:11.5, fontWeight:850, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums' }}>
+          {v2LineupPoints(card.projected_total)} proj · {v2LineupPoints(card.current_total)} current
+        </div>
+        {unfilled.length ? (
+          <div style={{ marginTop:7, color:V2.warn, fontSize:12, fontWeight:800, lineHeight:1.35, textWrap:'pretty' }}>
+            No eligible player for: {unfilled.join(', ')}
+          </div>
+        ) : null}
+        <div style={{ marginTop:9, color:V2.muted, fontSize:11, fontWeight:900, letterSpacing:'0.05em', textTransform:'uppercase' }}>
+          {expanded ? 'Hide full lineup' : 'Show full lineup'}
+        </div>
+      </button>
+
+      {expanded ? (
+        <div style={{ borderTop:`1px solid ${V2.hairline2}` }}>
+          {lineup.map((row, index) => (
+            <V2MondayLineupRow key={`${row.slot}-${row.name || index}`} row={row} last={index === lineup.length - 1}/>
+          ))}
+
+          {bench.length ? (
+            <V2MondayLineupList
+              eyebrow="Bench"
+              items={bench.map(p => ({ name:p.name, right:`${v2LineupPoints(p.proj)} pts` }))}
+            />
+          ) : null}
+
+          {excluded.length ? (
+            <V2MondayLineupList
+              eyebrow="Excluded"
+              items={excluded.map(p => ({ name:p.name, basis:p.basis }))}
+            />
+          ) : null}
+
+          <div style={{ borderTop:`1px solid ${V2.hairline2}`, padding:'12px 18px 15px', color:V2.muted, fontSize:11, fontWeight:800 }}>
+            {[
+              card.generated_at ? `Generated ${v2ShortDate(card.generated_at)}` : null,
+              card.snapshot_id ? `snapshot ${card.snapshot_id}` : null,
+            ].filter(Boolean).join(' · ') || 'Deterministic weekly proposal.'}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function V2MondayLineupShell({ children }) {
+  return (
+    <section style={{ background:V2.surface, border:`1px solid ${V2.hairline}`, borderRadius:24, padding:'17px 18px 16px' }}>
+      {children}
+    </section>
+  );
+}
+
+function V2MondayLineupDtdTag() {
+  return (
+    <span style={{ background:V2.warnSoft, color:V2.warn, borderRadius:999, padding:'3px 6px', fontSize:9.5, fontWeight:900, letterSpacing:'0.04em', flexShrink:0 }}>
+      DTD
+    </span>
+  );
+}
+
+function V2MondayLineupRow({ row, last }) {
+  const basis = v2LineupBasis(row.basis);
+  return (
+    <div style={{
+      display:'grid', gridTemplateColumns:'44px 1fr auto', alignItems:'center', gap:10,
+      padding:'11px 18px', borderBottom:last ? 'none' : `1px solid ${V2.hairline2}`,
+    }}>
+      <span style={{
+        background:V2.surface2, color:V2.body, borderRadius:8, padding:'5px 0', textAlign:'center',
+        fontSize:10.5, fontWeight:900, fontFamily:V2.fontMono,
+      }}>{row.slot || '—'}</span>
+      <div style={{ minWidth:0 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+          <span style={{ fontSize:14, lineHeight:1.15, fontWeight:700, fontFamily:V2.fontDisplay, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+            {row.name || 'Empty'}
+          </span>
+          {basis.dtd ? <V2MondayLineupDtdTag/> : null}
+        </div>
+        {basis.text ? (
+          <div style={{ marginTop:3, color:V2.muted, fontSize:11, fontWeight:700, lineHeight:1.3, textWrap:'pretty' }}>
+            {basis.text}
+          </div>
+        ) : null}
+      </div>
+      <span style={{ color:V2.ink, fontSize:13, fontWeight:850, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums', whiteSpace:'nowrap' }}>
+        {v2LineupPoints(row.proj)}
+      </span>
+    </div>
+  );
+}
+
+function V2MondayLineupList({ eyebrow, items }) {
+  return (
+    <div style={{ borderTop:`1px solid ${V2.hairline2}`, padding:'13px 18px 14px' }}>
+      <V2Eyebrow>{eyebrow}</V2Eyebrow>
+      <div style={{ marginTop:8, display:'flex', flexDirection:'column', gap:7 }}>
+        {items.map((item, index) => {
+          const basis = v2LineupBasis(item.basis);
+          return (
+            <div key={`${item.name || 'player'}-${index}`} style={{ display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:10 }}>
+              <div style={{ minWidth:0 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                  <span style={{ color:V2.body, fontSize:12.5, fontWeight:800, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    {item.name || 'Unknown player'}
+                  </span>
+                  {basis.dtd ? <V2MondayLineupDtdTag/> : null}
+                </div>
+                {basis.text ? (
+                  <div style={{ marginTop:3, color:V2.muted, fontSize:11, fontWeight:700, lineHeight:1.3, textWrap:'pretty' }}>
+                    {basis.text}
+                  </div>
+                ) : null}
+              </div>
+              {item.right ? (
+                <span style={{ color:V2.muted, fontSize:11.5, fontWeight:850, fontFamily:V2.fontMono, fontVariantNumeric:'tabular-nums', whiteSpace:'nowrap' }}>
+                  {item.right}
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

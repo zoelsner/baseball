@@ -170,6 +170,16 @@ def init_schema() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS lineup_proposals (
+              week_start DATE PRIMARY KEY,
+              snapshot_id BIGINT REFERENCES snapshots(id) ON DELETE SET NULL,
+              payload JSONB NOT NULL,
+              generated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS player_media (
               mlb_id BIGINT PRIMARY KEY,
               items JSONB NOT NULL,
@@ -567,6 +577,34 @@ def set_player_game_log(
             """,
             (mlb_id, group_type, season, Jsonb(games)),
         )
+
+
+def set_lineup_proposal(week_start: date, snapshot_id: int | None, payload: dict[str, Any]) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO lineup_proposals (week_start, snapshot_id, payload, generated_at)
+            VALUES (%s, %s, %s, now())
+            ON CONFLICT (week_start) DO UPDATE
+            SET snapshot_id = EXCLUDED.snapshot_id,
+                payload = EXCLUDED.payload,
+                generated_at = now()
+            """,
+            (week_start, snapshot_id, Jsonb(payload)),
+        )
+
+
+def latest_lineup_proposal() -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT week_start, snapshot_id, payload, generated_at
+            FROM lineup_proposals
+            ORDER BY week_start DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def upsert_game_scores(rows: list[dict[str, Any]]) -> int:

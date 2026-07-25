@@ -12,7 +12,9 @@ on:
     paths:
       - ".github/workflows/monday-lineup.yml"
       - "scripts/run_monday_lineup.py"
+      - "scripts/send_lineup_email.py"
       - "sandlot_lineup.py"
+      - "sandlot_lineup_card.py"
 
 permissions:
   contents: read
@@ -31,9 +33,18 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python scripts/run_monday_lineup.py
+      - name: Email the card
+        # Quietly no-ops when the email secrets aren't configured.
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python scripts/send_lineup_email.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: monday-lineup
-          path: monday_lineup.json
+          path: |
+            monday_lineup.json
+            monday_lineup.md
           if-no-files-found: ignore

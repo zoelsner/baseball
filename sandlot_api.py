@@ -128,6 +128,25 @@ def attention_queue() -> dict[str, Any]:
     )
 
 
+@app.get("/api/lineup/card")
+def lineup_card() -> dict[str, Any]:
+    """Latest stored Monday lineup proposal (#93) — read-only.
+
+    The cron computes and stores the card after each refresh
+    (sandlot_lineup_card.build_card); this endpoint only serves the stored
+    payload so page loads never trigger MLB API fan-out.
+    """
+    try:
+        row = sandlot_db.latest_lineup_proposal()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {exc}") from exc
+    if not row:
+        raise HTTPException(status_code=503, detail="No lineup proposal has been stored yet")
+    payload = dict(row.get("payload") or {})
+    payload.setdefault("snapshot_id", row.get("snapshot_id"))
+    return jsonable_encoder(payload)
+
+
 @app.get("/api/hot-swaps/latest")
 def latest_hot_swaps() -> dict[str, Any]:
     """Read-only hot-swap proposal surface.
