@@ -1057,6 +1057,8 @@ class SkipperClient:
                 "HTTP-Referer": "https://github.com/zachoelsner/fantrax-daily-audit",
                 "X-Title": "Sandlot Skipper",
             },
+            timeout=60.0,
+            max_retries=1,
         )
         self._active_stream_lock = threading.Lock()
         self._active_stream = None

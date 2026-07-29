@@ -884,7 +884,7 @@ class RecommendationReceiptPersistenceTests(unittest.TestCase):
             yield FakeConn()
 
         with patch.object(sandlot_db, "connect", fake_connect):
-            sandlot_db.init_schema()
+            sandlot_db.init_schema(force=True)
 
         sql = "\n".join(statement for statement, _params in calls)
         self.assertIn("CREATE TABLE IF NOT EXISTS recommendation_receipts", sql)
@@ -2128,7 +2128,7 @@ class RecommendationReceiptPostgresConcurrencyTests(unittest.TestCase):
         )
 
         with patch.dict(os.environ, {"DATABASE_URL": database_url}):
-            sandlot_db.init_schema()
+            sandlot_db.init_schema(force=True)
             with sandlot_db.connect() as setup:
                 row = setup.execute(
                     """
@@ -2180,7 +2180,7 @@ class RecommendationReceiptPostgresConcurrencyTests(unittest.TestCase):
         snapshot_id = None
 
         with patch.dict(os.environ, {"DATABASE_URL": database_url}):
-            sandlot_db.init_schema()
+            sandlot_db.init_schema(force=True)
             with sandlot_db.connect() as setup:
                 snapshot_row = setup.execute(
                     """

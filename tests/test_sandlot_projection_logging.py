@@ -94,7 +94,7 @@ class ProjectionLoggingTests(unittest.TestCase):
             yield FakeConn()
 
         with patch.object(sandlot_db, "connect", fake_connect):
-            sandlot_db.init_schema()
+            sandlot_db.init_schema(force=True)
 
         schema_sql = "\n".join(sql for sql, _params in calls)
         self.assertIn(

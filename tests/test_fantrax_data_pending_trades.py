@@ -16,31 +16,22 @@ class DummyAPI:
         "third": DummyTeam("Third Team"),
     }
 
-    def pending_trades(self):
-        raise KeyError("Accepted")
-
     def team(self, team_id):
         return self.team_lookup[team_id]
 
 
 class FantraxPendingTradeTests(unittest.TestCase):
-    def test_object_parser_retains_exact_player_id(self):
-        class Ref:
-            pass
-        mine, other, player, move, trade = Ref(), Ref(), Ref(), Ref(), Ref()
-        mine.id, mine.name = "mine", "My Team"
-        other.id, other.name = "other", "Other Team"
-        player.id, player.name = "p1", "Useful Player"
-        move.from_team, move.to_team, move.player = mine, other, player
-        trade.proposed_by, trade.moves, trade.trade_id = other, [move], "tx-object"
-        trade.proposed, trade.accepted, trade.executed = None, None, None
-        api = DummyAPI()
-        api.pending_trades = lambda: [trade]
-
-        trades = fantrax_data.extract_pending_trades(api, "mine")
-
-        self.assertEqual(trades[0]["moves"][0]["player_id"], "p1")
-        self.assertIsNone(trades[0]["accepted"])
+    def test_raw_endpoint_failure_propagates(self):
+        # fantraxapi's pending_trades() object parser KeyErrors on any
+        # genuinely-pending offer, so extract_pending_trades always uses the
+        # raw endpoint. A raw-endpoint failure must not be swallowed into an
+        # empty list -- it needs to surface so collect_all records it in
+        # snapshot["errors"] instead of silently reporting "no trades".
+        with patch.object(
+            fantrax_data._fantrax_api, "get_pending_transactions", side_effect=RuntimeError("boom")
+        ):
+            with self.assertRaises(RuntimeError):
+                fantrax_data.extract_pending_trades(DummyAPI(), "mine")
 
     def test_raw_fallback_allows_missing_accepted_timestamp(self):
         raw = {

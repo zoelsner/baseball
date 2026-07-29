@@ -2049,49 +2049,11 @@ def extract_transactions(api: FantraxAPI, count: int = 50) -> list[dict]:
 
 
 def extract_pending_trades(api: FantraxAPI, my_team_id: str) -> list[dict]:
-    try:
-        trades = api.pending_trades()
-    except Exception as e:
-        log.info("pending_trades object parser failed; falling back to raw endpoint: %s", e)
-        return _extract_pending_trades_raw(api, my_team_id)
-
-    out = []
-    for t in trades:
-        try:
-            proposed_by = getattr(t, "proposed_by", None)
-            moves = []
-            for m in getattr(t, "moves", []) or []:
-                from_team = getattr(m, "from_team", None)
-                to_team = getattr(m, "to_team", None)
-                player = getattr(m, "player", None)
-                moves.append({
-                    "from_team_id": getattr(from_team, "id", None),
-                    "from_team": getattr(from_team, "name", None),
-                    "to_team_id": getattr(to_team, "id", None),
-                    "to_team": getattr(to_team, "name", None),
-                    "player": getattr(player, "name", None) if player else None,
-                    "player_id": getattr(player, "id", None) if player else None,
-                    "draft_pick": _to_jsonable(getattr(m, "draft_pick", None)) if hasattr(m, "draft_pick") else None,
-                })
-
-            involves_me = any(
-                m.get("from_team_id") == my_team_id or m.get("to_team_id") == my_team_id for m in moves
-            ) or getattr(proposed_by, "id", None) == my_team_id
-
-            if involves_me:
-                out.append({
-                    "trade_id": getattr(t, "trade_id", None),
-                    "proposed_by_id": getattr(proposed_by, "id", None),
-                    "proposed_by": getattr(proposed_by, "name", None),
-                    "proposed": _optional_text(getattr(t, "proposed", None)),
-                    "accepted": _optional_text(getattr(t, "accepted", None)),
-                    "executed": _optional_text(getattr(t, "executed", None)),
-                    "moves": moves,
-                })
-        except Exception as e:
-            log.warning("Failed to parse trade: %s", e)
-            out.append({"error": str(e), "raw": _to_jsonable(t)})
-    return out
+    # fantraxapi's pending_trades() object parser indexes info["Accepted"],
+    # which Fantrax omits for any offer that hasn't been accepted yet, so it
+    # KeyErrors on every genuinely-pending trade. The raw endpoint below is
+    # the only path that actually works; call it directly.
+    return _extract_pending_trades_raw(api, my_team_id)
 
 
 def _optional_text(value: Any) -> str | None:
@@ -2106,7 +2068,7 @@ def _extract_pending_trades_raw(api: FantraxAPI, my_team_id: str) -> list[dict]:
         response = _raw_request(api, "getPendingTransactions")
     except Exception as e:
         log.warning("pending_trades raw endpoint failed: %s", e)
-        return []
+        raise
 
     out = []
     for trade in response.get("tradeInfoList") or []:
