@@ -19,6 +19,9 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 
+_SCHEMA_READY = False
+
+
 def database_url() -> str:
     url = os.environ.get("DATABASE_URL")
     if not url:
@@ -39,7 +42,10 @@ def connect() -> Iterator[psycopg.Connection]:
         conn.close()
 
 
-def init_schema() -> None:
+def init_schema(force: bool = False) -> None:
+    global _SCHEMA_READY
+    if _SCHEMA_READY and not force:
+        return
     with connect() as conn:
         conn.execute(
             """
@@ -308,6 +314,7 @@ def init_schema() -> None:
             ON execution_requests (state, expires_at, created_at)
             """
         )
+    _SCHEMA_READY = True
 
 
 def create_refresh_run(source: str) -> int:

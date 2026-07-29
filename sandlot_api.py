@@ -34,6 +34,8 @@ import sandlot_trades
 import sandlot_waivers
 import sandlot_win_week
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
 log = logging.getLogger(__name__)
 
 load_dotenv()
@@ -1279,9 +1281,22 @@ def _latest_reviewed_action(
 
 def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
     data = row.get("data") or {}
-    roster_meta = data.get("roster") or {}
-    standings = data.get("standings") or {}
-    decisions = _matchup_decisions(row)
+    roster_meta = data.get("roster")
+    if not isinstance(roster_meta, dict):
+        roster_meta = {}
+    standings = data.get("standings")
+    if not isinstance(standings, dict):
+        standings = {}
+    try:
+        decisions = _matchup_decisions(row)
+    except Exception:
+        log.exception("_matchup_decisions failed; degrading matchup/win_this_week/data_quality")
+        decisions = {"matchup": None, "win_this_week": None, "data_quality": None}
+    try:
+        player_index = _player_index(data)
+    except Exception:
+        log.exception("_player_index failed; degrading player_index to []")
+        player_index = []
     taken_at = row.get("taken_at")
     return {
         "snapshot_id": row.get("id"),
@@ -1299,7 +1314,7 @@ def _snapshot_payload(row: dict[str, Any]) -> dict[str, Any]:
         "matchup": decisions["matchup"],
         "win_this_week": decisions["win_this_week"],
         "data_quality": decisions["data_quality"],
-        "player_index": _player_index(data),
+        "player_index": player_index,
         "errors": row.get("errors") or data.get("errors") or [],
     }
 

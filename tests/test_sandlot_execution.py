@@ -350,7 +350,7 @@ class ExecutionPersistenceTests(unittest.TestCase):
     def test_schema_retains_snapshot_identity_without_blocking_snapshot_pruning(self):
         connection = FakeConnection()
         with patch("sandlot_db.connect", lambda: fake_connect(connection)):
-            sandlot_db.init_schema()
+            sandlot_db.init_schema(force=True)
 
         table_sql = next(sql for sql, _params in connection.calls if "CREATE TABLE IF NOT EXISTS execution_requests" in sql)
         self.assertIn("snapshot_id BIGINT NOT NULL", table_sql)
