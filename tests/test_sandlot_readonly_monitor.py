@@ -116,7 +116,7 @@ def healthy_payloads():
             "matchup": {
                 "projection": {
                     "model_version": "matchup_projection_v4",
-                    "scoring_basis": "current_snapshot_fppg_x_remaining_games",
+                    "scoring_basis": "current_snapshot_fppg_x_remaining_opportunities",
                     "probability_calibrated": False,
                     "projected_my": 100.0,
                     "projected_opp": 99.0,

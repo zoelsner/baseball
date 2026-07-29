@@ -531,7 +531,7 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
         if quality.get("projection_ready") is not False and not shifted_to_editable_period:
             fail("matchup_projection_missing", "Matchup projection was missing despite no explicit pause state")
     else:
-        if projection.get("scoring_basis") != "current_snapshot_fppg_x_remaining_games":
+        if projection.get("scoring_basis") != "current_snapshot_fppg_x_remaining_opportunities":
             fail("matchup_scoring_basis", "Matchup projection did not identify its FP/G scoring basis")
         if projection.get("probability_calibrated") is not False:
             fail("matchup_probability_claim", "Matchup win probability was not explicitly marked uncalibrated")
@@ -549,11 +549,26 @@ def _validate_matchup_surface(snapshot: dict[str, Any], snapshot_id: str | None,
                 fail("matchup_game_volume", f"Matchup projection {field} was invalid")
         opportunity_completeness = projection.get("opportunity_completeness")
         if opportunity_completeness is not None:
-            if opportunity_completeness not in {"complete", "known_opportunities_lower_bound"}:
+            if opportunity_completeness not in {
+                "complete",
+                "known_opportunities_lower_bound",
+                "estimated_pitcher_opportunities",
+                "partial_estimated_pitcher_opportunities",
+            }:
                 fail("matchup_opportunity_scope", "Matchup projection had an unknown opportunity-completeness state")
-            if opportunity_completeness == "known_opportunities_lower_bound":
-                missing_probables = _number(projection.get("pitchers_without_probable_start"))
-                if missing_probables is None or missing_probables <= 0:
+            if opportunity_completeness in {
+                "estimated_pitcher_opportunities",
+                "partial_estimated_pitcher_opportunities",
+            }:
+                cadence_estimates = _number(projection.get("pitchers_with_cadence_estimate"))
+                if cadence_estimates is None or cadence_estimates <= 0:
+                    fail("matchup_opportunity_scope", "Estimated projection did not disclose cadence-estimated pitchers")
+            if opportunity_completeness in {
+                "known_opportunities_lower_bound",
+                "partial_estimated_pitcher_opportunities",
+            }:
+                unmodeled = _number(projection.get("pitchers_without_opportunity_model"))
+                if unmodeled is None or unmodeled <= 0:
                     fail("matchup_opportunity_scope", "Lower-bound projection did not disclose omitted pitcher opportunities")
 
     block = matchup.get("recommendations")
@@ -708,10 +723,11 @@ def _validate_win_this_week(
     if plan.get("read_only") is not True or plan.get("writes_enabled") is not False:
         fail(f"{prefix}_write_boundary", "Win This Week did not explicitly remain read-only")
     matchup_context = plan.get("matchup") if isinstance(plan.get("matchup"), dict) else {}
-    if matchup_context.get("opportunity_completeness") == "known_opportunities_lower_bound":
+    context_completeness = matchup_context.get("opportunity_completeness")
+    if context_completeness is not None and context_completeness != "complete":
         summary = plan.get("summary") if isinstance(plan.get("summary"), dict) else {}
         if not summary.get("projection_caveat") or matchup_context.get("probability_calibrated") is True:
-            fail(f"{prefix}_opportunity_scope", "Win This Week did not disclose its lower-bound pitcher assumption")
+            fail(f"{prefix}_opportunity_scope", "Win This Week did not disclose its pitcher-opportunity assumption")
     actions = plan.get("actions")
     if not isinstance(actions, list):
         fail(f"{prefix}_actions_invalid", "Win This Week actions field was not a list")
