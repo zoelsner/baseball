@@ -1,6 +1,6 @@
 import unittest
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -159,12 +159,39 @@ def mlb_schedule_response(day_text, states, *, total_games=None):
     return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
 
 
+def mlb_range_response(start, end, skip=()):
+    start_date = date.fromisoformat(start) if isinstance(start, str) else start
+    end_date = date.fromisoformat(end) if isinstance(end, str) else end
+    dates = []
+    day = start_date
+    while day <= end_date:
+        day_text = day.isoformat()
+        if day_text not in skip:
+            dates.append({"date": day_text, "games": [{"gamePk": 1}]})
+        day += timedelta(days=1)
+    payload = {"dates": dates}
+    return SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload)
+
+
+def mlb_range_get(skip=()):
+    """requests.get side_effect covering the period-scoring-dates range query."""
+    def get(url, params=None, timeout=None):
+        params = params or {}
+        if "startDate" in params:
+            return mlb_range_response(params["startDate"], params["endDate"], skip=skip)
+        raise AssertionError(f"unexpected MLB schedule request: {params}")
+
+    return get
+
+
 @contextmanager
-def evidence_context(raw):
+def evidence_context(raw, skip=()):
     with patch.dict(
         fantrax_data.VERIFIED_WEEKLY_LINEUP_POLICIES,
         {("league", 2026): TEST_POLICY},
-    ), direct_requests(raw):
+    ), direct_requests(raw), patch.object(
+        fantrax_data.requests, "get", side_effect=mlb_range_get(skip=skip)
+    ):
         yield
 
 
@@ -178,7 +205,11 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
     def test_exact_period_archive_reconciles_and_hashes_deterministically(self):
         api = EvidenceApi(current_roster(), historical_roster())
 
-        with patch.dict(fantrax_data.VERIFIED_WEEKLY_LINEUP_POLICIES, {("league", 2026): TEST_POLICY}), direct_requests(historical_roster()) as request:
+        with patch.dict(
+            fantrax_data.VERIFIED_WEEKLY_LINEUP_POLICIES, {("league", 2026): TEST_POLICY}
+        ), direct_requests(historical_roster()) as request, patch.object(
+            fantrax_data.requests, "get", side_effect=mlb_range_get()
+        ):
             first = fantrax_data.extract_completed_lineup_evidence(api, "me", completed_matchup())
         with evidence_context(historical_roster()):
             second = fantrax_data.extract_completed_lineup_evidence(
@@ -223,6 +254,14 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
                 response["allEventsFinished"] = False
             return response
 
+        def request_mlb(url, params=None, timeout=None):
+            params = params or {}
+            if "startDate" in params:
+                return mlb_range_response(params["startDate"], params["endDate"])
+            if "date" in params:
+                return mlb_response
+            raise AssertionError(f"unexpected MLB schedule request: {params}")
+
         with patch.dict(
             fantrax_data.VERIFIED_WEEKLY_LINEUP_POLICIES,
             {("league", 2026): TEST_POLICY},
@@ -231,7 +270,7 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
         ), patch.object(
             fantrax_data.requests,
             "get",
-            return_value=mlb_response,
+            side_effect=request_mlb,
         ) as get:
             evidence = fantrax_data.extract_completed_lineup_evidence(
                 EvidenceApi(current_roster(), raw), "me", completed_matchup()
@@ -246,7 +285,7 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
         self.assertEqual(proof["games"][1]["schedule_date"], "2026-07-03")
         self.assertEqual(proof["games"][1]["official_date"], "2026-07-04")
         self.assertEqual(len(proof["games_hash"]), 64)
-        get.assert_called_once()
+        self.assertEqual(get.call_count, 2)
 
     def test_official_slate_rejects_nonterminal_empty_and_partial_evidence(self):
         cross_date_final = mlb_schedule_response("2026-07-03", ["Final"])
@@ -363,6 +402,8 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
                     {("league", 2026): TEST_POLICY},
                 ), patch.object(
                     fantrax_data, "_direct_fxpa_request", side_effect=request
+                ), patch.object(
+                    fantrax_data.requests, "get", side_effect=mlb_range_get()
                 ), self.assertRaisesRegex(ValueError, message):
                     fantrax_data.extract_completed_lineup_evidence(
                         EvidenceApi(current_roster(), raw), "me", completed_matchup()
@@ -392,7 +433,9 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
         with patch.dict(
             fantrax_data.VERIFIED_WEEKLY_LINEUP_POLICIES,
             {("league", 2026): TEST_POLICY},
-        ), patch.object(fantrax_data, "_direct_fxpa_request", side_effect=request):
+        ), patch.object(fantrax_data, "_direct_fxpa_request", side_effect=request), patch.object(
+            fantrax_data.requests, "get", side_effect=mlb_range_get()
+        ):
             evidence = fantrax_data.extract_completed_lineup_evidence(
                 EvidenceApi(current_roster(), raw), "me", matchup
             )
@@ -406,6 +449,25 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
             "period_player_fpts_not_attributed_to_lineup_windows",
         )
         self.assertEqual(evidence["final_assignment_total_state"], "unreconciled_multi_window")
+
+    def test_non_scoring_days_are_skipped_and_recorded(self):
+        raw = historical_roster()
+        matchup = completed_matchup()
+        matchup["end"] = "2026-07-12"
+        matchup["my_score"] = 264.5
+
+        with evidence_context(raw, skip=("2026-07-01",)):
+            evidence = fantrax_data.extract_completed_lineup_evidence(
+                EvidenceApi(current_roster(), raw), "me", matchup
+            )
+
+        participation = evidence["participation"]
+        self.assertNotIn("2026-07-01", [item["date"] for item in participation["days"]])
+        skipped = next(
+            item for item in participation["non_scoring_days"] if item["date"] == "2026-07-01"
+        )
+        self.assertEqual(skipped["reason"], "no_scheduled_mlb_regular_season_games")
+        self.assertEqual(participation["window_count"], 2)
 
     def test_unverified_league_season_fails_closed(self):
         with direct_requests(historical_roster()), self.assertRaisesRegex(
@@ -442,6 +504,8 @@ class CompletedLineupEvidenceTests(unittest.TestCase):
                     {("league", 2026): TEST_POLICY},
                 ), patch.object(
                     fantrax_data, "_direct_fxpa_request", side_effect=request
+                ), patch.object(
+                    fantrax_data.requests, "get", side_effect=mlb_range_get()
                 ), self.assertRaisesRegex(ValueError, message):
                     fantrax_data.extract_completed_lineup_evidence(
                         EvidenceApi(current_roster(), raw), "me", completed_matchup()
