@@ -4362,6 +4362,9 @@ function V2PlayerSheet({ id, onClose }) {
   React.useEffect(() => { load(); }, [load]);
 
   // Poll for the Skipper take if it's still being generated server-side.
+  // Attempt count lives in a ref keyed by id (not state), so it survives the
+  // effect re-running on every setData(next) below instead of resetting to 0.
+  const takePollRef = React.useRef({ id: null, attempts: 0 });
   React.useEffect(() => {
     if (!data) return;
     const take = data.take || {};
@@ -4370,11 +4373,14 @@ function V2PlayerSheet({ id, onClose }) {
     const stillGenerating = !take.text && !take.error && (takePending || takeState === 'missing');
     if (!stillGenerating) return;
 
-    let attempts = 0;
+    if (takePollRef.current.id !== id) takePollRef.current = { id, attempts: 0 };
+    const pollState = takePollRef.current;
+    if (pollState.attempts >= 12) return;
+
     let cancelled = false;
     const tick = async () => {
       if (cancelled) return;
-      attempts += 1;
+      pollState.attempts += 1;
       try {
         const r = await fetch(`/api/player/${encodeURIComponent(id)}`);
         if (!r.ok || cancelled) return;
@@ -4385,10 +4391,10 @@ function V2PlayerSheet({ id, onClose }) {
         const nextPending = ((next.profile_cache || {}).take || {}).pending === true;
         const nextState = ((next.profile_cache || {}).take || {}).state;
         const done = nextTake.text || nextTake.error || (!nextPending && nextState !== 'missing');
-        if (done || attempts >= 12) return;
+        if (done || pollState.attempts >= 12) return;
         timer = setTimeout(tick, 3500);
       } catch (_) {
-        if (attempts < 12 && !cancelled) timer = setTimeout(tick, 5000);
+        if (pollState.attempts < 12 && !cancelled) timer = setTimeout(tick, 5000);
       }
     };
     let timer = setTimeout(tick, 2500);
