@@ -694,6 +694,39 @@ def _official_mlb_terminal_day_evidence(day: date_cls) -> dict[str, Any]:
     }
 
 
+def _official_mlb_scoring_dates(start: date_cls, end: date_cls) -> set[str]:
+    """Return the exact dates in [start, end] with scheduled MLB regular-season games."""
+    try:
+        response = requests.get(
+            f"{mlb_stats.BASE_URL}/schedule",
+            params={
+                "sportId": 1,
+                "gameType": "R",
+                "startDate": start.isoformat(),
+                "endDate": end.isoformat(),
+                "fields": "dates,date,games,gamePk",
+            },
+            timeout=mlb_stats.DEFAULT_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise ValueError("official MLB period schedule is unavailable") from exc
+    dates = payload.get("dates") if isinstance(payload, dict) else None
+    if not isinstance(dates, list):
+        raise ValueError("official MLB period schedule is invalid")
+    scoring: set[str] = set()
+    for item in dates:
+        if not isinstance(item, dict) or not isinstance(item.get("games"), list):
+            raise ValueError("official MLB period schedule is invalid")
+        day_text = str(item.get("date") or "")
+        if day_text and item["games"]:
+            scoring.add(day_text)
+    if not scoring:
+        raise ValueError("official MLB period schedule has no scheduled games")
+    return scoring
+
+
 def _completed_period_participation(
     *,
     api: Any,
@@ -710,6 +743,7 @@ def _completed_period_participation(
         raise ValueError("completed period dates are invalid") from exc
     if end < start or (end - start).days > 13:
         raise ValueError("completed period participation window is invalid")
+    scoring_dates = _official_mlb_scoring_dates(start, end)
     observed_date = datetime.now(ZoneInfo("America/New_York")).date()
     expected = {(item["player_id"], item["scoring_role"]): item for item in period_players}
     inactive_slots = {"RES", "IR", "MIN", "IL", "INJ", "BENCH", "BN", "BE"}
@@ -718,10 +752,18 @@ def _completed_period_participation(
         for key, item in expected.items()
     }
     days: list[dict[str, Any]] = []
+    non_scoring_days: list[dict[str, Any]] = []
     window_states: dict[str, dict[tuple[str, str], tuple[str, str | None]]] = {}
     for offset in range((end - start).days + 1):
         day = start + timedelta(days=offset)
         day_text = day.isoformat()
+        if day_text not in scoring_dates:
+            non_scoring_days.append({
+                "date": day_text,
+                "reason": "no_scheduled_mlb_regular_season_games",
+                "source": "statsapi.mlb.com/api/v1/schedule",
+            })
+            continue
         raw = _direct_fxpa_request(
             api,
             "getLiveScoringStats",
@@ -815,7 +857,10 @@ def _completed_period_participation(
             "credited_team_total": daily_total,
             "players": day_players,
         })
-    final_state = window_states[(end - timedelta(days=end.weekday())).isoformat()]
+    final_window = (end - timedelta(days=end.weekday())).isoformat()
+    if final_window not in window_states:
+        raise ValueError("completed period final lineup window has no verified day")
+    final_state = window_states[final_window]
     if any(final_state[key][0] != expected_state[key] for key in expected):
         raise ValueError("final weekly participation conflicts with the period roster assignment")
     if any(final_state[key][1] != expected[key].get("raw_pos_id") for key in expected):
@@ -837,6 +882,7 @@ def _completed_period_participation(
             sum(Decimal(item["credited_team_total"]) for item in days)
         ),
         "days": days,
+        "non_scoring_days": non_scoring_days,
     }
 
 
