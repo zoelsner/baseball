@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { gotoTab, waitForAppMount } from '../fixtures/sandlot';
+import { captureSnapshot, expectTodayMatchup, gotoTab, waitForAppMount } from '../fixtures/sandlot';
 
 function baseSnapshot(overrides: Record<string, any> = {}) {
   return {
@@ -754,11 +754,12 @@ test.describe('Today — Attention Queue', () => {
   test('production Today smoke keeps matchup and advice visible', async ({ page }) => {
     test.skip(isLocalBundle, 'Railway smoke runs only against the deployed production app.');
 
+    const snapshotPromise = captureSnapshot(page);
     await page.goto('/');
     await waitForAppMount(page);
-    await skipIfAttentionQueueNotDeployed(page);
+    const snapshot = await snapshotPromise;
 
-    const matchup = page.getByText(/Matchup · (Leading|Trailing|Tied)/i).first();
+    const matchup = await expectTodayMatchup(page, snapshot);
     const hotSwaps = page.getByText('Hot Swaps', { exact: true }).first();
     const attention = page.getByText('Attention Queue', { exact: true }).first();
 
