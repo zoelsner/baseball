@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { waitForAppMount, captureSnapshot, gotoTab } from '../fixtures/sandlot';
+import { waitForAppMount, captureSnapshot, expectTodayMatchup, gotoTab } from '../fixtures/sandlot';
 
 function shapedSnapshot(overrides: Record<string, any> = {}) {
   return {
@@ -44,26 +44,7 @@ test.describe('Today page', () => {
     await waitForAppMount(page);
     const snapshot = await snapshotPromise;
 
-    // If the deployed snapshot has a matchup with scores, the matchup card renders.
-    // Otherwise the empty state takes over — assert that path explicitly.
-    const m = snapshot?.matchup;
-    const hasScores = m && (m.my_score !== undefined || m.myScore !== undefined);
-
-    if (!hasScores) {
-      await expect(page.getByText(/no matchup|off week|tbd|fantrax snapshot/i)).toBeVisible();
-      test.info().annotations.push({
-        type: 'note',
-        description: 'Deployed snapshot has no matchup scores; only empty-state asserted.',
-      });
-      return;
-    }
-
-    // X.X · X.X score format renders for both sides somewhere on the page.
-    const bodyText = await page.locator('body').innerText();
-    expect(bodyText).toMatch(/\b\d{1,3}\.\d\b\s*·\s*\d{1,3}\.\d\b/);
-
-    // Margin label is always present alongside any rendered matchup.
-    await expect(page.getByText(/^margin$/i)).toBeVisible();
+    await expectTodayMatchup(page, snapshot);
   });
 
   test('shows opponent label from snapshot', async ({ page }) => {
@@ -83,6 +64,32 @@ test.describe('Today page', () => {
 });
 
 test.describe('Today trust and app-shell state', () => {
+  for (const [label, matchup] of [
+    ['zero scores', { my_score: 0, opponent_score: 0 }],
+    ['missing matchup', null],
+    ['empty matchup', {}],
+  ] as const) {
+    test(`Today smoke accepts ${label} with the correct visible state`, async ({ page }) => {
+      const snapshot = shapedSnapshot({
+        matchup,
+        data_quality: {
+          lineup_slots: { state: 'ok', trusted: 3, total: 3 },
+          lineup_recommendations_ready: false,
+          recommendations_ready: false,
+          projection_ready: false,
+          add_drop_recommendations_ready: false,
+        },
+      });
+      await page.route('**/api/snapshot/latest', route => route.fulfill({ json: snapshot }));
+      const snapshotPromise = captureSnapshot(page);
+      await page.goto('/');
+      await waitForAppMount(page);
+      await expectTodayMatchup(page, await snapshotPromise);
+      await expect(page.getByText('Hot Swaps', { exact: true })).toBeVisible();
+      await expect(page.getByText('Attention Queue', { exact: true })).toBeVisible();
+    });
+  }
+
   test('does not call an unavailable snapshot clear', async ({ page }) => {
     await page.route('**/api/snapshot/latest', async route => {
       await route.fulfill({
